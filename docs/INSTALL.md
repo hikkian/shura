@@ -1,6 +1,6 @@
 # Installation
 
-Tested on Fedora 44 with an RTX 4070 SUPER. Other distros and NVIDIA cards with ≥12 GB VRAM should work
+Tested only on Fedora 44 + GNOME (Wayland) + Ghostty with an RTX 4070 SUPER (full list: [README → Tested environment](../README.md#tested-environment)). Other distros and NVIDIA cards with ≥12 GB VRAM should work
 with the obvious package-manager substitutions (set `CUDA_ARCH` for your GPU).
 
 ## 1. NVIDIA driver and CUDA toolkit

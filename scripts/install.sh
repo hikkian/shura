@@ -94,14 +94,33 @@ echo "  try: shura status"
 
 if [ "$DO_DESKTOP" = 1 ]; then
   say "App-menu launcher 'Shura'"
-  mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/scalable/apps"
-  cp "$REPO_DIR/assets/shura.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/shura.svg"
-  rm -f "$HOME/.local/share/applications/shura.desktop"  # pre-app-ID launcher name
-  sed "s|@BIN@|$HOME/.local/bin/shura|g" "$REPO_DIR/desktop/io.github.hikkian.Shura.desktop.in" \
-    > "$HOME/.local/share/applications/io.github.hikkian.Shura.desktop"
-  if command -v update-desktop-database >/dev/null; then update-desktop-database -q "$HOME/.local/share/applications" || true; fi
-  if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true; fi
-  echo "  search for 'Shura' in the app menu (right-click: load / unload model)"
+  apps="$HOME/.local/share/applications" icons="$HOME/.local/share/icons/hicolor" changed=0
+  mkdir -p "$apps"
+  # The desktop watches these folders live. Files are replaced atomically and only when their content
+  # changed: GNOME's menu code (gnome-menus 3.38) crashes gnome-shell if it reads a half-written entry.
+  put_file() {  # $1 = source, $2 = target; returns 0 only if the target was (re)written
+    if [ -f "$2" ] && cmp -s "$1" "$2"; then return 1; fi
+    local tmp; tmp="$(dirname "$2")/.$(basename "$2").tmp.$$"  # not *.desktop, so it is never indexed
+    cp "$1" "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$2"
+  }
+  for old in "$icons/scalable/apps/shura.svg" "$apps/shura.desktop"; do  # names from earlier versions
+    if [ -e "$old" ]; then rm -f "$old"; changed=1; fi
+  done
+  for size in 16 24 32 48 64 128 256 512; do
+    mkdir -p "$icons/${size}x${size}/apps"
+    if put_file "$REPO_DIR/assets/icons/shura-$size.png" "$icons/${size}x${size}/apps/shura.png"; then changed=1; fi
+  done
+  entry="$(mktemp)"
+  sed "s|@BIN@|$HOME/.local/bin/shura|g" "$REPO_DIR/desktop/io.github.hikkian.Shura.desktop.in" > "$entry"
+  if put_file "$entry" "$apps/io.github.hikkian.Shura.desktop"; then changed=1; fi
+  rm -f "$entry"
+  if [ "$changed" = 1 ]; then
+    if command -v update-desktop-database >/dev/null; then update-desktop-database -q "$apps" || true; fi
+    if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -q -t "$icons" 2>/dev/null || true; fi
+    echo "  installed/updated - search for 'Shura' in the app menu (right-click: load / unload model)"
+  else
+    echo "  already up to date (nothing rewritten)"
+  fi
 fi
 
 say "Done. Next: see docs/INSTALL.md for building llama.cpp and the Playwright browser."

@@ -51,3 +51,9 @@ the draft KV at its default (F16).
 ## The desktop stutters while the model generates
 Use `threads` = physical cores (6 on a Ryzen 5 5600) and keep `niceLevel` at 10. Also check free VRAM:
 browsers and IDEs render on the GPU too, so leave them a few hundred MB (see BENCHMARKS.md).
+
+## GNOME Shell crashed right after running `install.sh`
+GNOME watches `~/.local/share/applications` live. gnome-menus 3.38 crashes gnome-shell if it reads a
+desktop entry while the file is still being written. Earlier versions of `install.sh` overwrote the
+launcher in place and could trigger this. The installer now replaces files atomically and leaves them
+untouched when nothing changed. Log back in; nothing else needs fixing.

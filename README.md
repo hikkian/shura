@@ -1,6 +1,9 @@
 <div align="center">
 
-# Shura · شورى
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-wordmark-dark.png">
+  <img alt="Shura · شورى" src="assets/logo-wordmark-light.png" width="520">
+</picture>
 
 **A fully local AI coding workstation: a 35B MoE model at 200k context on a single 12 GB GPU,
 ~40 tok/s decode — without slowing down the desktop you work on.**
@@ -137,6 +140,31 @@ shura window    # new Shura window for the current folder
 The model unloads itself after 30 idle minutes. The last long session is saved and restored on the
 next start.
 
+## Tested environment
+
+> [!NOTE]
+> Everything in this repository was developed and tested on **one machine**. Anything outside this list
+> is supported by design but **untested** — reports and fixes are welcome.
+
+| | Tested |
+|---|---|
+| OS | Fedora 44, kernel 7.2, x86_64 |
+| Desktop | GNOME Shell 50 on Wayland |
+| Terminal | Ghostty 1.3 |
+| GPU / driver | NVIDIA RTX 4070 SUPER 12 GB, driver 615.71 (RPM Fusion), CUDA 13.4 |
+| CPU / RAM | AMD Ryzen 5 5600, 32 GB DDR4-3200 |
+| Software | OpenCode 1.18, Docker 29, Python 3.14, Node 24 |
+
+**Not tested on real systems:**
+- other distributions: `install.sh` and the docs use Fedora package names;
+- KDE, XFCE and tiling WMs;
+- terminals other than Ghostty: launch commands for 11 other terminals were checked in dry-run only;
+- the `kdialog`/`yad` folder dialogs;
+- other GPUs: all numbers above are specific to a 12 GB card, and other cards will need re-tuning (see
+  [docs/INSTALL.md](docs/INSTALL.md#tuning-for-other-hardware)).
+
+AMD and Intel GPUs are not supported: the expert-cache fork is CUDA-only.
+
 ## Repository layout
 
 ```
@@ -144,7 +172,8 @@ gateway/     ai_gateway.py - on-demand llama-server manager + OpenAI-compatible 
 config/      example configs + agentic MoE routing profile for Tiel-Coder
 patches/     TurboQuant head_dim-256 fix for the perf fork
 scripts/     shura (daily CLI), build-llama.sh, install.sh, capture-moe-trace.sh
-desktop/     app-menu launcher template          assets/   icon
+desktop/     app-menu launcher template
+assets/      logo (light/dark), app icons 16-512 px, social preview, source artwork
 bench/       deep-context benchmark, depth sweep, session-cache test, correctness probes
 opencode/    OpenCode config template + AGENTS.md (verification + relative-path rules)
 mcp/         stdio proxy that trims MCP tool schemas, with allowlists
