@@ -1,0 +1,19 @@
+# Machine-local configs (created from *.example.json by scripts/install.sh)
+config/guardian.json
+config/model-launch.json
+
+# Never commit models, KV slot dumps, logs or state
+*.gguf
+*.bin
+*.log
+state/
+logs/
+
+# Python / editor noise
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
+*.swp
+.DS_Store

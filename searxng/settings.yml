@@ -1,0 +1,18 @@
+# Private, local-only SearXNG instance used by the searxng MCP server.
+# scripts/install.sh copies this to ~/.config/searxng/settings.yml and replaces the secret.
+use_default_settings: true
+
+general:
+  instance_name: "Local SearXNG"
+  enable_metrics: false
+
+search:
+  formats:
+    - html
+    - json   # required by mcp-searxng
+
+server:
+  secret_key: "@SEARXNG_SECRET@"
+  limiter: false
+  public_instance: false
+  image_proxy: false

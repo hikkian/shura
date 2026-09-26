@@ -1,0 +1,15 @@
+{
+  "pollIntervalSeconds": 4,
+  "gatewayHost": "127.0.0.1",
+  "gatewayPort": 8080,
+  "llamaHost": "127.0.0.1",
+  "llamaPort": 8090,
+  "healthCheckTimeoutSeconds": 180,
+  "idleUnloadSeconds": 1800,
+  "ramFreeMinGB": 1.5,
+  "ramFreeMinGBToLoad": 14.0,
+  "memoryPressureSustainPolls": 3,
+  "crashRestartMaxAttempts": 3,
+  "slotSaveDir": "~/.local/state/ai-gateway/slots",
+  "slotSaveMinTokens": 20000
+}

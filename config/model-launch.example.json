@@ -1,0 +1,39 @@
+{
+  "exePath": "~/ai/llama.cpp-perf/build/bin/llama-server",
+  "cacheRamMB": 4096,
+  "defaultModel": "tiel-coder",
+  "models": {
+    "tiel-coder": {
+      "modelPath": "~/ai/models/Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf",
+      "mmprojPath": "~/ai/models/mmproj-BF16.gguf",
+      "ctxSize": 200000,
+      "parallelSlots": 1,
+      "threads": 6,
+      "threadsBatch": 6,
+      "batchSize": 2048,
+      "ubatchSize": 512,
+      "nGpuLayers": 99,
+      "nCpuMoe": 26,
+      "cacheTypeK": "turbo3",
+      "cacheTypeV": "turbo3",
+      "flashAttn": "on",
+      "loadMode": "none",
+      "moeCacheProfile": "moe-trace/tiel-coder-agentic.csv",
+      "moeCacheSlots": 24,
+      "temperature": 0.6,
+      "topK": 20,
+      "topP": 0.95,
+      "specType": "draft-mtp",
+      "specDraftNMax": 1,
+      "specDraftPMin": 0.2,
+      "reasoning": "auto",
+      "vramFreeMinGBToLoad": 10.0,
+      "visionOverrides": {
+        "nCpuMoe": 27,
+        "moeCacheSlots": 0,
+        "vramFreeMinGBToLoad": 10.0
+      },
+      "niceLevel": 10
+    }
+  }
+}

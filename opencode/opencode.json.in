@@ -1,0 +1,105 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "provider": {
+    "tiel-local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Tiel-Coder (local, via AI Gateway)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1"
+      },
+      "models": {
+        "tiel-coder": {
+          "name": "Tiel-Coder 35B-A3B MTP IQ4_XS (200K ctx)",
+          "attachment": true,
+          "modalities": { "input": ["text", "image"], "output": ["text"] },
+          "limit": { "context": 200000, "output": 16384 },
+          "settings": { "reasoningEffort": "medium" },
+          "variants": {
+            "fast": { "settings": { "reasoningEffort": "minimal" } },
+            "low": { "settings": { "reasoningEffort": "low" } },
+            "medium": { "settings": { "reasoningEffort": "medium" } },
+            "high": { "settings": { "reasoningEffort": "high" } },
+            "max": { "settings": { "reasoningEffort": "max" } }
+          }
+        }
+      }
+    }
+  },
+  "model": "tiel-local/tiel-coder",
+  "small_model": "tiel-local/tiel-coder",
+  "agent": {
+    "build": { "temperature": 0.6, "top_p": 0.95 },
+    "plan": { "temperature": 0.6, "top_p": 0.95 },
+    "general": { "temperature": 0.6, "top_p": 0.95 },
+    "explore": { "temperature": 0.6, "top_p": 0.95 }
+  },
+  "permission": {
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git branch*": "allow",
+      "git show*": "allow",
+      "git add*": "allow",
+      "git commit*": "allow",
+      "npm test*": "allow",
+      "npm run*": "allow",
+      "npm install*": "allow",
+      "pytest*": "allow",
+      "python -m pytest*": "allow",
+      "python3 -m pytest*": "allow",
+      "python *": "allow",
+      "python3 *": "allow",
+      "node *": "allow",
+      "grep *": "allow",
+      "rg *": "allow",
+      "find *": "allow",
+      "ls*": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "wc *": "allow",
+      "pwd": "allow",
+      "curl *127.0.0.1*": "allow",
+      "curl *localhost*": "allow",
+      "git push*": "ask",
+      "git reset --hard*": "ask",
+      "git clean*": "ask",
+      "git rebase*": "ask",
+      "sudo *": "ask",
+      "dd *": "ask",
+      "chmod -R*": "ask",
+      "chown -R*": "ask",
+      "rm -rf*": "deny",
+      "rm -fr*": "deny",
+      "mkfs*": "deny",
+      "wipefs*": "deny",
+      "fdisk*": "deny",
+      "parted*": "deny",
+      "shutdown*": "deny",
+      "reboot*": "deny",
+      "poweroff*": "deny",
+      "systemctl poweroff*": "deny",
+      "systemctl reboot*": "deny"
+    },
+    "edit": "allow",
+    "webfetch": "allow",
+    "websearch": "allow"
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["node", "@REPO_DIR@/mcp/mcp-tool-filter.js", "@REPO_DIR@/mcp/playwright-tools-allowlist.json", "--", "npx", "-y", "@playwright/mcp@latest", "--isolated", "--browser", "chromium"],
+      "enabled": true
+    },
+    "searxng": {
+      "type": "local",
+      "command": ["node", "@REPO_DIR@/mcp/mcp-tool-filter.js", "@REPO_DIR@/mcp/searxng-tools-allowlist.json", "--", "npx", "-y", "mcp-searxng"],
+      "environment": { "SEARXNG_URL": "http://127.0.0.1:8888" },
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Python syntax + lint
+        run: |
+          python -m py_compile gateway/*.py bench/*.py
+          pip install --quiet ruff
+          ruff check gateway bench --select E,F,W,B --ignore E501
+
+      - name: Shell scripts
+        run: shellcheck scripts/*.sh
+
+      - name: JSON configs are valid
+        run: |
+          for f in config/*.example.json mcp/*.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
+          sed "s|@REPO_DIR@|/repo|g" opencode/opencode.json.in | python -m json.tool > /dev/null && echo "ok opencode.json.in"
+
+      - name: MCP filter parses
+        run: node --check mcp/mcp-tool-filter.js
+
+      - name: Gateway starts and serves /guardian/status (no GPU, no model)
+        run: |
+          mkdir -p /tmp/gw && cp config/guardian.example.json /tmp/gw/guardian.json && cp config/model-launch.example.json /tmp/gw/model-launch.json
+          AI_GATEWAY_CONFIG=/tmp/gw AI_GATEWAY_STATE=/tmp/gw/state python gateway/ai_gateway.py &
+          sleep 2
+          curl -sf http://127.0.0.1:8080/guardian/status | python -m json.tool

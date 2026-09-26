@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Gateway / Resource Guardian for local Tiel-Coder (llama-server on demand)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 @REPO_DIR@/gateway/ai_gateway.py
+Environment=AI_GATEWAY_CONFIG=@REPO_DIR@/config
+Environment=PATH=/usr/local/cuda/bin:/usr/bin:/bin
+Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
+Restart=on-failure
+RestartSec=5
+# SIGTERM goes to the gateway first so it can save the active KV slot and stop llama-server cleanly.
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target
