@@ -24,7 +24,7 @@ jobs:
           ruff check gateway bench --select E,F,W,B --ignore E501
 
       - name: Shell scripts
-        run: shellcheck scripts/*.sh
+        run: shellcheck scripts/*.sh scripts/shura
 
       - name: JSON configs are valid
         run: |

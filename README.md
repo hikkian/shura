@@ -117,13 +117,34 @@ opencode
 Full walkthrough, including the CUDA toolkit, the Playwright browser and tuning for other GPUs:
 **[docs/INSTALL.md](docs/INSTALL.md)**.
 
+## Daily use
+
+Everything starts with the desktop session; nothing needs to be launched by hand.
+
+- **App menu → Shura.** Pick a project folder and OpenCode opens there in its own window, under the
+  Shura icon. Right-click the icon for *Load model now* / *Unload model*. Works on any desktop (GNOME,
+  KDE, XFCE, tiling WMs) with any common terminal; set `SHURA_TERMINAL` to choose one.
+- **Terminal:** `cd` into a project and type `shura`. The model starts loading in the background while
+  OpenCode opens, so it is usually ready by the time you type.
+
+```
+shura status    # model state, free RAM/VRAM, idle timer
+shura warm      # load the model now          shura unload   # free RAM/VRAM now
+shura off / on  # disable / enable the AI     shura logs     # follow logs
+shura window    # new Shura window for the current folder
+```
+
+The model unloads itself after 30 idle minutes. The last long session is saved and restored on the
+next start.
+
 ## Repository layout
 
 ```
 gateway/     ai_gateway.py - on-demand llama-server manager + OpenAI-compatible proxy (stdlib only)
 config/      example configs + agentic MoE routing profile for Tiel-Coder
 patches/     TurboQuant head_dim-256 fix for the perf fork
-scripts/     build-llama.sh, install.sh, capture-moe-trace.sh
+scripts/     shura (daily CLI), build-llama.sh, install.sh, capture-moe-trace.sh
+desktop/     app-menu launcher template          assets/   icon
 bench/       deep-context benchmark, depth sweep, session-cache test, correctness probes
 opencode/    OpenCode config template + AGENTS.md (verification + relative-path rules)
 mcp/         stdio proxy that trims MCP tool schemas, with allowlists

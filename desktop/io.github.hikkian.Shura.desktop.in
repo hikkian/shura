@@ -1,0 +1,21 @@
+[Desktop Entry]
+Type=Application
+Name=Shura
+GenericName=Local AI coding agent
+Comment=Open OpenCode with the local Tiel-Coder model in a project folder
+Exec=@BIN@ launch
+Icon=shura
+Terminal=false
+Categories=Development;
+Keywords=ai;llm;opencode;agent;coding;
+StartupNotify=true
+StartupWMClass=io.github.hikkian.Shura
+Actions=warm;unload;
+
+[Desktop Action warm]
+Name=Load model now
+Exec=@BIN@ warm
+
+[Desktop Action unload]
+Name=Unload model (free RAM/VRAM)
+Exec=@BIN@ unload

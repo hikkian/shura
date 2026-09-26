@@ -18,6 +18,9 @@ nvcc --version   # CUDA 13.4 was used here
 
 Build tools: `sudo dnf install -y cmake ninja-build gcc-c++ git nodejs python3 docker`.
 
+Optional, for the app-menu launcher: a folder dialog (`zenity`, `kdialog` or `yad`) and `notify-send`.
+Any desktop environment and terminal emulator works.
+
 ## 2. This repository
 
 ```bash
@@ -53,9 +56,10 @@ This:
   the paths if you did not use `~/ai/...`);
 - installs and starts the `ai-gateway` systemd **user** service on `127.0.0.1:8080`;
 - writes the OpenCode config (backing up any existing one) and the offline environment variables;
-- starts a private SearXNG container on `127.0.0.1:8888` with a freshly generated secret.
+- starts a private SearXNG container on `127.0.0.1:8888` with a freshly generated secret;
+- links the `shura` command into `~/.local/bin` and adds a **Shura** launcher to the app menu.
 
-Flags: `--no-service`, `--no-opencode`, `--no-searxng`.
+Flags: `--no-service`, `--no-opencode`, `--no-searxng`, `--no-desktop`.
 
 ## 6. OpenCode and the MCP browser
 
@@ -72,10 +76,12 @@ Log out and back in once so `~/.config/environment.d/opencode-offline.conf` take
 ## 7. Verify
 
 ```bash
-curl -s localhost:8080/guardian/status          # "status": "UNLOADED" until the first request
+shura status                                    # model: UNLOADED until the first request
 opencode mcp list                               # playwright + searxng: connected
 python3 bench/correctness_probes.py             # loads the model (~12 s), expects 9/9
 ```
+
+Then open a project with **Shura** from the app menu, or run `shura` inside the project folder.
 
 Optional full benchmark:
 

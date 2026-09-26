@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Idempotent installer: local configs, systemd user service, OpenCode (offline) config, private SearXNG.
+# Idempotent installer: local configs, systemd user service, OpenCode (offline) config, private SearXNG,
+# the `shura` command and an app-menu launcher.
 # Never overwrites an existing config silently - existing files are kept or backed up first.
 #
-#   scripts/install.sh [--no-service] [--no-opencode] [--no-searxng]
+#   scripts/install.sh [--no-service] [--no-opencode] [--no-searxng] [--no-desktop]
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DO_SERVICE=1 DO_OPENCODE=1 DO_SEARXNG=1
+DO_SERVICE=1 DO_OPENCODE=1 DO_SEARXNG=1 DO_DESKTOP=1
 for arg in "$@"; do
   case "$arg" in
     --no-service) DO_SERVICE=0 ;;
     --no-opencode) DO_OPENCODE=0 ;;
     --no-searxng) DO_SEARXNG=0 ;;
+    --no-desktop) DO_DESKTOP=0 ;;
     *) echo "unknown option: $arg"; exit 2 ;;
   esac
 done
@@ -83,6 +85,23 @@ if [ "$DO_SEARXNG" = 1 ]; then
       -v "$HOME/.config/searxng:/etc/searxng:Z" searxng/searxng:latest >/dev/null
     echo "  started searxng container"
   fi
+fi
+
+say "shura command (~/.local/bin/shura)"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$REPO_DIR/scripts/shura" "$HOME/.local/bin/shura"
+echo "  try: shura status"
+
+if [ "$DO_DESKTOP" = 1 ]; then
+  say "App-menu launcher 'Shura'"
+  mkdir -p "$HOME/.local/share/applications" "$HOME/.local/share/icons/hicolor/scalable/apps"
+  cp "$REPO_DIR/assets/shura.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/shura.svg"
+  rm -f "$HOME/.local/share/applications/shura.desktop"  # pre-app-ID launcher name
+  sed "s|@BIN@|$HOME/.local/bin/shura|g" "$REPO_DIR/desktop/io.github.hikkian.Shura.desktop.in" \
+    > "$HOME/.local/share/applications/io.github.hikkian.Shura.desktop"
+  if command -v update-desktop-database >/dev/null; then update-desktop-database -q "$HOME/.local/share/applications" || true; fi
+  if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true; fi
+  echo "  search for 'Shura' in the app menu (right-click: load / unload model)"
 fi
 
 say "Done. Next: see docs/INSTALL.md for building llama.cpp and the Playwright browser."

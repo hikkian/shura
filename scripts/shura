@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# shura - everyday entry point.
+#
+#   shura            open OpenCode in the current folder (model starts loading in the background)
+#   shura launch     pick a project folder in a dialog, then open OpenCode there in a terminal window
+#   shura window     open a separate Shura window for the current folder
+#   shura status     gateway / model state, RAM and VRAM headroom
+#   shura warm       load the model now
+#   shura unload     unload the model now (frees RAM/VRAM; long session is saved to disk)
+#   shura off | on   disable / re-enable the AI entirely
+#   shura logs       follow gateway + llama-server logs
+#   shura restart    restart the gateway service
+#
+# Works with any desktop and terminal. Terminal: $SHURA_TERMINAL, then $TERMINAL, then the first one
+# found. Folder dialog: zenity, kdialog or yad (optional).
+set -euo pipefail
+
+GW="${SHURA_GATEWAY:-http://127.0.0.1:8080}"
+APP_ID="io.github.hikkian.Shura"
+export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
+# OpenCode must stay offline, otherwise it can hang on api.opencode.ai at startup.
+export OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_SHARE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+
+notify() {
+  if command -v notify-send >/dev/null; then notify-send -a Shura "Shura" "$1" || true; fi
+  echo "$1"
+}
+
+ensure_gateway() {
+  if ! curl -s --max-time 2 "$GW/guardian/status" >/dev/null; then
+    systemctl --user start ai-gateway.service
+    for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s --max-time 1 "$GW/guardian/status" >/dev/null && return; sleep 0.5; done
+    notify "Gateway did not start - see: shura logs"; exit 1
+  fi
+}
+
+warm() {  # a 1-token request makes the gateway load the model (and restore the last long session)
+  curl -s --max-time 300 "$GW/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}' >/dev/null
+}
+
+status() {
+  local js
+  js="$(curl -s --max-time 5 "$GW/guardian/status")" || js=""
+  if [ -z "$js" ]; then echo "gateway is not running - start it with: shura restart"; return 1; fi
+  SHURA_STATUS="$js" python3 - <<'PY'
+import json, os
+d = json.loads(os.environ["SHURA_STATUS"])
+state = d["status"] + (" (vision)" if d["vision"] else "")
+err = f"  - {d['last_error']}" if d["last_error"] else ""
+print(f"model      : {state}{err}")
+print("ai         : " + ("disabled (shura on to enable)" if d["override"] == "OFF" else "enabled"))
+print(f"ram free   : {d['ram_available_gb']} GB")
+print(f"vram free  : {d['vram_free_gb']} GB")
+if d["status"] == "READY":
+    print(f"idle       : {d['idle_seconds']} s (auto-unload after {d['idle_unload_after_seconds']} s)")
+PY
+}
+
+run() {  # exec, or just print with SHURA_DRY_RUN=1 (used to test terminal handling without opening windows)
+  if [ -n "${SHURA_DRY_RUN:-}" ]; then printf '%q ' "$@"; echo; exit 0; fi
+  exec "$@"
+}
+
+pick_dir() {  # $1 = start folder; prints the chosen folder, or nothing if cancelled
+  local title="Shura - choose a project folder"
+  if command -v zenity >/dev/null; then zenity --file-selection --directory --title="$title" --filename="$1/" 2>/dev/null
+  elif command -v kdialog >/dev/null; then kdialog --title "$title" --getexistingdirectory "$1" 2>/dev/null
+  elif command -v yad >/dev/null; then yad --file --directory --title="$title" --filename="$1/" 2>/dev/null
+  else echo "$1"; fi  # no dialog tool installed: reopen the last folder
+}
+
+open_terminal() {  # $1 = folder: open a new terminal window there running `shura`
+  local dir="$1" title self term t
+  title="Shura · $(basename "$dir")"
+  self="$(readlink -f "$0")"
+  term="${SHURA_TERMINAL:-${TERMINAL:-}}"
+  if [ -z "$term" ]; then
+    for t in ghostty kitty alacritty wezterm foot konsole gnome-terminal ptyxis xfce4-terminal tilix xdg-terminal-exec xterm; do
+      if command -v "$t" >/dev/null; then term="$t"; break; fi
+    done
+  fi
+  cd "$dir"
+  # Where the terminal supports it, give the window Shura's app ID so it shows under the Shura icon.
+  case "$(basename "${term%% *}")" in
+    ghostty)           run ghostty --class="$APP_ID" --title="$title" --working-directory="$dir" -e "$self" ;;
+    kitty)             run kitty --class "$APP_ID" --title "$title" --directory "$dir" "$self" ;;
+    alacritty)         run alacritty --class "$APP_ID" --title "$title" --working-directory "$dir" -e "$self" ;;
+    wezterm)           run wezterm start --class "$APP_ID" --cwd "$dir" -- "$self" ;;
+    foot)              run foot --app-id="$APP_ID" --title="$title" --working-directory="$dir" "$self" ;;
+    konsole)           run konsole --workdir "$dir" -p tabtitle="$title" -e "$self" ;;
+    gnome-terminal)    run gnome-terminal --title="$title" --working-directory="$dir" -- "$self" ;;
+    ptyxis)            run ptyxis --new-window --working-directory="$dir" -- "$self" ;;
+    xfce4-terminal)    run xfce4-terminal --title="$title" --working-directory="$dir" -x "$self" ;;
+    tilix)             run tilix --title="$title" --working-directory="$dir" -e "$self" ;;
+    xdg-terminal-exec) run xdg-terminal-exec "$self" ;;
+    xterm)             run xterm -class "$APP_ID" -T "$title" -e "$self" ;;
+    "")                notify "No terminal emulator found - set SHURA_TERMINAL"; exit 1 ;;
+    *)                 local -a cmd; read -ra cmd <<< "$term"; run "${cmd[@]}" -e "$self" ;;
+  esac
+}
+
+launch() {
+  local last="$HOME/.cache/shura/last-dir" dir
+  mkdir -p "$(dirname "$last")"
+  dir="$(pick_dir "$(cat "$last" 2>/dev/null || echo "$HOME")")"
+  [ -n "$dir" ] || exit 0
+  echo "$dir" > "$last"
+  open_terminal "$dir"
+}
+
+case "${1:-}" in
+  "")      ensure_gateway; (warm &) ; exec opencode ;;
+  launch)  launch ;;
+  window)  open_terminal "$PWD" ;;
+  status)  status ;;
+  warm)    ensure_gateway; s=$(date +%s); warm; notify "Model loaded in $(( $(date +%s) - s ))s" ;;
+  unload)  curl -s -X POST "$GW/guardian/unload" >/dev/null && notify "Model unloaded" ;;
+  off)     curl -s -X POST "$GW/guardian/ai-off" >/dev/null && notify "AI disabled (shura on to re-enable)" ;;
+  on)      curl -s -X POST "$GW/guardian/ai-on" >/dev/null && notify "AI enabled" ;;
+  logs)    exec journalctl --user -u ai-gateway -f -o cat ;;
+  restart) systemctl --user restart ai-gateway.service && notify "Gateway restarted" ;;
+  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)       echo "unknown command: $1 (see: shura help)"; exit 2 ;;
+esac
