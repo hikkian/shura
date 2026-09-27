@@ -99,6 +99,63 @@ Qwen3.8-27B hybrid); the A3B MoE variant is not affected.
 context or with an empty prompt. Attention over a 187k-token KV cache is real work that no
 expert-cache trick removes, so always compare at the same depth.
 
+### Final configuration, filled context (2026-09-27)
+
+Live settings (ncmoe 26, 24 cache slots, turbo3 KV, MTP n_max 1, 200k context). The context is filled
+for real and restored from a slot before every run. Each value is the median of 3–5 runs of 200 tokens.
+
+| Filled context | Decode tok/s | Desktop lag p99 (fill / decode) |
+|---:|---:|---:|
+| 4k | 53.9 | — |
+| 16k | 53.2 | — |
+| 32k | 50.8 | 0.12 ms |
+| 64k | 49.4–51.5 | 0.10 ms |
+| 128k | 42.4 | 0.12 ms |
+| 187k | **38.6–39.2** | 0.14 / 0.10 ms |
+
+- Run-to-run spread between sessions is about ±5–8%, driven by background desktop activity. That is
+  why comparisons are only made within one session and interleaved (A, B, A, B).
+- A 10 ms sleep probe measured desktop latency during both the 187k fill and generation: it stays at
+  idle level (idle p99 ≈ 0.1–0.2 ms).
+- Loading the 18 GB model sometimes causes one ~0.2 s stall while the kernel reclaims memory. This
+  happens only at load time and not on every load.
+
+## VRAM budget: fitting a 1.5 GB desktop reserve
+
+Goal: keep 1.5 GB of the 12 GB card for the desktop. The model's own peak (measured per process, not
+from the card's free memory) must then stay ≤ 12282 − 1536 = 10,746 MiB. The live config peaks at
+**10,970 MiB**.
+
+Where it goes, from the verbose load log:
+- weights and expert cache on the GPU: ~7.5 GB plus the cache;
+- main KV cache (turbo3, 10 attention layers): 764 MiB;
+- main compute buffer: 770 MiB;
+- recurrent state: 126 MiB;
+- **MTP draft KV cache (f16): 391 MiB**;
+- draft compute buffer: 236 MiB.
+
+Everything below was measured in one session (decode at filled context; quality checked with the 9
+correctness probes):
+
+| Change | Model peak | Decode | Verdict |
+|---|---:|---|---|
+| none (live) | 10,970 MiB | 39.2 @187k, 50.9 @64k | 224 MiB over budget |
+| 100k context + 40 slots ("normal" mode) | 10,578 | 45.3 @99.8k vs 48.3 for the live config at the same depth | not faster, dropped |
+| `-ub 384` / `-ub 256` | 10,838 / 10,714 | −13% / −16%, prefill −30% / −42% | rejected |
+| draft KV `q8_0` (`-ctkd/-ctvd`) | OOM at load | — | quantized KV is expanded to a full f16 scratch buffer (MMA flash attention; see [llama.cpp#29371](https://github.com/ggml-org/llama.cpp/issues/29371)) |
+| draft KV `turbo3` | 11,046 | same | no saving |
+| `-cmoed` (draft MoE on CPU) | 10,970 | same | no effect: the draft uses target layer 40 |
+| layer 40 (MTP) experts on CPU (`-ot`) + 24 slots | 10,638 | −7% @64k | fits |
+| layer 40 experts on CPU + 26 slots | 10,712 | **−4%** @64k | fits, best full-budget option |
+| 16 cache slots | 10,682 | −8% @187k | fits |
+
+Takeaways:
+- A smaller context does not make decode faster at the same depth.
+- One cache slot costs about 36 MiB of VRAM.
+- The cheapest fix was outside the model: turning off hardware acceleration in VS Code
+  (`"disable-hardware-acceleration": true` in `argv.json`) removes its ~180–210 MiB GPU process. The
+  desktop then idles at ~0.5–0.6 GB, and the live config keeps its full speed.
+
 ## Session resume (KV cache reuse)
 
 Measured with [`session_cache_test.py`](../bench/session_cache_test.py) at ~187k tokens:

@@ -20,3 +20,6 @@ __pycache__/
 
 # Timestamped backups made by install.sh / setup.sh
 *.bak-*
+
+# Raw benchmark run artifacts (logs contain local paths); summaries go into docs/BENCHMARKS.md
+bench/results/
