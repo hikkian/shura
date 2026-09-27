@@ -19,12 +19,15 @@ jobs:
 
       - name: Python syntax + lint
         run: |
-          python -m py_compile gateway/*.py bench/*.py
+          python -m py_compile gateway/*.py bench/*.py installer/*.py tests/*.py
           pip install --quiet ruff
-          ruff check gateway bench --select E,F,W,B --ignore E501
+          ruff check gateway bench installer tests --select E,F,W,B --ignore E501
+
+      - name: Installer unit tests
+        run: python -m unittest discover -s tests -v
 
       - name: Shell scripts
-        run: shellcheck scripts/*.sh scripts/shura
+        run: shellcheck setup.sh scripts/*.sh scripts/shura tests/*.sh
 
       - name: JSON configs are valid
         run: |
@@ -40,3 +43,15 @@ jobs:
           AI_GATEWAY_CONFIG=/tmp/gw AI_GATEWAY_STATE=/tmp/gw/state python gateway/ai_gateway.py &
           sleep 2
           curl -sf http://127.0.0.1:8080/guardian/status | python -m json.tool
+
+  distro-packages:
+    # Installs the build packages setup.sh would install, in each supported distro, and checks the CUDA repo.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:12", "archlinux:latest", "fedora:44"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: ${{ matrix.image }}
+        run: docker run --rm -v "$PWD:/repo:ro" "${{ matrix.image }}" bash /repo/tests/distro-packages.sh

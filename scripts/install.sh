@@ -72,16 +72,17 @@ fi
 
 if [ "$DO_SEARXNG" = 1 ]; then
   say "Private SearXNG (Docker, 127.0.0.1:8888)"
+  read -ra DOCKER <<< "${SHURA_DOCKER:-docker}"  # setup.sh passes "sudo docker" right after installing Docker
   if ! command -v docker >/dev/null; then
     echo "  docker not found - skipping (web search MCP will not work)"
-  elif docker ps -a --format '{{.Names}}' | grep -qx searxng; then
+  elif "${DOCKER[@]}" ps -a --format '{{.Names}}' | grep -qx searxng; then
     echo "  container 'searxng' already exists - leaving it alone"
   else
     mkdir -p "$HOME/.config/searxng"
     if [ ! -f "$HOME/.config/searxng/settings.yml" ]; then
       sed "s|@SEARXNG_SECRET@|$(openssl rand -hex 32)|" "$REPO_DIR/searxng/settings.yml" > "$HOME/.config/searxng/settings.yml"
     fi
-    docker run -d --name searxng --restart unless-stopped -p 127.0.0.1:8888:8080 \
+    "${DOCKER[@]}" run -d --name searxng --restart unless-stopped -p 127.0.0.1:8888:8080 \
       -v "$HOME/.config/searxng:/etc/searxng:Z" searxng/searxng:latest >/dev/null
     echo "  started searxng container"
   fi

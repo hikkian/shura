@@ -17,3 +17,6 @@ __pycache__/
 .idea/
 *.swp
 .DS_Store
+
+# Timestamped backups made by install.sh / setup.sh
+*.bak-*

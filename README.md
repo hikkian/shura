@@ -108,16 +108,17 @@ slots instead of 16. The gateway's design is described in **[docs/ARCHITECTURE.m
 
 ## Quick start
 
+On Fedora, Ubuntu/Debian or Arch with an NVIDIA GPU and its driver installed:
+
 ```bash
-git clone https://github.com/hikkian/shura.git && cd shura
-scripts/build-llama.sh          # perf fork @ pinned commit + TurboQuant fix
-# download the model into ~/ai/models/ (see docs/INSTALL.md)
-scripts/install.sh              # gateway service, OpenCode config, private SearXNG
-python3 bench/correctness_probes.py
-opencode
+curl -fsSL https://raw.githubusercontent.com/hikkian/shura/main/setup.sh | bash
+# or: git clone https://github.com/hikkian/shura.git && cd shura && ./setup.sh
 ```
 
-Full walkthrough, including the CUDA toolkit, the Playwright browser and tuning for other GPUs:
+The installer picks the Tiel-Coder quant that fits your RAM and VRAM (16 GB RAM works), builds
+llama.cpp for your GPU, measures a few layouts on your card and installs everything. It asks before each
+`sudo` step. Options (`--quick`, `--quant`, `--model`, `--no-search`) and the list of what it changes:
+**[docs/INSTALLER.md](docs/INSTALLER.md)**. To set things up by hand instead, see
 **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## Daily use
@@ -156,7 +157,8 @@ next start.
 | Software | OpenCode 1.18, Docker 29, Python 3.14, Node 24 |
 
 **Not tested on real systems:**
-- other distributions: `install.sh` and the docs use Fedora package names;
+- other distributions: the installer's package and CUDA-repository steps were checked in Ubuntu 24.04,
+  Debian 12 and Arch containers only; a full fresh install has not been run anywhere else yet;
 - KDE, XFCE and tiling WMs;
 - terminals other than Ghostty: launch commands for 11 other terminals were checked in dry-run only;
 - the `kdialog`/`yad` folder dialogs;
@@ -168,6 +170,9 @@ AMD and Intel GPUs are not supported: the expert-cache fork is CUDA-only.
 ## Repository layout
 
 ```
+setup.sh     one-command installer (distro packages, CUDA, build, model, auto-tune)
+installer/   hardware planner, GGUF header reader, model download, auto-tune
+tests/       installer unit tests + distro package test (containers)
 gateway/     ai_gateway.py - on-demand llama-server manager + OpenAI-compatible proxy (stdlib only)
 config/      example configs + agentic MoE routing profile for Tiel-Coder
 patches/     TurboQuant head_dim-256 fix for the perf fork
@@ -190,7 +195,8 @@ docs/        benchmarks, architecture, harness comparison, TurboQuant fix, insta
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Gateway state machine, endpoints, KV cache and SSD-wear design |
 | [TURBOQUANT-FIX.md](docs/TURBOQUANT-FIX.md) | Why TurboQuant crashes / corrupts output on this model family, and the fix |
 | [HARNESS-COMPARISON.md](docs/HARNESS-COMPARISON.md) | OpenCode vs Pi vs Pithagoras vs DeepSeek Harness, tested hands-on |
-| [INSTALL.md](docs/INSTALL.md) | Step-by-step setup and tuning for other GPUs |
+| [INSTALLER.md](docs/INSTALLER.md) | What `setup.sh` does, how it picks the quant and tunes, what it changes, uninstall |
+| [INSTALL.md](docs/INSTALL.md) | Manual step-by-step setup and tuning for other GPUs |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Known failure modes and their fixes |
 | [SECURITY.md](SECURITY.md) | Threat model: localhost-only services, no auth, what not to expose |
 

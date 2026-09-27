@@ -111,17 +111,18 @@ flowchart LR
 
 ## Быстрый старт
 
+На Fedora, Ubuntu/Debian или Arch с видеокартой NVIDIA и установленным драйвером:
+
 ```bash
-git clone https://github.com/hikkian/shura.git && cd shura
-scripts/build-llama.sh          # perf-форк на закреплённом коммите + исправление TurboQuant
-# скачайте модель в ~/ai/models/ (см. docs/INSTALL.md)
-scripts/install.sh              # сервис Gateway, конфиг OpenCode, приватный SearXNG
-python3 bench/correctness_probes.py
-opencode
+curl -fsSL https://raw.githubusercontent.com/hikkian/shura/main/setup.sh | bash
+# или: git clone https://github.com/hikkian/shura.git && cd shura && ./setup.sh
 ```
 
-Полная пошаговая инструкция, включая CUDA toolkit, браузер для Playwright и настройку под другие видеокарты:
-**[docs/INSTALL.md](docs/INSTALL.md)** (на английском).
+Установщик сам выбирает квант Tiel-Coder под ваши RAM и VRAM (подходит и 16 ГБ RAM), собирает llama.cpp
+под вашу видеокарту, замеряет несколько раскладок на ней и всё устанавливает. Перед каждым шагом с `sudo`
+он спрашивает разрешение. Опции (`--quick`, `--quant`, `--model`, `--no-search`) и список того, что он
+меняет в системе: **[docs/INSTALLER.md](docs/INSTALLER.md)**. Ручная установка:
+**[docs/INSTALL.md](docs/INSTALL.md)** (оба документа на английском).
 
 ## Ежедневное использование
 
@@ -160,7 +161,8 @@ shura window    # новое окно Shura для текущей папки
 | ПО | OpenCode 1.18, Docker 29, Python 3.14, Node 24 |
 
 **Не проверялось на реальных системах:**
-- другие дистрибутивы: `install.sh` и инструкции используют названия пакетов Fedora;
+- другие дистрибутивы: шаги установщика с пакетами и репозиторием CUDA проверены только в контейнерах
+  Ubuntu 24.04, Debian 12 и Arch; полная установка с нуля пока нигде больше не запускалась;
 - KDE, XFCE и тайловые WM;
 - терминалы кроме Ghostty: команды запуска для 11 других терминалов проверены только сухим прогоном;
 - диалоги выбора папки `kdialog`/`yad`;
@@ -177,7 +179,8 @@ shura window    # новое окно Shura для текущей папки
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Состояния Gateway, эндпоинты, KV-кэш и забота о ресурсе SSD |
 | [TURBOQUANT-FIX.md](docs/TURBOQUANT-FIX.md) | Почему TurboQuant падает или портит ответы на этом семействе моделей и как это исправлено |
 | [HARNESS-COMPARISON.md](docs/HARNESS-COMPARISON.md) | OpenCode, Pi, Pithagoras и DeepSeek Harness — практическое сравнение |
-| [INSTALL.md](docs/INSTALL.md) | Пошаговая установка и настройка под другие видеокарты |
+| [INSTALLER.md](docs/INSTALLER.md) | Что делает `setup.sh`, как выбирает квант и подбирает настройки, что меняет, удаление |
+| [INSTALL.md](docs/INSTALL.md) | Ручная пошаговая установка и настройка под другие видеокарты |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Известные проблемы и их решения |
 | [SECURITY.md](SECURITY.md) | Модель угроз: сервисы только на localhost, без авторизации, что нельзя открывать наружу |
 

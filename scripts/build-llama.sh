@@ -27,7 +27,13 @@ else
   echo "Applied $(basename "$PATCH")"
 fi
 
-cmake -S "$DEST" -B "$DEST/build" -G Ninja -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" -DCMAKE_BUILD_TYPE=Release
+configure() { cmake -S "$DEST" -B "$DEST/build" -G Ninja -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" -DCMAKE_BUILD_TYPE=Release "$@"; }
+if ! configure; then
+  # Rolling distros (e.g. Arch) can ship a GCC newer than nvcc officially supports; it usually works anyway.
+  echo "configure failed - retrying with -allow-unsupported-compiler"
+  rm -rf "$DEST/build"
+  configure -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler
+fi
 cmake --build "$DEST/build" --config Release -j"$(nproc)"
 
 echo
