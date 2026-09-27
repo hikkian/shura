@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Idempotent installer: local configs, systemd user service, OpenCode (offline) config, private SearXNG,
+# Idempotent installer: local configs, systemd user service, ShuraCode (the coding agent), private SearXNG,
 # the `shura` command and an app-menu launcher.
 # Never overwrites an existing config silently - existing files are kept or backed up first.
 #
-#   scripts/install.sh [--no-service] [--no-opencode] [--no-searxng] [--no-desktop]
+#   scripts/install.sh [--no-service] [--no-shuracode] [--no-searxng] [--no-desktop]
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DO_SERVICE=1 DO_OPENCODE=1 DO_SEARXNG=1 DO_DESKTOP=1
+DO_SERVICE=1 DO_SHURACODE=1 DO_SEARXNG=1 DO_DESKTOP=1
 for arg in "$@"; do
   case "$arg" in
     --no-service) DO_SERVICE=0 ;;
-    --no-opencode) DO_OPENCODE=0 ;;
+    --no-shuracode) DO_SHURACODE=0 ;;
     --no-searxng) DO_SEARXNG=0 ;;
     --no-desktop) DO_DESKTOP=0 ;;
     *) echo "unknown option: $arg"; exit 2 ;;
@@ -52,22 +52,18 @@ if [ "$DO_SERVICE" = 1 ]; then
   echo "  gateway: http://127.0.0.1:8080  (status: curl -s localhost:8080/guardian/status)"
 fi
 
-if [ "$DO_OPENCODE" = 1 ]; then
-  say "OpenCode config (~/.config/opencode)"
-  mkdir -p "$HOME/.config/opencode"
-  tmp="$(mktemp)"
-  render "$REPO_DIR/opencode/opencode.json.in" > "$tmp"
-  backup_if_different "$HOME/.config/opencode/opencode.json" "$tmp"
-  mv "$tmp" "$HOME/.config/opencode/opencode.json"
-  backup_if_different "$HOME/.config/opencode/AGENTS.md" "$REPO_DIR/opencode/AGENTS.md"
-  cp "$REPO_DIR/opencode/AGENTS.md" "$HOME/.config/opencode/AGENTS.md"
-
-  # Without these OpenCode contacts api.opencode.ai at startup and can hang offline.
-  mkdir -p "$HOME/.config/environment.d"
-  printf '%s\n' OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_SHARE=1 \
-    OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1 \
-    > "$HOME/.config/environment.d/opencode-offline.conf"
-  echo "  offline env written to ~/.config/environment.d/opencode-offline.conf (applies after re-login)"
+if [ "$DO_SHURACODE" = 1 ]; then
+  say "ShuraCode (coding agent)"
+  # A clone next to this repository wins (development); otherwise keep a copy under ~/.local/share/shura.
+  sc="${SHURACODE_DIR:-}"
+  if [ -z "$sc" ] && [ -x "$REPO_DIR/../shuracode/install.sh" ]; then sc="$(cd "$REPO_DIR/../shuracode" && pwd)"; fi
+  if [ -z "$sc" ]; then
+    sc="$HOME/.local/share/shura/shuracode"
+    if [ -d "$sc/.git" ]; then git -C "$sc" pull --ff-only -q
+    else git clone -q --depth 1 https://github.com/hikkian/shuracode.git "$sc"; fi
+  fi
+  echo "  from $sc"
+  "$sc/install.sh" --base-url http://127.0.0.1:8080/v1 --status-url http://127.0.0.1:8080/guardian/status 2>&1 | sed 's/^/  /'
 fi
 
 if [ "$DO_SEARXNG" = 1 ]; then
@@ -124,4 +120,4 @@ if [ "$DO_DESKTOP" = 1 ]; then
   fi
 fi
 
-say "Done. Next: see docs/INSTALL.md for building llama.cpp and the Playwright browser."
+say "Done. Next: see docs/INSTALL.md for building llama.cpp."

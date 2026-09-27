@@ -24,6 +24,15 @@ English · [Русский](README.ru.md)
 > decided by a council: a router consults 8 of 256 experts. This project is about seating that council
 > on modest hardware.
 
+> [!NOTE]
+> **Thank you.** Shura is built on other people's work:
+> [**thecodacus**](https://github.com/thecodacus) wrote the llama.cpp `perf` fork, whose MoE expert cache
+> and TurboQuant make ~40 tok/s possible on a 12 GB card, and his benchmarks showed it could be done.
+> **wilky2005** fixed TurboQuant for this model family. **peculiar-ragdoll** made Tiel-Coder.
+> [**llama.cpp**](https://github.com/ggml-org/llama.cpp) is the foundation, and
+> [**OpenCode**](https://github.com/anomalyco/opencode) is the engine behind ShuraCode, the coding agent.
+> Full list: [Acknowledgements](#acknowledgements).
+
 This repository documents and packages a working setup for running
 [Tiel-Coder-35B-A3B-MTP](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP)
 (`qwen35moe`, 256 experts / 8 active) as a local coding agent. The model is 18 GB; the GPU has 12 GB.
@@ -39,7 +48,8 @@ It contains:
   tokens of realistic agent sessions;
 - a small **AI gateway** that loads the model on demand, switches text/vision automatically,
   survives crashes, and keeps session state in RAM so the SSD is barely written;
-- a hands-on **comparison of four agent harnesses**, and an **OpenCode** config hardened for offline use;
+- a hands-on **comparison of four agent harnesses**, and **[ShuraCode](https://github.com/hikkian/shuracode)**, the coding agent
+  built on the winner (OpenCode): offline, with permanent memory;
 - **reproducible benchmark scripts** for every number below, including the ideas that did not work.
 
 ## Results
@@ -74,7 +84,7 @@ described in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ```mermaid
 flowchart LR
-    OC["OpenCode<br/>(offline)"] -- OpenAI API --> GW["AI Gateway :8080"]
+    OC["ShuraCode<br/>(offline)"] -- OpenAI API --> GW["AI Gateway :8080"]
     GW -- spawns / proxies --> LS["llama-server :8090"]
     LS --- GPU["GPU: attention, MTP head,<br/>24 hot experts per layer, turbo3 KV"]
     LS --- CPU["RAM: cold experts, prompt cache"]
@@ -125,11 +135,11 @@ llama.cpp for your GPU, measures a few layouts on your card and installs everyth
 
 Everything starts with the desktop session; nothing needs to be launched by hand.
 
-- **App menu → Shura.** Pick a project folder and OpenCode opens there in its own window, under the
+- **App menu → Shura.** Pick a project folder and ShuraCode opens there in its own window, under the
   Shura icon. Right-click the icon for *Load model now* / *Unload model*. Works on any desktop (GNOME,
   KDE, XFCE, tiling WMs) with any common terminal; set `SHURA_TERMINAL` to choose one.
 - **Terminal:** `cd` into a project and type `shura`. The model starts loading in the background while
-  OpenCode opens, so it is usually ready by the time you type.
+  ShuraCode opens, so it is usually ready by the time you type.
 
 ```
 shura status    # model state, free RAM/VRAM, idle timer
@@ -140,6 +150,11 @@ shura window    # new Shura window for the current folder
 
 The model unloads itself after 30 idle minutes. The last long session is saved and restored on the
 next start.
+
+**ShuraCode** is the coding agent: permanent memory shared by all sessions ("remember: …" works, and
+the next session knows it), the commands `/remember` `/forget` `/memory` `/test` `/commit`, a read-only
+**Plan** mode next to **Build** (Tab), and a live model status in the footer. It lives in its own
+repository, **[hikkian/shuracode](https://github.com/hikkian/shuracode)**, and the installer sets it up.
 
 ## Tested environment
 
@@ -154,7 +169,7 @@ next start.
 | Terminal | Ghostty 1.3 |
 | GPU / driver | NVIDIA RTX 4070 SUPER 12 GB, driver 615.71 (RPM Fusion), CUDA 13.4 |
 | CPU / RAM | AMD Ryzen 5 5600, 32 GB DDR4-3200 |
-| Software | OpenCode 1.18, Docker 29, Python 3.14, Node 24 |
+| Software | ShuraCode 0.1 (OpenCode 1.18 engine), Docker 29, Python 3.14, Node 24 |
 
 **Not tested on real systems:**
 - other distributions: the installer's package and CUDA-repository steps were checked in Ubuntu 24.04,
@@ -165,7 +180,24 @@ next start.
 - other GPUs: all numbers above are specific to a 12 GB card, and other cards will need re-tuning (see
   [docs/INSTALL.md](docs/INSTALL.md#tuning-for-other-hardware)).
 
-AMD and Intel GPUs are not supported: the expert-cache fork is CUDA-only.
+AMD and Intel GPUs are not supported out of the box: the expert cache (`--moe-cache-*`) and the TurboQuant
+KV cache (`turbo3`) in the llama.cpp fork are written in CUDA.
+
+**Want Shura on an AMD or Intel card? You can port it yourself or with an AI coding agent (ShuraCode can do
+this work too).** Upstream llama.cpp already runs on AMD (ROCm/HIP, Vulkan) and Intel (SYCL, Vulkan). Only
+these two CUDA-specific features are missing:
+
+1. **Works today, slower:** build upstream llama.cpp for your backend and use the same layout ideas: the
+   first layers' experts in RAM (`--n-cpu-moe`), `q8_0`/`q4_0` KV cache and MTP. The gateway, ShuraCode and
+   the rest of this repository do not depend on CUDA.
+2. **Full speed:** port the fork's expert-cache and `turbo3` CUDA kernels. For AMD, llama.cpp already
+   builds its CUDA backend through HIP, so the kernels may compile for ROCm with modest changes; the usual
+   obstacles are the 64-wide wavefront (CUDA warps are 32) and inline PTX. For Intel, rewrite them for
+   SYCL or Vulkan. Then re-run the benchmarks in `bench/`
+   and the correctness probes, because silent output corruption is the failure mode to watch for (see
+   [docs/TURBOQUANT-FIX.md](docs/TURBOQUANT-FIX.md)).
+
+Pull requests with measured results on non-NVIDIA cards are very welcome.
 
 ## Repository layout
 
@@ -180,8 +212,6 @@ scripts/     shura (daily CLI), build-llama.sh, install.sh, capture-moe-trace.sh
 desktop/     app-menu launcher template
 assets/      logo (light/dark), app icons 16-512 px, social preview, source artwork
 bench/       deep-context benchmark, depth sweep, session-cache test, correctness probes
-opencode/    OpenCode config template + AGENTS.md (verification + relative-path rules)
-mcp/         stdio proxy that trims MCP tool schemas, with allowlists
 systemd/     user service unit
 searxng/     private SearXNG settings template
 docs/        benchmarks, architecture, harness comparison, TurboQuant fix, install, troubleshooting

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # shura - everyday entry point.
 #
-#   shura            open OpenCode in the current folder (model starts loading in the background)
-#   shura launch     pick a project folder in a dialog, then open OpenCode there in a terminal window
+#   shura            open ShuraCode in the current folder (model starts loading in the background)
+#   shura launch     pick a project folder in a dialog, then open ShuraCode there in a terminal window
 #   shura window     open a separate Shura window for the current folder
 #   shura status     gateway / model state, RAM and VRAM headroom
 #   shura warm       load the model now
@@ -17,9 +17,7 @@ set -euo pipefail
 
 GW="${SHURA_GATEWAY:-http://127.0.0.1:8080}"
 APP_ID="io.github.hikkian.Shura"
-export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
-# OpenCode must stay offline, otherwise it can hang on api.opencode.ai at startup.
-export OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_SHARE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+export PATH="$HOME/.local/bin:$PATH"
 
 notify() {
   if command -v notify-send >/dev/null; then notify-send -a Shura "Shura" "$1" || true; fi
@@ -110,7 +108,7 @@ launch() {
 }
 
 case "${1:-}" in
-  "")      ensure_gateway; (warm &) ; exec opencode ;;
+  "")      ensure_gateway; (warm &) ; exec shuracode ;;
   launch)  launch ;;
   window)  open_terminal "$PWD" ;;
   status)  status ;;

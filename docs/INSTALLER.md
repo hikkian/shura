@@ -36,11 +36,10 @@ proprietary driver already installed, at least 16 GB RAM, and 30–45 GB free di
 6. **Plans**: picks the quant and a starting GPU/CPU layout (see below).
 7. **Model**: reuses a matching file found under your home folder, or downloads it. The download
    resumes if interrupted and is checked against its SHA-256.
-8. **OpenCode**: installs it via npm, into `~/.npm-global` when the global prefix needs root, plus the
-   Chromium build that Playwright uses.
-9. **Auto-tunes** on your GPU (see below).
-10. **Installs** the gateway service, the OpenCode config, the `shura` command and the app-menu entry,
-    using `scripts/install.sh`.
+8. **Auto-tunes** on your GPU (see below).
+9. **Installs** the gateway service, [ShuraCode](https://github.com/hikkian/shuracode) (the coding agent,
+   with its own engine, config and memory), the `shura` command and the app-menu entry, using
+   `scripts/install.sh`.
 
 Large files go in `$SHURA_HOME` (default `~/.local/share/shura`): the models, the llama.cpp build and,
 in curl mode, the repository itself. The full log is `~/.cache/shura/setup.log`. Rerunning the script
@@ -105,10 +104,8 @@ The planner's layout is the starting point. On your GPU, auto-tune then:
 | System packages (`sudo`, asks first) | build tools, Node, Python, zenity, libnotify; optionally Docker; NVIDIA's CUDA repository and `cuda-toolkit` |
 | `~/.local/share/shura/` | models, llama.cpp build, the repository (curl mode) |
 | `~/.config/systemd/user/ai-gateway.service` | the gateway service (enabled) |
-| `~/.config/opencode/` | `opencode.json`, `AGENTS.md` (existing files backed up) |
-| `~/.config/environment.d/opencode-offline.conf` | stops OpenCode from contacting its servers |
+| `~/.config/shuracode/`, `~/.local/share/shuracode/`, `~/.local/bin/shuracode` | ShuraCode: config, engine, memory, command |
 | `~/.local/bin/shura`, `~/.local/share/applications/`, `~/.local/share/icons/` | command and app-menu entry |
-| `~/.npm-global/` | OpenCode, if the global npm prefix is not writable |
 | Docker container `searxng` | private web search on 127.0.0.1:8888 |
 
 ### Uninstall
@@ -117,13 +114,14 @@ The planner's layout is the starting point. On your GPU, auto-tune then:
 systemctl --user disable --now ai-gateway
 rm ~/.config/systemd/user/ai-gateway.service ~/.local/bin/shura \
    ~/.local/share/applications/io.github.hikkian.Shura.desktop \
-   ~/.local/share/icons/hicolor/*/apps/shura.png ~/.config/environment.d/opencode-offline.conf
+   ~/.local/share/icons/hicolor/*/apps/shura.png ~/.local/bin/shuracode
 rm -rf ~/.local/share/shura ~/.cache/shura      # models and build: frees 25-40 GB
+rm -rf ~/.config/shuracode ~/.local/share/shuracode   # ShuraCode, including its memory
 docker rm -f searxng                            # if installed
-npm uninstall -g opencode-ai                    # optional
 ```
 
-System packages and the CUDA toolkit stay installed. Remove them with your package manager if you want.
+To keep ShuraCode's memory, copy `~/.local/share/shuracode/memory/` somewhere first. System packages and the CUDA
+toolkit stay installed. Remove them with your package manager if you want.
 
 ## Test status
 

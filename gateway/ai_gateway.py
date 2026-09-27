@@ -362,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
             m = re.search(r'"model"\s*:\s*"([^"]+)"', text)
             if m and m.group(1) in M["models"]:
                 model_id = m.group(1)
-            # OpenCode's AI-SDK client sends camelCase "reasoningEffort"; llama-server only reads "reasoning_effort".
+            # The agent's AI-SDK client (ShuraCode / OpenCode) sends camelCase "reasoningEffort"; llama-server only reads "reasoning_effort".
             if '"reasoningEffort"' in text:
                 body = re.sub(r'"reasoningEffort"\s*:', '"reasoning_effort":', text).encode()
 

@@ -55,29 +55,18 @@ This:
 - creates `config/guardian.json` and `config/model-launch.json` from the examples (gitignored; edit
   the paths if you did not use `~/ai/...`);
 - installs and starts the `ai-gateway` systemd **user** service on `127.0.0.1:8080`;
-- writes the OpenCode config (backing up any existing one) and the offline environment variables;
+- installs [ShuraCode](https://github.com/hikkian/shuracode), the coding agent: its engine, config, memory,
+  the `shuracode` command and the browser for its web tool;
 - starts a private SearXNG container on `127.0.0.1:8888` with a freshly generated secret;
 - links the `shura` command into `~/.local/bin` and adds a **Shura** launcher to the app menu.
 
-Flags: `--no-service`, `--no-opencode`, `--no-searxng`, `--no-desktop`.
+Flags: `--no-service`, `--no-shuracode`, `--no-searxng`, `--no-desktop`.
 
-## 6. OpenCode and the MCP browser
-
-```bash
-npm config set prefix ~/.npm-global && export PATH=~/.npm-global/bin:$PATH
-npm install -g opencode-ai
-# Install Chromium with the SAME Playwright version the MCP server bundles (avoids version mismatch):
-npx -y @playwright/mcp@latest --version
-cd "$(dirname "$(find ~/.npm/_npx -path '*node_modules/playwright/cli.js' | head -1)")" && node cli.js install chromium
-```
-
-Log out and back in once so `~/.config/environment.d/opencode-offline.conf` takes effect.
-
-## 7. Verify
+## 6. Verify
 
 ```bash
 shura status                                    # model: UNLOADED until the first request
-opencode mcp list                               # playwright + searxng: connected
+shuracode doctor                                # engine, config, memory, gateway: ok
 python3 bench/correctness_probes.py             # loads the model (~12 s), expects 9/9
 ```
 

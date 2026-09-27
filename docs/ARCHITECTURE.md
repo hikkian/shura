@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
     subgraph Client
-        OC["OpenCode CLI/TUI<br/>(offline mode)"]
+        OC["ShuraCode<br/>(OpenCode engine, offline)"]
     end
     subgraph Tools["MCP servers (stdio)"]
         F["mcp-tool-filter.js<br/>trims tool schemas"]
@@ -39,7 +39,7 @@ It is a Linux rewrite of an earlier PowerShell "resource guardian".
 | Idle unload | After `idleUnloadSeconds` (default 30 min) with no requests, the model is unloaded. |
 | Memory-pressure guard | `MemAvailable` from `/proc/meminfo` below `ramFreeMinGB` for 3 polls unloads the model. A generation in flight is never interrupted. Reloading requires `ramFreeMinGBToLoad`, which stops load/unload thrashing. |
 | Crash recovery | An unexpected exit is detected by the monitor thread; the next request reloads. Three failed loads in a row → `ERROR` until `ai-on`. |
-| OpenCode compatibility | Rewrites OpenCode's camelCase `reasoningEffort` to `reasoning_effort`. Without this, the reasoning-effort variants (fast … max) are silently ignored by llama-server. |
+| Agent compatibility | Rewrites the agent engine's camelCase `reasoningEffort` to `reasoning_effort`. Without this, the reasoning-effort variants (fast … max) are silently ignored by llama-server. |
 | Streaming | Responses without `Content-Length` (SSE) are re-chunked and flushed as they arrive. Client disconnect closes the upstream socket, which aborts generation. |
 
 ### State machine

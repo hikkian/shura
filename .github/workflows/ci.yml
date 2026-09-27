@@ -31,11 +31,7 @@ jobs:
 
       - name: JSON configs are valid
         run: |
-          for f in config/*.example.json mcp/*.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
-          sed "s|@REPO_DIR@|/repo|g" opencode/opencode.json.in | python -m json.tool > /dev/null && echo "ok opencode.json.in"
-
-      - name: MCP filter parses
-        run: node --check mcp/mcp-tool-filter.js
+          for f in config/*.example.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
 
       - name: Gateway starts and serves /guardian/status (no GPU, no model)
         run: |

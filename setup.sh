@@ -226,22 +226,6 @@ fi
 MODEL="$(jget "$PATHS" model)"
 MMPROJ="$(jget "$PATHS" mmproj)"
 
-# -------------------------------------------------------------------------------------- opencode
-say "OpenCode"
-if [ -w "$(npm config get prefix)/lib" ] 2>/dev/null; then NPM_BIN="$(npm config get prefix)/bin"
-else npm config set prefix "$HOME/.npm-global"; NPM_BIN="$HOME/.npm-global/bin"; fi
-export PATH="$NPM_BIN:$PATH"
-if ! command -v opencode >/dev/null; then
-  npm install -g opencode-ai >/dev/null
-  pkg="$(npm root -g)/opencode-ai"
-  if ! opencode --version >/dev/null 2>&1; then (cd "$pkg" && node ./postinstall.mjs >/dev/null); fi
-fi
-info "opencode $(opencode --version)"
-info "installing the browser for the Playwright MCP tool"
-npx -y @playwright/mcp@latest --version >/dev/null 2>&1 || true
-pw="$(find "$HOME/.npm/_npx" -path '*node_modules/playwright/cli.js' 2>/dev/null | head -1)"
-if [ -n "$pw" ]; then (cd "$(dirname "$pw")" && node cli.js install chromium >/dev/null 2>&1) || info "(browser install failed - web browsing tool may not work)"; fi
-
 # -------------------------------------------------------------------------------------- autotune
 say "Auto-tuning for your hardware"
 info "measures a few GPU/CPU layouts on your GPU${QUICK:+ (quick mode)}${QUICK:- and checks the best one at full 200k context}"
@@ -257,6 +241,5 @@ say "Done"
 speed="$(jget "$RESULT" decode_compare) tok/s at ${QUICK:+12k}${QUICK:-100k} context"
 [ -z "$QUICK" ] && speed="$speed, $(jget "$RESULT" decode_full) tok/s at ~185k"
 info "Tiel-Coder $QUANT: $speed"
-info "Open a project:  cd your-project && shura      or: app menu -> Shura"
+info "Open a project:  cd your-project && shura      or: app menu -> Shura      (agent: shuracode)"
 info "Status: shura status     Help: shura help     Log: ~/.cache/shura/setup.log"
-info "Log out and back in once so the OpenCode offline settings apply everywhere."

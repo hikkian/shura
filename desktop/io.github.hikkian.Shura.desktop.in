@@ -2,12 +2,12 @@
 Type=Application
 Name=Shura
 GenericName=Local AI coding agent
-Comment=Open OpenCode with the local Tiel-Coder model in a project folder
+Comment=Open ShuraCode with the local Tiel-Coder model in a project folder
 Exec=@BIN@ launch
 Icon=shura
 Terminal=false
 Categories=Development;
-Keywords=ai;llm;opencode;agent;coding;
+Keywords=ai;llm;shuracode;agent;coding;
 StartupNotify=true
 StartupWMClass=io.github.hikkian.Shura
 Actions=warm;unload;

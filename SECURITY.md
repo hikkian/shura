@@ -18,9 +18,9 @@ Tailscale, and set `apiKey`.
 
 ## The agent runs commands on your machine
 
-OpenCode executes shell commands and edits files with your user's permissions. The shipped
-`opencode.json` asks before any shell command that is not on an allowlist, and denies destructive
-ones (`rm -rf`, `mkfs`, `dd`, `shutdown`, …). Review that list before relaxing it. Content from web
+ShuraCode executes shell commands and edits files with your user's permissions. Its shipped config
+([hikkian/shuracode](https://github.com/hikkian/shuracode)) asks before any shell command that is not on an
+allowlist, and denies destructive ones (`rm -rf`, `mkfs`, `dd`, `shutdown`, …). Review that list before relaxing it. Content from web
 pages, search results and MCP tools can contain prompt-injection attempts; treat an agent that has
 read untrusted content with the same care as untrusted code.
 
@@ -30,10 +30,11 @@ read untrusted content with the same care as untrusted code.
   model's internal state for your last long session, which can encode its content. Delete the folder
   if that matters to you.
 - `config/guardian.json`, `config/model-launch.json`: machine-local paths. They are gitignored.
-- OpenCode's session history (managed by OpenCode, in `~/.local/share/opencode/`).
+- ShuraCode's memory (`~/.local/share/shuracode/memory/`) and its engine's session history
+  (`~/.local/share/opencode/`).
 
-No telemetry is sent by any component in this repository. OpenCode's own network calls are disabled
-by the shipped config and environment (see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)).
+No telemetry is sent by any component in this repository. ShuraCode disables its engine's update
+checks, sharing and model-catalogue downloads.
 
 ## Reporting a vulnerability
 

@@ -1,14 +1,11 @@
 # Troubleshooting
 
-## `opencode run` hangs forever and the model never receives a request
-OpenCode contacts `api.opencode.ai` at startup. If that connection stalls, it waits indefinitely. Make
-sure the offline settings are active: `"autoupdate": false` and `"share": "disabled"` in
-`opencode.json`, and `OPENCODE_DISABLE_{AUTOUPDATE,SHARE,MODELS_FETCH,DEFAULT_PLUGINS}=1` in the
-environment (`scripts/install.sh` writes them to `~/.config/environment.d/`; re-login required).
-
-## OpenCode: "permission requested: external_directory (/home/<typo>/…); auto-rejecting"
-The model mistyped your home directory in an absolute path. Install the provided
-`opencode/AGENTS.md`, which instructs the model to use project-relative paths.
+## ShuraCode problems
+Run `shuracode doctor`. Agent-side issues (UI, memory, commands, engine updates) are covered in the
+[ShuraCode repository](https://github.com/hikkian/shuracode). Two engine behaviours ShuraCode already
+handles: the engine can hang at startup when it cannot reach its own servers (ShuraCode runs it offline),
+and the model sometimes mistyped the home directory in absolute paths (ShuraCode's rules make it use
+project-relative paths).
 
 ## `GGML_ASSERT(n_kv_max > 0) failed` with `-ctk turbo3`
 Unpatched TurboQuant on a head_dim-256 model. Rebuild with `scripts/build-llama.sh` (applies the fix),
