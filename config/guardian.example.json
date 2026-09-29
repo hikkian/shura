@@ -11,5 +11,15 @@
   "memoryPressureSustainPolls": 3,
   "crashRestartMaxAttempts": 3,
   "slotSaveDir": "~/.local/state/ai-gateway/slots",
-  "slotSaveMinTokens": 20000
+  "slotSaveMinTokens": 20000,
+  "vramFreeCriticalMiB": 120,
+  "vramPressureSeconds": 5,
+  "vramReloadWaitSeconds": 30,
+  "vramPressureSlotDir": "/dev/shm",
+  "vramPressureSlotReserveMiB": 512,
+  "vramGuard": false,
+  "vramIdleSeconds": 90,
+  "vramEmergencyMiB": 60,
+  "vramEmergencySeconds": 10,
+  "slotSaveCheckpoints": 0
 }

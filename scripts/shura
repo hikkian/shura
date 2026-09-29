@@ -50,6 +50,15 @@ print(f"model      : {state}{err}")
 print("ai         : " + ("disabled (shura on to enable)" if d["override"] == "OFF" else "enabled"))
 print(f"ram free   : {d['ram_available_gb']} GB")
 print(f"vram free  : {d['vram_free_gb']} GB")
+if d.get("vram_guard_enabled"):
+    print("vram guard : " + ("emergency, waiting for response end" if d.get("vram_emergency") else
+                           "pressure, active session stays loaded" if d.get("vram_pressure") else "watching"))
+    if d.get("guard_fallback"):
+        print("fallback   : " + d["guard_fallback"])
+    if d.get("last_event"):
+        print("last event : " + d["last_event"]["reason"] + " - " + d["last_event"]["detail"])
+    if not d.get("monitor_healthy", True) or d.get("monitor_thread_alive") is False:
+        print("monitor    : unhealthy - " + d.get("monitor_error", "thread stopped"))
 if d["status"] == "READY":
     print(f"idle       : {d['idle_seconds']} s (auto-unload after {d['idle_unload_after_seconds']} s)")
 PY

@@ -27,11 +27,15 @@ PROBES = [
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--url", default=DEFAULT_URL)
+    ap.add_argument("--n-predict", type=int, default=256,
+                    help="Output token budget; increase for models that emit reasoning before the answer")
     args = ap.parse_args()
+    if args.n_predict < 1:
+        ap.error("--n-predict must be positive")
 
     passed = 0
     for question, expected in PROBES:
-        out = post_json(f"{args.url}/completion", {"prompt": f"Q: {question}\nA:", "n_predict": 40, "temperature": 0})
+        out = post_json(f"{args.url}/completion", {"prompt": f"Q: {question}\nA:", "n_predict": args.n_predict, "temperature": 0})
         content = out.get("content", "")
         ok = expected.lower() in content.lower()
         passed += ok
