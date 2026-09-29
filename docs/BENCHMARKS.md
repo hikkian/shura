@@ -309,3 +309,18 @@ cache in seconds anyway.
 The same model and flags on Windows 11 measured 37.4 → 29.7 → 24.7 → 25.1 → 24.6 tok/s over five
 consecutive requests at ~180k context: it started fast and settled around 25. On Linux no run showed
 that decay pattern.
+
+
+## A2 slot checkpoint restore (2026-09-30)
+
+At 187k tokens on the accepted A2 test layout (12 cache slots, 26 MoE layers), a slot with N=1 stored one 432,683,008-byte checkpoint appendix. The complete file was 1,273,555,436 bytes; save took 1.00 s and restore 0.89 s. A plain read of this tmpfs file took 0.23 s; FNV-1a 64-bit took 1.25 s, adding about 1.02 s for a 1.27 GB file. At one idle save per day this is about 465 GB/year; at three, about 1.39 TB/year.
+
+The final deterministic, interleaved 187k N0/N1 block used the same prompt, seed 1, temperature 0 and 200 generated tokens. All six answers were token-identical, each run reused 187,187 cached tokens and evaluated 32 new tokens, and draft acceptance was 86/112 for both flags. `other_busy_cpus` medians were 1.477 (N0) and 1.300 (N1), so the block passed the 1.6 filter. Median speed was 34.856 tok/s (N0) and 34.844 tok/s (N1), −0.03%; process peak was 10,486 MiB in every run and card-free minimum was 616 MiB.
+
+Three real ShuraCode turns passed with N=1 and three with N=2 in isolated temporary projects. Rewritten-turn restore evaluated 44 new prompt tokens for both, after restoring one or two checkpoints respectively; full request body is in the local, ignored result bundle. Corrupt hash, truncated appendix, and foreign-version files logged a safe legacy restore. Killing the test server during a gateway save left the prior final file byte-for-byte intact, removed the pending file, and the prior slot restored. Final `correctness_probes.py` passed 9/9. `--ctx-checkpoints 4` and `6` had the same 3 live checkpoints and 972,577,372 checkpoint bytes at 187k; neither setting showed a useful RAM reduction.
+
+A corrected completed-dialog quality check produced semantically equivalent but non-identical wording between full prefill and restore (`cache_n=187216`, `prompt_n=27` after restore versus 187,243-token full prefill). The N0/N1 interleaved outputs themselves remained exactly identical. The phrasing difference is recorded as a likely floating-point path variation; no contradictory answer appeared.
+
+Two safety stops are retained: one low-free-VRAM stop coincided with Brave PID 4003 using 589–637 MiB, and the first fault attempt tripped a zram baseline/phase issue during server startup; the corrected retries passed. Earlier speed blocks with `other_busy_cpus` above 1.6 were excluded. One incomplete assistant-turn quality probe was also discarded as a harness error. No user process was terminated.
+
+The NVMe written-sector counter changed from 9,487,950,848 to 44,993,583,104 bytes over the full A2 work window (delta 35,505,632,256 bytes). Test builds, slots, corpora and logs were kept in tmpfs; the historical counter cannot identify which process wrote the difference, so attribution remains unknown and is not claimed as test output. Compact local evidence, exact launch argv and the captured ShuraCode request are in `bench/results/elastic-vram-a2-20260930/` (ignored, not committed).

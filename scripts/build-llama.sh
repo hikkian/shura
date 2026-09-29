@@ -9,7 +9,13 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${1:-$HOME/ai/llama.cpp-perf}"
 COMMIT="27c54b4bbcefadedcec6397477cc2e866c1db716"
 PATCH="$REPO_DIR/patches/turboquant-pr12-fix.patch"
+SLOT_PATCH="$REPO_DIR/patches/slot-checkpoints.patch"
 CUDA_ARCH="${CUDA_ARCH:-89}"
+BUILD_JOBS="${SHURA_BUILD_JOBS:-6}"
+if ! [[ "$BUILD_JOBS" =~ ^[1-6]$ ]]; then
+  echo "SHURA_BUILD_JOBS must be between 1 and 6" >&2
+  exit 1
+fi
 
 command -v nvcc >/dev/null || export PATH="/usr/local/cuda/bin:$PATH"
 command -v nvcc >/dev/null || { echo "nvcc not found - install the CUDA toolkit first (see docs/INSTALL.md)"; exit 1; }
@@ -27,6 +33,14 @@ else
   echo "Applied $(basename "$PATCH")"
 fi
 
+if git -C "$DEST" apply --reverse --check "$SLOT_PATCH" 2>/dev/null; then
+  echo "Slot checkpoint patch already applied"
+else
+  git -C "$DEST" apply --check "$SLOT_PATCH"
+  git -C "$DEST" apply "$SLOT_PATCH"
+  echo "Applied $(basename "$SLOT_PATCH")"
+fi
+
 configure() { cmake -S "$DEST" -B "$DEST/build" -G Ninja -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" -DCMAKE_BUILD_TYPE=Release "$@"; }
 if ! configure; then
   # Rolling distros (e.g. Arch) can ship a GCC newer than nvcc officially supports; it usually works anyway.
@@ -34,7 +48,7 @@ if ! configure; then
   rm -rf "$DEST/build"
   configure -DCMAKE_CUDA_FLAGS=-allow-unsupported-compiler
 fi
-cmake --build "$DEST/build" --config Release -j"$(nproc)"
+cmake --build "$DEST/build" --config Release -j"$BUILD_JOBS"
 
 echo
 echo "Built: $DEST/build/bin/llama-server"

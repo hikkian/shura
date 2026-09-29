@@ -161,6 +161,7 @@ def preload_check(mc):
 
 def save_slot_locked():
     """Persist the active slot only when it is large enough that re-prefilling would be slow."""
+    pending_path = None
     try:
         _, slots = llama_call("GET", "/slots")
         n = (slots or [{}])[0].get("n_prompt_tokens", 0)
@@ -168,9 +169,19 @@ def save_slot_locked():
             log(f"Slot has {n} tokens (< {G['slotSaveMinTokens']}), not saving to disk")
             return
         name = slot_filename(st.model_id, st.vision)
-        code, res = llama_call("POST", "/slots/0?action=save", {"filename": name}, timeout=120)
-        log(f"Saved slot ({n} prompt tokens) -> {name}: HTTP {code} {res and res.get('n_saved')} tokens")
-    except Exception as e:
+        final_path = SLOT_DIR / name
+        pending_path = SLOT_DIR / f"{name}.pending"
+        code, res = llama_call("POST", "/slots/0?action=save", {"filename": pending_path.name}, timeout=120)
+        if code != 200 or not pending_path.is_file():
+            raise RuntimeError(f"slot save returned HTTP {code} or did not create its pending file")
+        os.replace(pending_path, final_path)
+        log(f"Saved slot ({n} prompt tokens) atomically -> {name}: HTTP {code} {res and res.get('n_saved')} tokens")
+    except Exception as e:  # noqa: BLE001 - slot persistence must not take down the gateway
+        if pending_path is not None:
+            try:
+                pending_path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                log(f"Could not remove incomplete slot {pending_path.name}: {cleanup_error}")
         log(f"Slot save failed (non-fatal): {e}")
 
 
