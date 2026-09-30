@@ -53,8 +53,9 @@ It contains:
 - a small **AI gateway** that loads the model on demand, switches text/vision automatically,
   survives crashes, and keeps session state in RAM so the SSD is barely written. An opt-in guard can also
   hand VRAM back to the desktop by parking the session in RAM;
-- a hands-on **comparison of four agent harnesses**, and **[ShuraCode](https://github.com/hikkian/shuracode)**, the coding agent
-  built on the winner (OpenCode): offline, with permanent memory;
+- a hands-on **comparison of four agent harnesses**, and **[ShuraCode](https://github.com/hikkian/shuracode)**, our offline
+  coding agent with permanent memory and its own branding, a customization layer on top of the OpenCode engine
+  (the winner of that comparison);
 - **reproducible benchmark scripts** for every number below, including the ideas that did not work.
 
 ## Results
