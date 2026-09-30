@@ -284,11 +284,10 @@ class GuardReliability(fixtures.GatewayGuard):
         self.assertEqual(enabled[enabled.index('--slot-save-checkpoints') + 1], '1')
 
     def test_preserved_gateway_matches_repository_baseline(self):
-        committed = subprocess.run(
-            ['git', 'show', 'HEAD:gateway/ai_gateway.py'], cwd=REPO,
-            check=True, capture_output=True).stdout
-        self.assertEqual(hashlib.sha256((REPO / 'gateway' / '_gateway_legacy.py').read_bytes()).digest(),
-                         hashlib.sha256(committed).digest())
+        # _gateway_legacy.py is the gateway as it was before the VRAM guard (commit d1f967e), kept for rollback.
+        # Pinned by digest: it must never change by accident (comparing with HEAD would only hold before the guard commit).
+        self.assertEqual(hashlib.sha256((REPO / 'gateway' / '_gateway_legacy.py').read_bytes()).hexdigest(),
+                         '0b3a2b65bc884a46f0e147cec3233719f69c687ea98e9a6d83c1b193e0524b0b')
 
 
 def load_tests(loader, standard_tests, pattern):
