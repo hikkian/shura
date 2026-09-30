@@ -162,21 +162,32 @@ class Properties(unittest.TestCase):
         self.assertEqual(p["mode"], "hybrid")
         self.assertTrue(0 < p["settings"]["ngl"] < 32)
 
-    def test_window_is_usable_when_full_and_grows_with_resources(self):
-        comfort, plentiful = planner.DEFAULTS["comfort_tok_s"], planner.DEFAULTS["plentiful_kv_share"]
+    def test_the_window_is_the_largest_that_fits_memory(self):
+        by_id = {m["id"]: m for cat in (REAL, SYN) for m in cat["models"]}
         for name in HW:
             for cat in (REAL, SYN):
                 p = plan(name, cat)
-                if p["ok"] and p["speed_by_fill"]["empty"] >= comfort:
-                    # a window is on offer if memory is plentiful for it, or if generation stays comfortable when full
-                    self.assertTrue(p["memory"]["kv_share"] <= plentiful or p["speed_by_fill"]["full"] >= comfort - 0.05,
-                                    (name, p["settings"]["context"], p["memory"]["kv_share"], p["speed_by_fill"]))
-        slow, fast = copy.deepcopy(HW["epyc7551x2_512g_cpu"]), copy.deepcopy(HW["epyc7551x2_512g_cpu"])
-        slow["memory"]["bandwidth_gbs"], fast["memory"]["bandwidth_gbs"] = 40, 180
-        kw = dict(model="tiel-coder-35b-a3b-mtp", quant="IQ4_XS")
-        self.assertLessEqual(planner.plan(slow, REAL, **kw)["settings"]["context"],
-                             planner.plan(fast, REAL, **kw)["settings"]["context"])
-        self.assertGreaterEqual(plan("apple_m3ultra_192g")["settings"]["context"], 131072)
+                if not p["ok"]:
+                    continue
+                w, model_max = p["settings"]["context"], by_id[p["model"]]["context_max"]
+                bigger = tuple(c for c in planner.DEFAULTS["contexts"] if w < c <= model_max)
+                self.assertLessEqual(p["memory"]["ram_need"], p["memory"]["ram_budget"])
+                if bigger:   # asking for any larger window must not fit
+                    again = planner.plan(HW[name], cat, model=p["model"], quant=p["quant"],
+                                         config={"contexts": bigger, "reference_context": max(bigger)})
+                    self.assertFalse(again["ok"], (name, p["model"], w))
+
+    def test_more_vram_or_ram_never_shrinks_the_window(self):
+        small, large = copy.deepcopy(HW["rtx3060_12g_16g"]), copy.deepcopy(HW["rtx3060_12g_16g"])
+        small["gpus"][0]["vram_total"], large["gpus"][0]["vram_total"] = 8 * GiB, 24 * GiB
+        kw = dict(model="tiel-coder-35b-a3b-mtp", quant="IQ3_XXS")
+        self.assertLessEqual(planner.plan(small, REAL, **kw)["settings"]["context"],
+                             planner.plan(large, REAL, **kw)["settings"]["context"])
+        lean, rich = copy.deepcopy(HW["epyc7551x2_256g_cpu"]), copy.deepcopy(HW["epyc7551x2_256g_cpu"])
+        lean["memory"]["total"], lean["memory"]["available"] = 18 * GiB, 14 * GiB
+        kw2 = dict(model="tiel-coder-35b-a3b-mtp", quant="Q2_K_XL")      # the smallest quant just fits 18 GB of RAM
+        self.assertLess(planner.plan(lean, REAL, **kw2)["settings"]["context"],
+                        planner.plan(rich, REAL, **kw2)["settings"]["context"])
 
     def test_a_big_machine_gets_the_full_window_and_keeps_model_quality(self):
         # dual EPYC, 256 GB in 16 channels: the window is capacity, not a reason to run a smaller quant

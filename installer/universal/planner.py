@@ -31,9 +31,8 @@ DEFAULTS = {
     "min_context": 16384,
     "contexts": (262144, 200000, 131072, 65536, 32768, 16384),
     "kv_types": (("q8_0", 0.53), ("q4_0", 0.28)),   # (name, size relative to f16)
-    "speed_keep": 0.92,           # the context chosen keeps at least this share of the best predicted (empty-window) speed
+    "reference_context": 65536,   # window at which quants and models are compared (the final window is then maximised)
     "typical_fill_tokens": 32768, # the fill level speed is quoted and models/quants are judged at (a long window is capacity)
-    "plentiful_kv_share": 0.10,   # a window whose KV cache takes at most this share of its memory is always on offer
     "bandwidth_fallback_gbs": {"ram": 20.0, "gpu": 150.0},
     "uncertainty": (0.6, 1.35),   # prediction range relative to the mid estimate
 }
@@ -162,41 +161,31 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     return finish("cpu", active / res["ram_bw"], file + kv + cfg["host_base"], 0, 0, eff["cpu"])
 
 
-def _best_fit(res, cfg, m, q):
-    """The context window for one quant, chosen by the machine's resources, else (None, reason).
+def _best_fit(res, cfg, m, q, cap=None):
+    """The context window: the largest one that fits in memory (VRAM and RAM, after the reserves), else (None, reason).
 
-    Candidates are the windows that fit in memory. A window is offered if memory is plentiful (its KV cache takes at most
-    10% of the memory it lives in: the window is capacity, and you only pay speed when you fill it) or if generation is
-    still comfortable when it is FULL. If nothing qualifies, windows above the minimum speed are tried, then the smallest.
-    Of the offered windows the largest wins, unless that costs more than 8% of the empty-window speed (for example by
-    pushing experts out of VRAM)."""
-    fits, reason = [], ""
-    for ctx in cfg["contexts"]:
-        if ctx > m["context_max"] or ctx < cfg["min_context"]:
-            continue
-        for name, factor in cfg["kv_types"]:
-            fit, why = _fit(res, cfg, m, q, ctx, name, factor)
-            if fit:
-                fits.append(fit)
-                break
-            reason = why
-    if not fits:
-        return None, reason or "no context size fits"
-    for floor in (cfg["comfort_tok_s"], cfg["min_tok_s"]):
-        usable = [f for f in fits if f["kv_share"] <= cfg["plentiful_kv_share"] or f["tok_full"] >= floor]
-        if usable:
-            best = max(f["tok_empty"] for f in usable)
-            return next(f for f in usable if f["tok_empty"] >= cfg["speed_keep"] * best), ""
-    return min(fits, key=lambda f: f["settings"]["context"]), ""
+    The KV cache is `q8_0`, or `q4_0` if only that lets the window fit. A window that would push a machine with a GPU into
+    CPU-only mode is passed over while a smaller one keeps the GPU in use. `cap` limits the window (used to judge quants at
+    a standard window). Nothing else decides the window: it is capacity, and what it costs in speed is reported."""
+    reason = ""
+    for gpu_only in ((True, False) if res["gpu"] else (False,)):   # keep the GPU in use if any window allows it
+        for ctx in cfg["contexts"]:
+            if ctx > m["context_max"] or ctx < cfg["min_context"] or (cap and ctx > cap):
+                continue
+            for name, factor in cfg["kv_types"]:
+                fit, why = _fit(res, cfg, m, q, ctx, name, factor)
+                if fit and not (gpu_only and fit["mode"] == "cpu"):
+                    return fit, ""
+                reason = why or reason
+    return None, reason or "no context size fits"
 
 
 def _pick_quant(res, cfg, m, forced=None):
     qs = sorted(m["quants"], key=lambda q: q["quality"])
     by_id = {q["id"]: q for q in qs}
     fits = {}
-    for q in qs:
-        fit, why = _best_fit(res, cfg, m, q)
-        fits[q["id"]] = (fit, why)
+    for q in qs:                                   # judged at a standard window, so a huge window never forces a worse quant
+        fits[q["id"]] = _best_fit(res, cfg, m, q, cap=cfg["reference_context"])
     comfort, floor = cfg["comfort_tok_s"], cfg["min_tok_s"]
     ok = lambda q, thr: fits[q["id"]][0] and fits[q["id"]][0]["tok_s"] >= thr       # noqa: E731
     default = by_id[m["default_quant"]]
@@ -229,10 +218,11 @@ def _pick_quant(res, cfg, m, forced=None):
                 return {"model": m, "fit": None, "reason": fits[qs[0]["id"]][1], "quant": None, "alts": []}
             chosen = max(feasible, key=lambda q: fits[q["id"]][0]["tok_s"])
             why = "nothing reaches the minimum speed; this is the fastest that fits"
-    fit = fits[chosen["id"]][0]
+    fit = fits[chosen["id"]][0]                    # speed comparisons between models use this (reference window)
+    window, _ = _best_fit(res, cfg, m, chosen)     # the plan uses the largest window memory allows for the chosen quant
     alts = [{"model": m["id"], "quant": q["id"], "tok_s": round(fits[q["id"]][0]["tok_s"], 1)}
             for q in reversed(qs) if q is not chosen and ok(q, floor)]
-    return {"model": m, "quant": chosen, "fit": fit, "why": why, "alts": alts, "reason": ""}
+    return {"model": m, "quant": chosen, "fit": fit, "window": window or fit, "why": why, "alts": alts, "reason": ""}
 
 
 def plan(hw, catalog, *, config=None, model=None, quant=None):
@@ -257,7 +247,8 @@ def plan(hw, catalog, *, config=None, model=None, quant=None):
         return {"ok": False, "reasons": [f"no model in the catalog fits this machine ({why})"],
                 "backend_candidates": backends, "needs_probe": probe}
     best = max(pool, key=lambda p: (p["model"]["capability"], p["quant"]["quality"]))
-    fit, mid = best["fit"], best["fit"]["tok_s"]
+    fit = best["window"]
+    mid = fit["tok_s"]
     lo, hi = cfg["uncertainty"]
     warnings = []
     if mid < floor:

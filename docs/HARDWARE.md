@@ -91,13 +91,13 @@ modest choice is made and the user is told why.
 
 1. **Reserves.** RAM: `max(4 GiB, 15%)` stays free for the system and desktop. VRAM: 1.5 GiB stays free on a GPU that
    drives a display (0.5 GiB on a headless one), on top of what the desktop already uses.
-2. **Context.** The windows that fit in memory (16k to the model's maximum, KV cache `q8_0`, then `q4_0` if tight) are
-   offered if memory is plentiful for them (the KV cache takes at most 10% of the memory it lives in: the window is capacity
-   and you pay speed only when you fill it) **or** if generation stays comfortable (20 tok/s) when the window is full. The
-   largest offered window wins, unless it costs more than 8% of the empty-window speed (for example by pushing experts out
-   of VRAM). So a dual-socket server with 256 GB gets the model's full window, a 12 GB GPU gets what its VRAM can afford
-   without starving the experts, and the card shows what a full window would cost. You can always ask for more.
-   (Our tuned CUDA fork with `turbo3` KV runs 200k.)
+2. **Context.** The window is decided by memory and nothing else: the largest one the model supports that fits in VRAM and
+   RAM after the reserves (KV cache `q8_0`, or `q4_0` if only that lets it fit), as long as the GPU stays in use (a window
+   so large that the KV cache would push a small GPU out of the picture is passed over). It is capacity; what a fuller window costs
+   in speed is shown, not used to shrink it, and you can ask for a smaller one. Models and quants are compared at a standard
+   64k window first and the window is then enlarged for the chosen quant, so a huge window never forces a worse quant. A
+   dual-socket server with 256 GB gets the full window; a 12 GB GPU gets the full window too, at the price of keeping
+   fewer experts in VRAM (more layers go to RAM), which the card shows as a lower speed.
 3. **Quant.** Each model has a tested `default_quant`. If it fits and reaches the comfortable speed (20 tok/s) it is taken,
    and a higher-quality quant is taken only if it still reaches 1.5x that speed. If the default is too slow or does not
    fit, the next smaller quants are tried, first for comfortable speed and then for the 15 tok/s minimum.
