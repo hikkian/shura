@@ -6,7 +6,7 @@
 </picture>
 
 **A fully local AI coding workstation: a 35B MoE model at 200k context on a single 12 GB GPU,
-~40 tok/s decode — without slowing down the desktop you work on.**
+35–40 tok/s decode — without slowing down the desktop you work on.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
@@ -44,10 +44,15 @@ It contains:
 - a **tuned llama.cpp build recipe** that took decode at real 187k context from 26 to ~40 tok/s;
 - a **fix for TurboQuant KV quantization** on head_dim-256 models, which otherwise crashes or
   silently returns wrong answers;
+- **persistent context checkpoints** for hybrid (Gated DeltaNet) models: a port of the upstream fix for
+  [llama.cpp #25913](https://github.com/ggml-org/llama.cpp/issues/25913) with an integrity hash. After a
+  model unload the session is restored in about a second (plus the model load) instead of re-reading the whole context (opt-in,
+  `patches/slot-checkpoints.patch`);
 - an **agentic MoE routing profile** that decides which experts live in VRAM, built from generated
   tokens of realistic agent sessions;
 - a small **AI gateway** that loads the model on demand, switches text/vision automatically,
-  survives crashes, and keeps session state in RAM so the SSD is barely written;
+  survives crashes, and keeps session state in RAM so the SSD is barely written. An opt-in guard can also
+  hand VRAM back to the desktop by parking the session in RAM;
 - a hands-on **comparison of four agent harnesses**, and **[ShuraCode](https://github.com/hikkian/shuracode)**, the coding agent
   built on the winner (OpenCode): offline, with permanent memory;
 - **reproducible benchmark scripts** for every number below, including the ideas that did not work.
@@ -73,12 +78,22 @@ described in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 | Cold prefill | 264 s |
 | Switch back after other sessions (RAM prompt cache) | **1.9 s** |
 | After a full model unload/reload (slot restored from disk) | **13 s** |
+| Same, when the next prompt rewrites the previous turn (as agents do): without checkpoints | ~290 s (full re-read) |
+| Same, with persisted context checkpoints (opt-in) | **~1 s restore + ~30 new tokens** |
 
 | Desktop impact during generation | |
 |---|---:|
 | UI scheduler latency, p99 (idle desktop: 0.1-0.5 ms) | 0.1-0.3 ms |
 | Free RAM with a browser, IDE and messenger open | ~12.5 GB of 32 GB |
 | CPU threads used by the model | 6 of 12, at lower priority |
+
+**Under real desktop load the numbers above need a caveat.** 24 expert slots take about 10.9 GB of the
+12 GB card. On a desktop that also runs a browser, a messenger and a video call, free VRAM can drop below
+150 MiB (the desktop's GPU memory moves by ±270 MiB, the lock screen alone takes ~350 MiB), so on such a
+machine the stable setting today is 12-16 slots and **34-37 tok/s** at 187k (measured, see
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)). One busy CPU core costs another 6-7%. A cache that resizes itself
+at runtime to keep both the speed and the desktop comfortable is in development (see
+[Status](#status-and-roadmap)).
 
 ## How it works
 
@@ -113,8 +128,23 @@ slots instead of 16. The gateway's design is described in **[docs/ARCHITECTURE.m
 - **Many popular tricks did not transfer** to a 12 GB card at 200k context: all experts on CPU with a
   large cache, prefetch/host-register env vars, larger ubatch, quantized MTP draft cache. Each is
   measured in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+- **Hybrid models need context checkpoints, and slot save/restore does not keep them.** Without them, any
+  change in the prompt prefix (an agent re-rendering the previous turn) forces a full re-read: ~290 s at
+  187k. Saving the checkpoints in the slot file brings it down to ~30 new tokens.
+- **The desktop is not constant.** Its GPU memory swings by hundreds of MiB (calls, video, the lock screen)
+  and one busy CPU core costs 6-7% of decode speed, so a fixed split cannot be both fast and safe.
 - **Saving KV slots to disk after every response** would write up to ~640 GB/day in agentic use. The
   gateway keeps sessions in RAM and writes one file only when the model is unloaded.
+
+## Status and roadmap
+
+- **Shipped:** the tuned llama.cpp build, the on-demand gateway, the routing profile, the installer and
+  ShuraCode.
+- **Opt-in, off by default until soak-tested:** persistent context checkpoints (`slotSaveCheckpoints`) and
+  the VRAM guard (`vramGuard`), which yields VRAM to the desktop under pressure and keeps the session in RAM.
+- **In development:** an elastic expert cache that resizes itself at runtime, and a controller that keeps free
+  VRAM for the desktop (including the lock screen and calls) without dropping the speed.
+- **Wanted:** measured results on other GPUs, distributions and desktops.
 
 ## Quick start
 
@@ -165,7 +195,7 @@ repository, **[hikkian/shuracode](https://github.com/hikkian/shuracode)**, and t
 | | Tested |
 |---|---|
 | OS | Fedora 44, kernel 7.2, x86_64 |
-| Desktop | GNOME Shell 50 on Wayland |
+| Desktop | KDE Plasma on Wayland (earlier measurements: GNOME Shell 50) |
 | Terminal | Ghostty 1.3 |
 | GPU / driver | NVIDIA RTX 4070 SUPER 12 GB, driver 615.71 (RPM Fusion), CUDA 13.4 |
 | CPU / RAM | AMD Ryzen 5 5600, 32 GB DDR4-3200 |
@@ -174,7 +204,7 @@ repository, **[hikkian/shuracode](https://github.com/hikkian/shuracode)**, and t
 **Not tested on real systems:**
 - other distributions: the installer's package and CUDA-repository steps were checked in Ubuntu 24.04,
   Debian 12 and Arch containers only; a full fresh install has not been run anywhere else yet;
-- KDE, XFCE and tiling WMs;
+- XFCE and tiling WMs; GNOME was used for the earlier measurements but was not re-checked since the switch to KDE;
 - terminals other than Ghostty: launch commands for 11 other terminals were checked in dry-run only;
 - the `kdialog`/`yad` folder dialogs;
 - other GPUs: all numbers above are specific to a 12 GB card, and other cards will need re-tuning (see
@@ -207,7 +237,7 @@ installer/   hardware planner, GGUF header reader, model download, auto-tune
 tests/       installer unit tests + distro package test (containers)
 gateway/     ai_gateway.py - on-demand llama-server manager + OpenAI-compatible proxy (stdlib only)
 config/      example configs + agentic MoE routing profile for Tiel-Coder
-patches/     TurboQuant head_dim-256 fix for the perf fork
+patches/     TurboQuant head_dim-256 fix and persistent slot checkpoints for the perf fork
 scripts/     shura (daily CLI), build-llama.sh, install.sh, capture-moe-trace.sh
 desktop/     app-menu launcher template
 assets/      logo (light/dark), app icons 16-512 px, social preview, source artwork
