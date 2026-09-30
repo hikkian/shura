@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Core i5-12400",
+    "physical_cores": 6,
+    "logical_cores": 12,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 34359738368,
+    "available": 20615843020,
+    "bandwidth_gbs": 45
+  },
+  "gpus": [
+    {
+      "vendor": "intel",
+      "name": "Arc A770 16GB",
+      "vram_total": 17179869184,
+      "vram_used": 734003200,
+      "bandwidth_gbs": 560,
+      "driver": null,
+      "backends": [
+        "sycl",
+        "vulkan",
+        "openvino"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

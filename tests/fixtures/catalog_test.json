@@ -1,0 +1,228 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "id": "tiel-coder-35b-a3b-mtp",
+      "name": "Tiel-Coder 35B-A3B (MTP)",
+      "arch": "qwen35moe",
+      "kind": "moe",
+      "params_total_b": 35,
+      "params_active_b": 3,
+      "n_layers": 40,
+      "n_experts": 256,
+      "experts_used": 8,
+      "expert_active_fraction": 0.3,
+      "context_max": 262144,
+      "kv_bytes_per_token_f16": 20480,
+      "capability": 10,
+      "default_quant": "IQ4_XS",
+      "license": "see the model card",
+      "features": [
+        "mtp",
+        "vision"
+      ],
+      "source": {
+        "hf_repo": "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP",
+        "file_pattern": "Tiel-Coder-35B-A3B-MTP-UD-{quant}.gguf"
+      },
+      "quants": [
+        {
+          "id": "Q2_K_XL",
+          "file_bytes": 12680052576,
+          "nonexpert_bytes": 1795305984,
+          "quality": 1
+        },
+        {
+          "id": "IQ3_XXS",
+          "file_bytes": 13600579424,
+          "nonexpert_bytes": 2134921728,
+          "quality": 2
+        },
+        {
+          "id": "Q3_K_XL",
+          "file_bytes": 17234935648,
+          "nonexpert_bytes": 2598384128,
+          "quality": 3
+        },
+        {
+          "id": "IQ4_XS",
+          "file_bytes": 18119933792,
+          "nonexpert_bytes": 2598384128,
+          "quality": 4
+        },
+        {
+          "id": "Q4_K_XL",
+          "file_bytes": 22749880160,
+          "nonexpert_bytes": 2721550848,
+          "quality": 5
+        },
+        {
+          "id": "Q5_K_XL",
+          "file_bytes": 26981932896,
+          "nonexpert_bytes": 2721550848,
+          "quality": 6
+        }
+      ],
+      "tested": [
+        {
+          "hardware": "RTX 4070 SUPER 12 GB, Ryzen 5 5600, 32 GB DDR4-3200, Fedora 44",
+          "quant": "IQ4_XS",
+          "backend": "cuda (Shura CUDA fork, expert cache, turbo3 KV)",
+          "result": "34-39 tok/s decode at ~187k context",
+          "date": "2026-09-30"
+        }
+      ]
+    },
+    {
+      "id": "test-moe-120b-a5b",
+      "name": "Synthetic MoE 120B-A5B",
+      "arch": "synthetic",
+      "kind": "moe",
+      "params_total_b": 120,
+      "params_active_b": 5,
+      "n_layers": 36,
+      "n_experts": 128,
+      "experts_used": 8,
+      "expert_active_fraction": 0.4,
+      "context_max": 131072,
+      "kv_bytes_per_token_f16": 18432,
+      "capability": 20,
+      "default_quant": "Q4",
+      "license": "test",
+      "features": [],
+      "source": {
+        "hf_repo": "test/synthetic",
+        "file_pattern": "m-{quant}.gguf"
+      },
+      "quants": [
+        {
+          "id": "Q3",
+          "file_bytes": 55000000000,
+          "nonexpert_bytes": 5000000000,
+          "quality": 1
+        },
+        {
+          "id": "Q4",
+          "file_bytes": 72000000000,
+          "nonexpert_bytes": 6000000000,
+          "quality": 2
+        },
+        {
+          "id": "Q6",
+          "file_bytes": 100000000000,
+          "nonexpert_bytes": 8000000000,
+          "quality": 3
+        }
+      ],
+      "tested": []
+    },
+    {
+      "id": "test-moe-235b-a22b",
+      "name": "Synthetic MoE 235B-A22B",
+      "arch": "synthetic",
+      "kind": "moe",
+      "params_total_b": 235,
+      "params_active_b": 22,
+      "n_layers": 94,
+      "n_experts": 128,
+      "experts_used": 8,
+      "expert_active_fraction": 0.85,
+      "context_max": 131072,
+      "kv_bytes_per_token_f16": 49152,
+      "capability": 30,
+      "default_quant": "Q4",
+      "license": "test",
+      "features": [],
+      "source": {
+        "hf_repo": "test/synthetic",
+        "file_pattern": "b-{quant}.gguf"
+      },
+      "quants": [
+        {
+          "id": "Q2",
+          "file_bytes": 85000000000,
+          "nonexpert_bytes": 8000000000,
+          "quality": 1
+        },
+        {
+          "id": "Q4",
+          "file_bytes": 135000000000,
+          "nonexpert_bytes": 12000000000,
+          "quality": 2
+        }
+      ],
+      "tested": []
+    },
+    {
+      "id": "test-dense-8b",
+      "name": "Synthetic dense 8B",
+      "arch": "synthetic",
+      "kind": "dense",
+      "params_total_b": 8,
+      "params_active_b": 8,
+      "n_layers": 32,
+      "context_max": 131072,
+      "kv_bytes_per_token_f16": 131072,
+      "capability": 2,
+      "default_quant": "Q4",
+      "license": "test",
+      "features": [],
+      "source": {
+        "hf_repo": "test/synthetic",
+        "file_pattern": "d-{quant}.gguf"
+      },
+      "quants": [
+        {
+          "id": "Q4",
+          "file_bytes": 4900000000,
+          "nonexpert_bytes": 600000000,
+          "quality": 1
+        },
+        {
+          "id": "Q8",
+          "file_bytes": 8500000000,
+          "nonexpert_bytes": 900000000,
+          "quality": 2
+        }
+      ],
+      "tested": []
+    },
+    {
+      "id": "test-moe-8b-a1b",
+      "name": "Synthetic MoE 8B-A1B",
+      "arch": "synthetic",
+      "kind": "moe",
+      "params_total_b": 8,
+      "params_active_b": 1.5,
+      "n_layers": 16,
+      "n_experts": 64,
+      "experts_used": 8,
+      "expert_active_fraction": 0.6,
+      "context_max": 131072,
+      "kv_bytes_per_token_f16": 16384,
+      "capability": 3,
+      "default_quant": "Q4",
+      "license": "test",
+      "features": [],
+      "source": {
+        "hf_repo": "test/synthetic",
+        "file_pattern": "s-{quant}.gguf"
+      },
+      "quants": [
+        {
+          "id": "Q4",
+          "file_bytes": 5000000000,
+          "nonexpert_bytes": 1200000000,
+          "quality": 1
+        },
+        {
+          "id": "Q8",
+          "file_bytes": 8600000000,
+          "nonexpert_bytes": 2000000000,
+          "quality": 2
+        }
+      ],
+      "tested": []
+    }
+  ]
+}

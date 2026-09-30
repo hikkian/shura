@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "macos",
+    "arch": "arm64"
+  },
+  "cpu": {
+    "model": "Apple M2 Max",
+    "physical_cores": 12,
+    "logical_cores": 12,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 68719476736,
+    "available": 41231686041,
+    "bandwidth_gbs": 400
+  },
+  "gpus": [
+    {
+      "vendor": "apple",
+      "name": "Apple M2 Max",
+      "vram_total": 68719476736,
+      "vram_used": 0,
+      "bandwidth_gbs": 400,
+      "driver": null,
+      "backends": [
+        "metal"
+      ],
+      "unified": true,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

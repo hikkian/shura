@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "AMD EPYC 7551 x2",
+    "physical_cores": 64,
+    "logical_cores": 128,
+    "flags": [],
+    "numa_nodes": 8
+  },
+  "memory": {
+    "total": 549755813888,
+    "available": 329853488332,
+    "bandwidth_gbs": 180
+  },
+  "gpus": [],
+  "disk": {
+    "free": 536870912000
+  }
+}

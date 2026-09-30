@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "AMD Ryzen 5 5600",
+    "physical_cores": 6,
+    "logical_cores": 12,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 34359738368,
+    "available": 20615843020,
+    "bandwidth_gbs": 35
+  },
+  "gpus": [
+    {
+      "vendor": "nvidia",
+      "name": "RTX 4070 SUPER",
+      "vram_total": 12884901888,
+      "vram_used": 734003200,
+      "bandwidth_gbs": 504,
+      "driver": null,
+      "backends": [
+        "cuda",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

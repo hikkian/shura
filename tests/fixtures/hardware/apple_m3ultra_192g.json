@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "macos",
+    "arch": "arm64"
+  },
+  "cpu": {
+    "model": "Apple M3 Ultra",
+    "physical_cores": 32,
+    "logical_cores": 32,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 206158430208,
+    "available": 123695058124,
+    "bandwidth_gbs": 800
+  },
+  "gpus": [
+    {
+      "vendor": "apple",
+      "name": "Apple M3 Ultra",
+      "vram_total": 206158430208,
+      "vram_used": 0,
+      "bandwidth_gbs": 800,
+      "driver": null,
+      "backends": [
+        "metal"
+      ],
+      "unified": true,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

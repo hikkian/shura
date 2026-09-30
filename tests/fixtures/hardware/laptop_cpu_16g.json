@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Core i7-1165G7",
+    "physical_cores": 4,
+    "logical_cores": 8,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 17179869184,
+    "available": 10307921510,
+    "bandwidth_gbs": 20
+  },
+  "gpus": [],
+  "disk": {
+    "free": 536870912000
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Ryzen 9 7950X",
+    "physical_cores": 16,
+    "logical_cores": 32,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 68719476736,
+    "available": 41231686041,
+    "bandwidth_gbs": 75
+  },
+  "gpus": [
+    {
+      "vendor": "nvidia",
+      "name": "RTX 4090",
+      "vram_total": 25769803776,
+      "vram_used": 943718400,
+      "bandwidth_gbs": 1008,
+      "driver": null,
+      "backends": [
+        "cuda",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

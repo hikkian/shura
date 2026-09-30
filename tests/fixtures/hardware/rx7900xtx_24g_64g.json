@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Ryzen 9 7900X",
+    "physical_cores": 12,
+    "logical_cores": 24,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 68719476736,
+    "available": 41231686041,
+    "bandwidth_gbs": 70
+  },
+  "gpus": [
+    {
+      "vendor": "amd",
+      "name": "RX 7900 XTX",
+      "vram_total": 25769803776,
+      "vram_used": 838860800,
+      "bandwidth_gbs": 960,
+      "driver": null,
+      "backends": [
+        "rocm",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

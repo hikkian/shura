@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Ryzen AI Max+ 395",
+    "physical_cores": 16,
+    "logical_cores": 32,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 137438953472,
+    "available": 82463372083,
+    "bandwidth_gbs": 200
+  },
+  "gpus": [
+    {
+      "vendor": "amd",
+      "name": "Radeon 8060S (unified)",
+      "vram_total": 118111600640,
+      "vram_used": 0,
+      "bandwidth_gbs": 256,
+      "driver": null,
+      "backends": [
+        "vulkan",
+        "rocm"
+      ],
+      "unified": true,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

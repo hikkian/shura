@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Ryzen 5 3600",
+    "physical_cores": 6,
+    "logical_cores": 12,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 17179869184,
+    "available": 10307921510,
+    "bandwidth_gbs": 38
+  },
+  "gpus": [
+    {
+      "vendor": "nvidia",
+      "name": "RTX 3060 12GB",
+      "vram_total": 12884901888,
+      "vram_used": 629145600,
+      "bandwidth_gbs": 360,
+      "driver": null,
+      "backends": [
+        "cuda",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

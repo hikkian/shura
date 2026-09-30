@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Ryzen 7 7700",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 34359738368,
+    "available": 20615843020,
+    "bandwidth_gbs": 50
+  },
+  "gpus": [
+    {
+      "vendor": "amd",
+      "name": "RX 9070 XT",
+      "vram_total": 17179869184,
+      "vram_used": 838860800,
+      "bandwidth_gbs": 640,
+      "driver": null,
+      "backends": [
+        "rocm",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}
