@@ -8,8 +8,8 @@
 ### A 35B coding model at 200k context on one 12 GB GPU, without taking over your desktop
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Linux-informational)
-![GPU](https://img.shields.io/badge/GPU-NVIDIA%2012%20GB-76B900)
+![Verified](https://img.shields.io/badge/verified-NVIDIA%20%2B%20Linux-76B900)
+![Experimental](https://img.shields.io/badge/experimental-AMD%20%C2%B7%20Intel%20%C2%B7%20Apple%20%C2%B7%20Windows%20%C2%B7%20CPU-orange)
 ![Python](https://img.shields.io/badge/gateway-stdlib%20Python-3776AB)
 [![CI](https://github.com/hikkian/shura/actions/workflows/ci.yml/badge.svg)](https://github.com/hikkian/shura/actions/workflows/ci.yml)
 
@@ -172,7 +172,7 @@ slots (not faster at equal depth) · more than 24 expert slots at 200k context (
 | Persistent context checkpoints (`slotSaveCheckpoints`) | Implemented and accepted in tests; **opt-in**, off by default |
 | VRAM guard (`vramGuard`): park the session in RAM under VRAM pressure | Implemented and accepted in tests; **opt-in**, off by default |
 | Elastic expert cache that resizes itself at runtime | **In development.** A CUDA virtual-memory prototype can return VRAM to the card in milliseconds; quality validation is not finished and it is not part of a release |
-| Universal planner (`shura check`, `shura report`, backend self-test) | Implemented and unit-tested on described machines; wiring into the installer is next |
+| Universal installer (`shura install`) for AMD, Intel, Apple, Windows and CPU-only machines | **Experimental, not yet run on that hardware.** Unit-tested and exercised against fake servers; see [what is verified](#what-is-verified-and-what-is-not) |
 | Faster attention at 187k | **Being investigated**: profiling shows attention takes about half of the GPU time at that depth |
 
 ## Quick start
@@ -240,13 +240,47 @@ if nothing works it leaves a report without personal data and keeps the download
   CPU-only does not mean small models: a many-channel server can run models no 12 GB card can hold.
 - **Backends:** NVIDIA (CUDA, Vulkan), AMD (ROCm or Vulkan, whichever measures faster), Intel (SYCL, Vulkan, OpenVINO),
   Apple (Metal), or the CPU. The prebuilt llama.cpp builds are used, nothing is compiled on your machine.
-- **Honest status:** the planner and the install flow are unit-tested on described machines and against a fake server
-  (AMD, Intel, Apple, dual-socket servers and more), and CI downloads and runs real llama.cpp builds on Linux, macOS and
-  Windows runners, but only NVIDIA on Linux has been verified end to end on real hardware with the real model. Your first
-  run on other hardware is a test for everyone: please send the report.
 
-How the decision is made: **[docs/HARDWARE.md](docs/HARDWARE.md)**. To add your hardware, a model or a backend (a report
-is enough): **[CONTRIBUTING-hardware.md](CONTRIBUTING-hardware.md)**.
+### What is verified, and what is not
+
+> [!WARNING]
+> **Only one machine has ever run Shura for real** (RTX 4070 SUPER 12 GB, Ryzen 5 5600, 32 GB DDR4, Fedora 44). Everything
+> else below is written, tested in software and believed to work, but **nobody has run it on that hardware yet**. You may
+> be the first, and your result is the most useful thing you can send.
+
+| Your machine | How it is installed | State |
+|---|---|---|
+| NVIDIA, Linux, 12 GB VRAM + 32 GB RAM | `setup.sh` (our CUDA fork) | **Verified** on the author's machine |
+| NVIDIA, Linux, other sizes (8, 16, 24 GB; 16 GB RAM) | `setup.sh` | **Unverified.** The plan is computed from a model fitted to one machine |
+| AMD (ROCm or Vulkan), Intel (SYCL, Vulkan, OpenVINO) | `shura install` | **Unverified on real GPUs** |
+| Apple Silicon (Metal) | `shura install` | **Unverified** |
+| Windows (any GPU, or CPU) | `shura install` | **Unverified**; only unit tests and CI runners |
+| CPU-only, including many-channel servers | `shura install` | **Unverified**; speed predictions are least certain here |
+
+What is checked automatically on every commit (CI): unit tests on Linux, macOS and Windows; the real llama.cpp CPU build
+is downloaded and run on a 19 MB model on all three; the Vulkan build runs on a software driver (experimental); the
+flags `shura install` passes to `llama-server` were checked against the real `--help` of the pinned release (b11301).
+
+What **no one has checked**: a real GPU other than the author's; loading the real 17 GB model on other hardware; the speed
+predictions (estimates, fitted to one machine, shown as a range, and the plan is tested by really starting the server);
+Windows start/stop of the server; a load slower than 15 minutes (the installer gives up waiting).
+
+### Help us check it
+
+1. `./scripts/shura check` and look at the plan: does it make sense for your machine?
+2. `./scripts/shura install --dry-run`, then `./scripts/shura install`.
+3. Open a **[Hardware report](https://github.com/hikkian/shura/issues/new?template=hardware_report.md)** issue whichever way
+   it went. `./scripts/shura report --issue` prints a pre-filled link; the report has no names, paths or IDs and nothing is
+   sent until you press the button on GitHub.
+   - **It worked:** say the speed you really saw (tokens/s) and the context size. The report already has what we predicted;
+     the gap between the two is how the predictions get fixed.
+   - **It did not:** attach `logs/verify.log` from the Shura folder (`~/.local/share/shura`, `~/Library/Application
+     Support/shura` or `%LOCALAPPDATA%\shura`) and say where it stopped. A failed install is as useful as a successful one.
+   - **You fixed it yourself:** describe what was wrong and send the change.
+4. A machine class moves from *unverified* to *verified* in the table above when a report with a real measurement arrives.
+
+How the decision is made: **[docs/HARDWARE.md](docs/HARDWARE.md)**. To add your hardware, a model or a backend:
+**[CONTRIBUTING-hardware.md](CONTRIBUTING-hardware.md)**.
 
 ## Tested environment and limits
 

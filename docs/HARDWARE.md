@@ -165,12 +165,17 @@ value with data.
 
 ## Status of each platform
 
-| Platform | State |
-|---|---|
-| NVIDIA, Linux (our CUDA fork) | **Verified** on one machine (RTX 4070 SUPER, Fedora 44) |
-| NVIDIA, Linux, upstream build | Planner tested on described machines; awaiting reports |
-| AMD (ROCm, Vulkan), Intel (SYCL, Vulkan, OpenVINO), Apple (Metal), CPU-only servers | Planner tested on described machines; awaiting reports |
-| Windows, macOS | Detection code is tested on fixtures only; the gateway still targets Linux (WSL2 is the path on Windows) |
+Same table as the [README](../README.md#what-is-verified-and-what-is-not). Only the first row has ever run for real.
+
+| Platform | Installed by | State |
+|---|---|---|
+| NVIDIA, Linux, 12 GB VRAM + 32 GB RAM (our CUDA fork) | `setup.sh` | **Verified** on one machine (RTX 4070 SUPER, Fedora 44) |
+| NVIDIA, Linux, other sizes | `setup.sh` | Unverified: the fork-tier speed model is fitted to that one machine |
+| AMD (ROCm, Vulkan), Intel (SYCL, Vulkan, OpenVINO), Apple (Metal), CPU-only servers | `shura install` | Unverified on real hardware; planner and install flow unit-tested on described machines and a fake server; the CPU build of llama.cpp is downloaded and run in CI |
+| Windows | `shura install` | Unverified; unit tests and CI runners only (the gateway and ShuraCode setup still target Linux) |
+
+A class becomes *verified* when a hardware report with a real measurement arrives: the gap between the predicted and the
+measured speed is what corrects the constants above.
 
 ## Adding your hardware or a model
 
