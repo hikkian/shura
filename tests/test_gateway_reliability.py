@@ -148,7 +148,7 @@ class GuardReliability(fixtures.GatewayGuard):
 
     def test_checkpoint_pending_after_gateway_crash_is_cleaned(self):
         self.gw.RAM_SLOT_DIR = None
-        self.gw.G['vramPressureSlotDir'] = str(self.root)
+        self.gw.G['vramPressureSlotDir'] = str(self.shm_root)
         root = self.gw.prepare_ram_slot_dir()
         for name in ('active.pending.bin', 'checkpoint.json.tmp'):
             (root / name).write_bytes(b'partial')

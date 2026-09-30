@@ -35,6 +35,10 @@ class GatewayGuard(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="shura-guard-test-", dir="/tmp")
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # tests that need a verified tmpfs use /dev/shm: /tmp is a disk on many CI runners
+        self.shm = tempfile.TemporaryDirectory(prefix="shura-guard-shm-", dir="/dev/shm")
+        self.addCleanup(self.shm.cleanup)
+        self.shm_root = Path(self.shm.name)
         self.disk = self.root / "disk"
         self.disk.mkdir()
         self.ram = self.root / "ram"
@@ -324,7 +328,7 @@ class GatewayGuard(unittest.TestCase):
 
     def test_gateway_restart_finds_ram_checkpoint(self):
         self.gw.RAM_SLOT_DIR = None
-        self.gw.G["vramPressureSlotDir"] = str(self.root)
+        self.gw.G["vramPressureSlotDir"] = str(self.shm_root)
         self.ram = self.gw.prepare_ram_slot_dir()
         self.yield_model()
         self.gw.RAM_SLOT_DIR = None
@@ -337,7 +341,7 @@ class GatewayGuard(unittest.TestCase):
 
     def test_incompatible_checkpoint_is_not_restored_after_restart(self):
         self.gw.RAM_SLOT_DIR = None
-        self.gw.G["vramPressureSlotDir"] = str(self.root)
+        self.gw.G["vramPressureSlotDir"] = str(self.shm_root)
         self.ram = self.gw.prepare_ram_slot_dir()
         self.yield_model()
         metadata = self.ram / "checkpoint.json"
@@ -428,10 +432,10 @@ class GatewayGuard(unittest.TestCase):
         self.gw.G["vramPressureSlotDir"] = "/proc"  # procfs stays non-tmpfs even in a RAM checkout
         with self.assertRaisesRegex(RuntimeError, "tmpfs"):
             self.gw.prepare_ram_slot_dir()
-        self.gw.G["vramPressureSlotDir"] = str(self.root)
+        self.gw.G["vramPressureSlotDir"] = str(self.shm_root)
         ram = self.gw.prepare_ram_slot_dir()
         self.assertEqual(ram.stat().st_mode & 0o777, 0o700)
-        self.assertTrue(ram.is_relative_to(self.root))
+        self.assertTrue(ram.is_relative_to(self.shm_root))
 
 
 if __name__ == "__main__":
