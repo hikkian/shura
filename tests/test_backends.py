@@ -77,13 +77,13 @@ class BuildsForMachines(unittest.TestCase):
 
 class Verify(unittest.TestCase):
     def test_sha256_check(self):
-        with tempfile.NamedTemporaryFile() as f:
-            f.write(b"hello")
-            f.flush()
+        with tempfile.TemporaryDirectory() as d:                 # not NamedTemporaryFile: Windows cannot reopen an open file
+            path = Path(d) / "f.bin"
+            path.write_bytes(b"hello")
             good = hashlib.sha256(b"hello").hexdigest()
-            self.assertTrue(B.verify_sha256(f.name, "sha256:" + good))
-            self.assertTrue(B.verify_sha256(f.name, good.upper()))
-            self.assertFalse(B.verify_sha256(f.name, "sha256:" + "0" * 64))
+            self.assertTrue(B.verify_sha256(path, "sha256:" + good))
+            self.assertTrue(B.verify_sha256(path, good.upper()))
+            self.assertFalse(B.verify_sha256(path, "sha256:" + "0" * 64))
 
 
 if __name__ == "__main__":

@@ -41,10 +41,10 @@ class Card(unittest.TestCase):
         self.assertIn("RAM", out)
 
     def test_invalid_profile_exits_with_2_and_lists_problems(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
-            json.dump({"schema": 1, "os": {"family": "amiga"}}, f)
-            f.flush()
-            code, _, err = run("check", "--profile", f.name)
+        with tempfile.TemporaryDirectory() as d:                 # not NamedTemporaryFile: Windows cannot reopen an open file
+            path = Path(d) / "bad.json"
+            path.write_text(json.dumps({"schema": 1, "os": {"family": "amiga"}}))
+            code, _, err = run("check", "--profile", str(path))
         self.assertEqual(code, 2)
         self.assertIn("os.family", err)
 
