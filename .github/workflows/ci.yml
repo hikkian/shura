@@ -82,10 +82,17 @@ jobs:
       - name: Install dry run (plan, sizes, disk; downloads nothing)
         run: python installer/universal/cli.py install --dry-run --no-measure
         continue-on-error: true
-      - name: Self-test the CPU build (download + run)
+      - name: Self-test the real llama.cpp build (download + run; Metal on macOS, CPU elsewhere)
+        continue-on-error: ${{ matrix.os == 'macos-latest' }}   # Metal inside a CI VM is not guaranteed; the result is reported
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python installer/universal/cli.py selftest --backend cpu
+          BACKEND: ${{ matrix.os == 'macos-latest' && 'metal' || 'cpu' }}
+        run: |
+          out=$(python installer/universal/cli.py selftest --backend "$BACKEND" 2>&1) && code=0 || code=$?
+          echo "$out"
+          echo "::notice title=selftest $BACKEND exit $code::$(printf '%s' "$out" | tail -c 1500 | sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g')"
+          exit $code
 
   vulkan-software:
     # The Vulkan build, run on Mesa's software Vulkan (lavapipe) as llama.cpp's own CI does: no GPU needed.
