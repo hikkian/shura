@@ -26,6 +26,32 @@ def plan_threads(physical_cores, available_bytes):
     return threads, per
 
 
+def physical_cpu_ids(read=None):
+    """One CPU id per physical core (the lowest id of each SMT sibling group), from Linux sysfs; [] elsewhere.
+    Pinning measurement threads to these avoids two threads sharing one core, whatever the numbering scheme is."""
+    read = read or _read
+    ids, seen = [], set()
+    n = 0
+    while True:
+        text = read(f"/sys/devices/system/cpu/cpu{n}/topology/thread_siblings_list")
+        if text is None:
+            break
+        siblings = text.strip()
+        if siblings not in seen:
+            seen.add(siblings)
+            ids.append(n)
+        n += 1
+    return ids
+
+
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def build(dest_dir):
     cc = next((c for c in ("cc", "gcc", "clang") if shutil.which(c)), None)
     if not cc or not SOURCE.exists():
@@ -46,8 +72,11 @@ def measure(physical_cores, available_bytes, passes=4, timeout=60):
         if not exe:
             return None
         try:
-            r = subprocess.run([str(exe), str(threads), str(per), str(passes)], capture_output=True, text=True,
-                               timeout=timeout)
+            args = [str(exe), str(threads), str(per), str(passes)]
+            ids = physical_cpu_ids()
+            if len(ids) >= threads:
+                args.append(",".join(str(i) for i in ids[:threads]))
+            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.SubprocessError):
             return None
     return parse(r.stdout) if r.returncode == 0 else None

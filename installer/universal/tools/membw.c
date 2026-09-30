@@ -1,7 +1,10 @@
 /* membw: measures sustained RAM read bandwidth (GB/s). One small C file, no dependencies.
- * usage: membw <threads> <mib_per_thread> [passes]
- * Each thread reads its own buffer after touching it itself, so on NUMA machines the memory is local to the core it is
- * pinned to (Linux). Prints one line: "membw_gbs <number>". Built by CI for releases, or by the installer with cc. */
+ * usage: membw <threads> <mib_per_thread> [passes] [cpu,cpu,...]
+ * One contiguous buffer is allocated and touched once, then every thread streams its own slice of it. That is how an
+ * inference engine reads model weights (one big allocation, all threads reading), and it measures clearly higher than
+ * giving each thread a separate allocation (about 40 versus 26 GB/s on the reference machine). The optional CPU list
+ * pins thread i to cpu[i] (Linux); pass one CPU per physical core so that SMT siblings do not share a core.
+ * Prints one line: "membw_gbs <number>". Built by CI for releases, or by the installer with cc. */
 #define _GNU_SOURCE
 #include <pthread.h>
 #include <stdint.h>
@@ -13,7 +16,8 @@
 #include <sched.h>
 #endif
 
-static size_t bytes; static int passes;
+static size_t bytes; static int passes; static int cpus[512]; static int ncpus;
+static uint64_t *shared;
 static volatile uint64_t sink;
 
 /* a small portable barrier (macOS has no pthread_barrier) */
@@ -32,23 +36,25 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
 static void *worker(void *arg) {
     long id = (long)arg;
 #ifdef __linux__
-    cpu_set_t set; CPU_ZERO(&set); CPU_SET((int)id, &set); sched_setaffinity(0, sizeof set, &set);
+    if (ncpus > id) { cpu_set_t set; CPU_ZERO(&set); CPU_SET(cpus[id], &set); sched_setaffinity(0, sizeof set, &set); }
 #endif
-    uint64_t *buf = aligned_alloc(64, bytes);
-    if (!buf) return NULL;
-    memset(buf, 1, bytes);                              /* first touch by the pinned thread */
+    const uint64_t *buf = shared + (size_t)id * (bytes / sizeof(uint64_t));
     size_t n = bytes / sizeof(uint64_t); uint64_t acc = 0;
     barrier_wait(&barrier);
     for (int p = 0; p < passes; p++)
-        for (size_t i = 0; i < n; i += 4) acc += buf[i] + buf[i + 1] + buf[i + 2] + buf[i + 3];
-    sink = acc; free(buf);
+        for (size_t i = 0; i + 3 < n; i += 4) acc += buf[i] + buf[i + 1] + buf[i + 2] + buf[i + 3];
+    sink = acc;
     return NULL;
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) { fprintf(stderr, "usage: membw <threads> <mib_per_thread> [passes]\n"); return 2; }
+    if (argc < 3) { fprintf(stderr, "usage: membw <threads> <mib_per_thread> [passes] [cpu,cpu,...]\n"); return 2; }
     int threads = atoi(argv[1]); bytes = (size_t)atol(argv[2]) << 20; passes = argc > 3 ? atoi(argv[3]) : 4;
-    if (threads < 1 || threads > 512 || bytes < (1u << 20)) return 2;
+    if (threads < 1 || threads > 512 || bytes < (1u << 20) || passes < 1) return 2;
+    if (argc > 4) for (char *t = strtok(argv[4], ","); t && ncpus < 512; t = strtok(NULL, ",")) cpus[ncpus++] = atoi(t);
+    shared = aligned_alloc(4096, bytes * threads);
+    if (!shared) { fprintf(stderr, "membw: out of memory\n"); return 3; }
+    memset(shared, 1, bytes * threads);
     double best = 0;
     for (int rep = 0; rep < 3; rep++) {
         pthread_t th[512]; barrier_init(&barrier, threads + 1);
@@ -59,5 +65,6 @@ int main(int argc, char **argv) {
         if (gbs > best) best = gbs;
     }
     printf("membw_gbs %.2f\n", best);
+    free(shared);
     return 0;
 }

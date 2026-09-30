@@ -22,6 +22,16 @@ class Pure(unittest.TestCase):
             self.assertLessEqual(threads * per * 1024 * 1024, free * 0.25 + threads * 1024 * 1024)
             self.assertLessEqual(per, BW.MAX_MIB_PER_THREAD)
 
+    def test_one_cpu_per_physical_core_whatever_the_numbering(self):
+        # siblings far apart (0,6 / 1,7 ...) as on many AMD and Intel desktops
+        far = {f"/sys/devices/system/cpu/cpu{i}/topology/thread_siblings_list": f"{i % 3},{i % 3 + 3}" for i in range(6)}
+        self.assertEqual(BW.physical_cpu_ids(far.get), [0, 1, 2])
+        # siblings adjacent (0,1 / 2,3 ...)
+        near = {f"/sys/devices/system/cpu/cpu{i}/topology/thread_siblings_list": f"{i - i % 2},{i - i % 2 + 1}"
+                for i in range(6)}
+        self.assertEqual(BW.physical_cpu_ids(near.get), [0, 2, 4])
+        self.assertEqual(BW.physical_cpu_ids(lambda p: None), [])
+
     def test_too_little_free_ram_means_no_measurement(self):
         self.assertIsNone(BW.measure(8, 100 * 1024 * 1024))
 

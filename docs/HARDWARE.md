@@ -22,7 +22,8 @@ backend probe (which build works) ───────────────�
 - **Detect** (per OS, no root): CPU cores and NUMA nodes, RAM, GPUs with VRAM, drivers and the backends that can drive
   them. `llama-server --list-devices` of the downloaded build is the final word on what GPUs exist.
 - **Measure**: RAM bandwidth is measured, never read from a spec (you cannot see XMP, channel count or ranks without
-  root, and the number is what decides the speed).
+  root, and the number is what decides the speed). The helper reads one big buffer from all cores, the way an inference
+  engine reads weights; giving each thread its own allocation measured about a third lower on the reference machine.
 - **Plan** (this page): pure function, no I/O, deterministic.
 - **Probe**: for every backend that could run your GPU, a 10-second self-test on a tiny model; the best working one wins.
   AMD and Intel usually have two candidates (ROCm or Vulkan; SYCL, Vulkan or OpenVINO), and community benchmarks show that
@@ -74,8 +75,9 @@ tok/s          = efficiency / time per token
 **Efficiency constants** (`installer/universal/planner.py`, `DEFAULTS["efficiency"]`): hybrid GPU+CPU MoE 0.30, GPU only 0.50,
 CPU only 0.40, unified 0.45. They absorb everything the pure bandwidth sum ignores: kernel launches, per-layer
 synchronisation, dequantisation, attention over a long context. **They were calibrated on one machine** (RTX 4070
-SUPER, DDR4-3200, about 35 GB/s): the raw bandwidth sum predicts roughly three times the speed stock llama.cpp
-really reaches there (about 26-30 tok/s at 187k context), and 0.30 brings the prediction to about 28. They are
+SUPER, DDR4-3200, about 40 GB/s as measured by the shipped helper): the raw bandwidth sum predicts roughly three
+times the speed stock llama.cpp really reaches there (about 26-30 tok/s at 187k context), and 0.30 brings the
+prediction to about 30. They are
 conservative, and they are meant for *choosing and ranking*. A prediction is shown as a range (0.6x to 1.35x of the
 mid value) and as `low`/`medium` confidence (`low` when bandwidth was not measured, on multi-NUMA machines and on
 unified memory). Calibration on the user's machine is what makes the final decision; if it disagrees strongly, a more
