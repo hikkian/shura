@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import socketserver
 import stat
 import sys
 import tempfile
@@ -31,6 +32,12 @@ def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+class QuickServer(HTTPServer):
+    def server_bind(self):                      # skip the reverse lookup that stalls HTTPServer on some runners (macOS CI)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
 
 
 class FakeHub(BaseHTTPRequestHandler):
@@ -68,7 +75,7 @@ class FakeHub(BaseHTTPRequestHandler):
 class Hub:
     def __init__(self, files, **attrs):
         handler = type("H", (FakeHub,), {"files": files, **attrs})
-        self.srv = HTTPServer(("127.0.0.1", 0), handler)
+        self.srv = QuickServer(("127.0.0.1", 0), handler)
         self.base = f"http://127.0.0.1:{self.srv.server_port}"
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
 

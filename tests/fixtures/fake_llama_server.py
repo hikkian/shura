@@ -3,6 +3,7 @@
 FAKE_MODE=empty answers with an empty text, FAKE_TOK_S sets the reported speed."""
 import json
 import os
+import socketserver
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -35,4 +36,10 @@ class H(BaseHTTPRequestHandler):
                                 "prompt_per_second": 400.0}})
 
 
-HTTPServer(("127.0.0.1", port), H).serve_forever()
+class Server(HTTPServer):
+    def server_bind(self):                      # HTTPServer resolves the host name here, which stalls for ages on some runners
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
+
+
+Server(("127.0.0.1", port), H).serve_forever()
