@@ -65,7 +65,8 @@ tok/s          = 1 / ( time per token / efficiency  +  KV cache in use / (KV mem
 ```
 
 - **The KV cache** is read for every generated token, so a fuller window is slower: the planner reports the speed for an
-  empty, a half-full and a full window (`speed_by_fill`). The KV cache sits in VRAM (or unified memory) when a GPU is used,
+  empty window, for 32k tokens in the window (the level speed and quants are judged at, because a huge window is capacity,
+  not a reason to run a worse model) and for a full window (`speed_by_fill`). The KV cache sits in VRAM (or unified memory) when a GPU is used,
   otherwise in RAM.
 - **MoE on a discrete GPU** keeps attention, shared experts and the KV cache in VRAM and fills what is left with whole
   expert layers (`--n-cpu-moe` = how many layers' experts stay in RAM). The routed experts read per token are split by
@@ -91,11 +92,12 @@ modest choice is made and the user is told why.
 1. **Reserves.** RAM: `max(4 GiB, 15%)` stays free for the system and desktop. VRAM: 1.5 GiB stays free on a GPU that
    drives a display (0.5 GiB on a headless one), on top of what the desktop already uses.
 2. **Context.** The windows that fit in memory (16k to the model's maximum, KV cache `q8_0`, then `q4_0` if tight) are
-   filtered by what you could actually use: only windows where generation is still comfortable (20 tok/s) when the window is
-   **full** are offered (else those above 15 tok/s, else the smallest). The largest offered window wins, unless it costs more than 8%
-   of the empty-window speed (for example by pushing experts out of VRAM). So the window follows your resources: a few
-   tens of thousands of tokens on a slow CPU, hundreds of thousands on a big unified-memory machine. You can always ask
-   for more. (Our tuned CUDA fork with `turbo3` KV runs 200k.)
+   offered if memory is plentiful for them (the KV cache takes at most 10% of the memory it lives in: the window is capacity
+   and you pay speed only when you fill it) **or** if generation stays comfortable (20 tok/s) when the window is full. The
+   largest offered window wins, unless it costs more than 8% of the empty-window speed (for example by pushing experts out
+   of VRAM). So a dual-socket server with 256 GB gets the model's full window, a 12 GB GPU gets what its VRAM can afford
+   without starving the experts, and the card shows what a full window would cost. You can always ask for more.
+   (Our tuned CUDA fork with `turbo3` KV runs 200k.)
 3. **Quant.** Each model has a tested `default_quant`. If it fits and reaches the comfortable speed (20 tok/s) it is taken,
    and a higher-quality quant is taken only if it still reaches 1.5x that speed. If the default is too slow or does not
    fit, the next smaller quants are tried, first for comfortable speed and then for the 15 tok/s minimum.

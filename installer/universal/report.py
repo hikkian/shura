@@ -48,8 +48,9 @@ def card(hw, plan):
               f"  Mode     : {plan['mode']} ({modes[plan['mode']]})",
               f"  Context  : {s['context']} tokens, KV cache {s['kv_type']}",
               f"  Backends : {', '.join(plan['backend_candidates'])}" + (" (measured at install)" if plan["needs_probe"] else ""),
-              f"  Expected : ~{t['mid']:.0f} tok/s with a half-full window (empty {plan['speed_by_fill']['empty']:.0f}, "
-              f"full {plan['speed_by_fill']['full']:.0f}; range {t['low']:.0f}-{t['high']:.0f}), confidence {plan['confidence']}",
+              f"  Expected : ~{t['mid']:.0f} tok/s with {plan['speed_by_fill']['typical_tokens']} tokens in the window "
+              f"(empty {plan['speed_by_fill']['empty']:.0f}, full {plan['speed_by_fill']['full']:.0f}; "
+              f"range {t['low']:.0f}-{t['high']:.0f}), confidence {plan['confidence']}",
               f"  Memory   : RAM {_gib(m['ram_need'])} of {_gib(m['ram_budget'])}"
               + (f" · VRAM {_gib(m['vram_need'])} of {_gib(m['vram_budget'])}" if m["vram_need"] else ""),
               "", "Why"]

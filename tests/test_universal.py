@@ -163,25 +163,34 @@ class Properties(unittest.TestCase):
         self.assertTrue(0 < p["settings"]["ngl"] < 32)
 
     def test_window_is_usable_when_full_and_grows_with_resources(self):
-        comfort = planner.DEFAULTS["comfort_tok_s"]
+        comfort, plentiful = planner.DEFAULTS["comfort_tok_s"], planner.DEFAULTS["plentiful_kv_share"]
         for name in HW:
             for cat in (REAL, SYN):
                 p = plan(name, cat)
                 if p["ok"] and p["speed_by_fill"]["empty"] >= comfort:
-                    # a window is only offered if generation stays comfortable when it is full (or no window can)
-                    self.assertGreaterEqual(p["speed_by_fill"]["full"], comfort - 0.05, (name, p["settings"]["context"]))
+                    # a window is on offer if memory is plentiful for it, or if generation stays comfortable when full
+                    self.assertTrue(p["memory"]["kv_share"] <= plentiful or p["speed_by_fill"]["full"] >= comfort - 0.05,
+                                    (name, p["settings"]["context"], p["memory"]["kv_share"], p["speed_by_fill"]))
         slow, fast = copy.deepcopy(HW["epyc7551x2_512g_cpu"]), copy.deepcopy(HW["epyc7551x2_512g_cpu"])
         slow["memory"]["bandwidth_gbs"], fast["memory"]["bandwidth_gbs"] = 40, 180
         kw = dict(model="tiel-coder-35b-a3b-mtp", quant="IQ4_XS")
         self.assertLessEqual(planner.plan(slow, REAL, **kw)["settings"]["context"],
                              planner.plan(fast, REAL, **kw)["settings"]["context"])
-        self.assertLessEqual(plan("laptop_cpu_16g", SYN)["settings"]["context"], 32768)
         self.assertGreaterEqual(plan("apple_m3ultra_192g")["settings"]["context"], 131072)
+
+    def test_a_big_machine_gets_the_full_window_and_keeps_model_quality(self):
+        # dual EPYC, 256 GB in 16 channels: the window is capacity, not a reason to run a smaller quant
+        for name in ("epyc7551x2_256g_cpu", "epyc7551x2_512g_cpu"):
+            p = plan(name)
+            self.assertEqual(p["settings"]["context"], 262144, name)
+            self.assertEqual(p["quant"], "IQ4_XS", name)
+            self.assertLess(p["memory"]["kv_share"], 0.05)
+            self.assertLess(p["speed_by_fill"]["full"], p["speed_by_fill"]["empty"])   # the price of a full window is shown
 
     def test_speed_falls_as_the_window_fills_and_the_range_is_reported(self):
         by = plan("ref_rtx4070s_12g_32g")["speed_by_fill"]
-        self.assertGreater(by["empty"], by["half"])
-        self.assertGreater(by["half"], by["full"])
+        self.assertGreater(by["empty"], by["typical"])
+        self.assertGreater(by["typical"], by["full"])
 
     def test_deterministic(self):
         self.assertEqual(plan("rx9070xt_16g_32g"), plan("rx9070xt_16g_32g"))

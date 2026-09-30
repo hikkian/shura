@@ -32,6 +32,8 @@ DEFAULTS = {
     "contexts": (262144, 200000, 131072, 65536, 32768, 16384),
     "kv_types": (("q8_0", 0.53), ("q4_0", 0.28)),   # (name, size relative to f16)
     "speed_keep": 0.92,           # the context chosen keeps at least this share of the best predicted (empty-window) speed
+    "typical_fill_tokens": 32768, # the fill level speed is quoted and models/quants are judged at (a long window is capacity)
+    "plentiful_kv_share": 0.10,   # a window whose KV cache takes at most this share of its memory is always on offer
     "bandwidth_fallback_gbs": {"ram": 20.0, "gpu": 150.0},
     "uncertainty": (0.6, 1.35),   # prediction range relative to the mid estimate
 }
@@ -115,8 +117,12 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
         s["numa"] = "distribute" if res["numa_nodes"] > 1 and mode in ("cpu", "hybrid") else None
         base = time_s / eta                                        # seconds per token with an empty window
         kv_bw = (res["gpu_bw"] if mode in ("hybrid", "gpu", "unified") else res["ram_bw"]) * eff["attention"]
-        speed = {fill: 1.0 / (base + fill * kv / kv_bw) if base else 0.0 for fill in (0.0, 0.5, 1.0)}
-        return {"mode": mode, "tok_s": speed[0.5], "tok_empty": speed[0.0], "tok_full": speed[1.0],
+        typical = min(1.0, cfg["typical_fill_tokens"] / ctx)       # share of the window in use in ordinary work
+        speed = {fill: 1.0 / (base + fill * kv / kv_bw) if base else 0.0 for fill in (0.0, typical, 1.0)}
+        pool = (res["pool"] if g and g.get("unified") else res.get("vram_budget", 0)) \
+            if mode in ("hybrid", "gpu", "unified") else res["ram_budget"]
+        return {"mode": mode, "tok_s": speed[typical], "tok_empty": speed[0.0], "tok_full": speed[1.0],
+                "kv_bytes": kv, "kv_share": kv / pool if pool > 0 else 1.0,
                 "ram_need": ram_need, "vram_need": vram_need, "settings": s}, ""
 
     if g and g.get("unified"):                                    # Apple-style unified memory
@@ -159,10 +165,11 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
 def _best_fit(res, cfg, m, q):
     """The context window for one quant, chosen by the machine's resources, else (None, reason).
 
-    Candidates are the windows that fit in memory. Among them only those that still generate at a comfortable speed
-    when the window is FULL are offered (a window you cannot use is not a feature); if none does, those above the
-    minimum speed; if none does either, the smallest window. Of the offered ones the largest wins, unless that costs
-    more than 8% of the empty-window speed (for example by pushing experts out of VRAM)."""
+    Candidates are the windows that fit in memory. A window is offered if memory is plentiful (its KV cache takes at most
+    10% of the memory it lives in: the window is capacity, and you only pay speed when you fill it) or if generation is
+    still comfortable when it is FULL. If nothing qualifies, windows above the minimum speed are tried, then the smallest.
+    Of the offered windows the largest wins, unless that costs more than 8% of the empty-window speed (for example by
+    pushing experts out of VRAM)."""
     fits, reason = [], ""
     for ctx in cfg["contexts"]:
         if ctx > m["context_max"] or ctx < cfg["min_context"]:
@@ -176,7 +183,7 @@ def _best_fit(res, cfg, m, q):
     if not fits:
         return None, reason or "no context size fits"
     for floor in (cfg["comfort_tok_s"], cfg["min_tok_s"]):
-        usable = [f for f in fits if f["tok_full"] >= floor]
+        usable = [f for f in fits if f["kv_share"] <= cfg["plentiful_kv_share"] or f["tok_full"] >= floor]
         if usable:
             best = max(f["tok_empty"] for f in usable)
             return next(f for f in usable if f["tok_empty"] >= cfg["speed_keep"] * best), ""
@@ -269,10 +276,13 @@ def plan(hw, catalog, *, config=None, model=None, quant=None):
         "backend_candidates": backends, "needs_probe": probe,
         "settings": fit["settings"], "mode": fit["mode"],
         "predicted_tok_s": {"low": round(mid * lo, 1), "mid": round(mid, 1), "high": round(mid * hi, 1)},
-        "speed_by_fill": {"empty": round(fit["tok_empty"], 1), "half": round(mid, 1), "full": round(fit["tok_full"], 1)},
+        "speed_by_fill": {"empty": round(fit["tok_empty"], 1), "typical": round(mid, 1),
+                          "full": round(fit["tok_full"], 1), "typical_tokens": min(fit["settings"]["context"],
+                                                                                   cfg["typical_fill_tokens"])},
         "confidence": confidence,
         "memory": {"ram_need": int(fit["ram_need"]), "ram_budget": int(res["ram_budget"]),
-                   "vram_need": int(fit["vram_need"]),
+                   "vram_need": int(fit["vram_need"]), "kv_bytes": int(fit["kv_bytes"]),
+                   "kv_share": round(fit["kv_share"], 3),
                    "vram_budget": int(res.get("vram_budget", res.get("pool", 0)))},
         "reasons": reasons, "warnings": warnings,
         "alternatives": (best["alts"] + [{"model": p["model"]["id"], "quant": p["quant"]["id"],
