@@ -48,7 +48,8 @@ def card(hw, plan):
               f"  Mode     : {plan['mode']} ({modes[plan['mode']]})",
               f"  Context  : {s['context']} tokens, KV cache {s['kv_type']}",
               f"  Backends : {', '.join(plan['backend_candidates'])}" + (" (measured at install)" if plan["needs_probe"] else ""),
-              f"  Expected : ~{t['mid']:.0f} tok/s (range {t['low']:.0f}-{t['high']:.0f}), confidence {plan['confidence']}",
+              f"  Expected : ~{t['mid']:.0f} tok/s with a half-full window (empty {plan['speed_by_fill']['empty']:.0f}, "
+              f"full {plan['speed_by_fill']['full']:.0f}; range {t['low']:.0f}-{t['high']:.0f}), confidence {plan['confidence']}",
               f"  Memory   : RAM {_gib(m['ram_need'])} of {_gib(m['ram_budget'])}"
               + (f" · VRAM {_gib(m['vram_need'])} of {_gib(m['vram_budget'])}" if m["vram_need"] else ""),
               "", "Why"]
@@ -67,7 +68,7 @@ def make_report(hw, plan, *, shura_version="dev", measured=None, errors=None, sc
     safe_hw = {"schema": hw["schema"], "os": hw["os"], "cpu": hw["cpu"], "memory": hw["memory"],
                "gpus": [{k: v for k, v in g.items()} for g in hw["gpus"]],
                "detection_notes": [scrub(n, **scrub_args) for n in hw.get("detection_notes", [])]}
-    keep = ("ok", "model", "model_name", "quant", "mode", "backend_candidates", "settings", "predicted_tok_s", "confidence",
+    keep = ("ok", "model", "model_name", "quant", "mode", "backend_candidates", "settings", "predicted_tok_s", "speed_by_fill", "confidence",
             "warnings", "reasons")
     data = {"kind": "shura-hardware-report", "shura_version": shura_version, "hardware": safe_hw,
             "plan": {k: plan[k] for k in keep if k in plan}, "measured": measured or {},

@@ -61,9 +61,12 @@ Decoding reads the *active* weights once per token, so speed is limited by memor
 ```
 active bytes   = file size x active params / total params            (dense: the whole file)
 time per token = bytes on fast memory / its bandwidth  +  bytes in RAM / RAM bandwidth
-tok/s          = efficiency / time per token
+tok/s          = 1 / ( time per token / efficiency  +  KV cache in use / (KV memory bandwidth x attention efficiency) )
 ```
 
+- **The KV cache** is read for every generated token, so a fuller window is slower: the planner reports the speed for an
+  empty, a half-full and a full window (`speed_by_fill`). The KV cache sits in VRAM (or unified memory) when a GPU is used,
+  otherwise in RAM.
 - **MoE on a discrete GPU** keeps attention, shared experts and the KV cache in VRAM and fills what is left with whole
   expert layers (`--n-cpu-moe` = how many layers' experts stay in RAM). The routed experts read per token are split by
   the share of layers on the GPU.
@@ -73,7 +76,7 @@ tok/s          = efficiency / time per token
   150-250 GB/s runs models that no 12 GB card can hold; the planner only asks what fits and how fast it would be.
 
 **Efficiency constants** (`installer/universal/planner.py`, `DEFAULTS["efficiency"]`): hybrid GPU+CPU MoE 0.30, GPU only 0.50,
-CPU only 0.40, unified 0.45. They absorb everything the pure bandwidth sum ignores: kernel launches, per-layer
+CPU only 0.40, unified 0.45, attention (KV reads) 0.25. They absorb everything the pure bandwidth sum ignores: kernel launches, per-layer
 synchronisation, dequantisation, attention over a long context. **They were calibrated on one machine** (RTX 4070
 SUPER, DDR4-3200, about 40 GB/s as measured by the shipped helper): the raw bandwidth sum predicts roughly three
 times the speed stock llama.cpp really reaches there (about 26-30 tok/s at 187k context), and 0.30 brings the
@@ -87,10 +90,12 @@ modest choice is made and the user is told why.
 
 1. **Reserves.** RAM: `max(4 GiB, 15%)` stays free for the system and desktop. VRAM: 1.5 GiB stays free on a GPU that
    drives a display (0.5 GiB on a headless one), on top of what the desktop already uses.
-2. **Context.** Among the contexts that fit (16k to 256k, KV cache `q8_0`, then `q4_0` if tight) the planner takes the
-   largest one that keeps at least 92% of the best predicted speed, but never above a default cap per mode (CPU-only
-   32k, GPU+RAM 64k, GPU only and unified memory 128k): long contexts slow generation in ways the speed model cannot
-   see, so a bigger window is something you ask for, not something you get by default. (Our tuned CUDA fork runs 200k.)
+2. **Context.** The windows that fit in memory (16k to the model's maximum, KV cache `q8_0`, then `q4_0` if tight) are
+   filtered by what you could actually use: only windows where generation is still comfortable (20 tok/s) when the window is
+   **full** are offered (else those above 15 tok/s, else the smallest). The largest offered window wins, unless it costs more than 8%
+   of the empty-window speed (for example by pushing experts out of VRAM). So the window follows your resources: a few
+   tens of thousands of tokens on a slow CPU, hundreds of thousands on a big unified-memory machine. You can always ask
+   for more. (Our tuned CUDA fork with `turbo3` KV runs 200k.)
 3. **Quant.** Each model has a tested `default_quant`. If it fits and reaches the comfortable speed (20 tok/s) it is taken,
    and a higher-quality quant is taken only if it still reaches 1.5x that speed. If the default is too slow or does not
    fit, the next smaller quants are tried, first for comfortable speed and then for the 15 tok/s minimum.

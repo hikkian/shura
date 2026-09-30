@@ -162,14 +162,26 @@ class Properties(unittest.TestCase):
         self.assertEqual(p["mode"], "hybrid")
         self.assertTrue(0 < p["settings"]["ngl"] < 32)
 
-    def test_default_context_is_capped_per_mode(self):
-        caps = planner.DEFAULTS["context_cap"]
+    def test_window_is_usable_when_full_and_grows_with_resources(self):
+        comfort = planner.DEFAULTS["comfort_tok_s"]
         for name in HW:
             for cat in (REAL, SYN):
                 p = plan(name, cat)
-                if p["ok"]:
-                    self.assertLessEqual(p["settings"]["context"], caps[p["mode"]], (name, p["mode"]))
-        self.assertLessEqual(plan("epyc7551x2_512g_cpu", SYN)["settings"]["context"], 32768)
+                if p["ok"] and p["speed_by_fill"]["empty"] >= comfort:
+                    # a window is only offered if generation stays comfortable when it is full (or no window can)
+                    self.assertGreaterEqual(p["speed_by_fill"]["full"], comfort - 0.05, (name, p["settings"]["context"]))
+        slow, fast = copy.deepcopy(HW["epyc7551x2_512g_cpu"]), copy.deepcopy(HW["epyc7551x2_512g_cpu"])
+        slow["memory"]["bandwidth_gbs"], fast["memory"]["bandwidth_gbs"] = 40, 180
+        kw = dict(model="tiel-coder-35b-a3b-mtp", quant="IQ4_XS")
+        self.assertLessEqual(planner.plan(slow, REAL, **kw)["settings"]["context"],
+                             planner.plan(fast, REAL, **kw)["settings"]["context"])
+        self.assertLessEqual(plan("laptop_cpu_16g", SYN)["settings"]["context"], 32768)
+        self.assertGreaterEqual(plan("apple_m3ultra_192g")["settings"]["context"], 131072)
+
+    def test_speed_falls_as_the_window_fills_and_the_range_is_reported(self):
+        by = plan("ref_rtx4070s_12g_32g")["speed_by_fill"]
+        self.assertGreater(by["empty"], by["half"])
+        self.assertGreater(by["half"], by["full"])
 
     def test_deterministic(self):
         self.assertEqual(plan("rx9070xt_16g_32g"), plan("rx9070xt_16g_32g"))

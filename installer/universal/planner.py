@@ -18,7 +18,9 @@ DEFAULTS = {
     "min_tok_s": 15.0,            # below this a model is not recommended at all
     "comfort_tok_s": 20.0,        # a pick should reach this; otherwise we take the best that reaches min_tok_s
     "upgrade_margin": 1.5,        # a quant above the catalog default needs comfort * margin predicted speed
-    "efficiency": {"hybrid": 0.30, "gpu": 0.50, "cpu": 0.40, "unified": 0.45},
+    # "attention": efficiency of reading the KV cache for every generated token (attention kernels use a fraction of the
+    # bandwidth; ~0.2 measured on the reference GPU at 187k context). It is what makes a long window cost speed.
+    "efficiency": {"hybrid": 0.30, "gpu": 0.50, "cpu": 0.40, "unified": 0.45, "attention": 0.25},
     "os_reserve_min": 4 * GiB,    # RAM kept for the OS, desktop and apps: max(min, frac * total)
     "os_reserve_frac": 0.15,
     "vram_reserve_display": int(1.5 * GiB),   # VRAM kept for the desktop on a GPU that drives a display
@@ -29,10 +31,7 @@ DEFAULTS = {
     "min_context": 16384,
     "contexts": (262144, 200000, 131072, 65536, 32768, 16384),
     "kv_types": (("q8_0", 0.53), ("q4_0", 0.28)),   # (name, size relative to f16)
-    "speed_keep": 0.92,           # the context chosen keeps at least this share of the best predicted speed
-    # Default context per mode. Long contexts slow generation (attention reads the whole KV cache for every token and
-    # the speed model does not see that), so the default stays moderate; the user can ask for more.
-    "context_cap": {"gpu": 131072, "hybrid": 65536, "unified": 131072, "cpu": 32768},
+    "speed_keep": 0.92,           # the context chosen keeps at least this share of the best predicted (empty-window) speed
     "bandwidth_fallback_gbs": {"ram": 20.0, "gpu": 150.0},
     "uncertainty": (0.6, 1.35),   # prediction range relative to the mid estimate
 }
@@ -114,8 +113,11 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
         s["ngl"] = ngl
         s["threads"] = min(res["cores"], 8) if mode in ("hybrid", "gpu", "unified") else res["cores"]
         s["numa"] = "distribute" if res["numa_nodes"] > 1 and mode in ("cpu", "hybrid") else None
-        return {"mode": mode, "tok_s": eta / time_s if time_s else 0.0, "ram_need": ram_need, "vram_need": vram_need,
-                "settings": s}, ""
+        base = time_s / eta                                        # seconds per token with an empty window
+        kv_bw = (res["gpu_bw"] if mode in ("hybrid", "gpu", "unified") else res["ram_bw"]) * eff["attention"]
+        speed = {fill: 1.0 / (base + fill * kv / kv_bw) if base else 0.0 for fill in (0.0, 0.5, 1.0)}
+        return {"mode": mode, "tok_s": speed[0.5], "tok_empty": speed[0.0], "tok_full": speed[1.0],
+                "ram_need": ram_need, "vram_need": vram_need, "settings": s}, ""
 
     if g and g.get("unified"):                                    # Apple-style unified memory
         need = file + kv + cfg["compute_buffer"]
@@ -155,7 +157,12 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
 
 
 def _best_fit(res, cfg, m, q):
-    """Largest context (and cheapest KV type) that fits and keeps most of the best speed; else (None, reason)."""
+    """The context window for one quant, chosen by the machine's resources, else (None, reason).
+
+    Candidates are the windows that fit in memory. Among them only those that still generate at a comfortable speed
+    when the window is FULL are offered (a window you cannot use is not a feature); if none does, those above the
+    minimum speed; if none does either, the smallest window. Of the offered ones the largest wins, unless that costs
+    more than 8% of the empty-window speed (for example by pushing experts out of VRAM)."""
     fits, reason = [], ""
     for ctx in cfg["contexts"]:
         if ctx > m["context_max"] or ctx < cfg["min_context"]:
@@ -163,14 +170,17 @@ def _best_fit(res, cfg, m, q):
         for name, factor in cfg["kv_types"]:
             fit, why = _fit(res, cfg, m, q, ctx, name, factor)
             if fit:
-                if ctx <= cfg["context_cap"].get(fit["mode"], 65536):
-                    fits.append(fit)
+                fits.append(fit)
                 break
             reason = why
     if not fits:
         return None, reason or "no context size fits"
-    best = max(f["tok_s"] for f in fits)
-    return next(f for f in fits if f["tok_s"] >= cfg["speed_keep"] * best), ""
+    for floor in (cfg["comfort_tok_s"], cfg["min_tok_s"]):
+        usable = [f for f in fits if f["tok_full"] >= floor]
+        if usable:
+            best = max(f["tok_empty"] for f in usable)
+            return next(f for f in usable if f["tok_empty"] >= cfg["speed_keep"] * best), ""
+    return min(fits, key=lambda f: f["settings"]["context"]), ""
 
 
 def _pick_quant(res, cfg, m, forced=None):
@@ -259,6 +269,7 @@ def plan(hw, catalog, *, config=None, model=None, quant=None):
         "backend_candidates": backends, "needs_probe": probe,
         "settings": fit["settings"], "mode": fit["mode"],
         "predicted_tok_s": {"low": round(mid * lo, 1), "mid": round(mid, 1), "high": round(mid * hi, 1)},
+        "speed_by_fill": {"empty": round(fit["tok_empty"], 1), "half": round(mid, 1), "full": round(fit["tok_full"], 1)},
         "confidence": confidence,
         "memory": {"ram_need": int(fit["ram_need"]), "ram_budget": int(res["ram_budget"]),
                    "vram_need": int(fit["vram_need"]),
