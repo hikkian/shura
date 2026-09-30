@@ -88,7 +88,9 @@ modest choice is made and the user is told why.
 1. **Reserves.** RAM: `max(4 GiB, 15%)` stays free for the system and desktop. VRAM: 1.5 GiB stays free on a GPU that
    drives a display (0.5 GiB on a headless one), on top of what the desktop already uses.
 2. **Context.** Among the contexts that fit (16k to 256k, KV cache `q8_0`, then `q4_0` if tight) the planner takes the
-   largest one that keeps at least 92% of the best predicted speed. A bigger context is never bought with real speed.
+   largest one that keeps at least 92% of the best predicted speed, but never above a default cap per mode (CPU-only
+   32k, GPU+RAM 64k, GPU only and unified memory 128k): long contexts slow generation in ways the speed model cannot
+   see, so a bigger window is something you ask for, not something you get by default. (Our tuned CUDA fork runs 200k.)
 3. **Quant.** Each model has a tested `default_quant`. If it fits and reaches the comfortable speed (20 tok/s) it is taken,
    and a higher-quality quant is taken only if it still reaches 1.5x that speed. If the default is too slow or does not
    fit, the next smaller quants are tried, first for comfortable speed and then for the 15 tok/s minimum.

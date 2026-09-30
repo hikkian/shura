@@ -220,8 +220,9 @@ really is (measured), how much of it there is, what the GPU has, and which backe
 need no install and no root, and send nothing anywhere:
 
 ```bash
-shura check     # describes your machine and shows what Shura would pick, with a speed estimate
-shura report    # writes an anonymous report you can paste into a GitHub issue
+# from a clone of this repository, nothing to install (`shura check` works the same once Shura is installed):
+./scripts/shura check     # describes your machine and shows what Shura would pick, with a speed estimate
+./scripts/shura report    # writes an anonymous report you can paste into a GitHub issue
 python3 installer/universal/cli.py selftest --backend vulkan   # downloads one llama.cpp build and a 19 MB model, runs it
 ```
 

@@ -30,6 +30,9 @@ DEFAULTS = {
     "contexts": (262144, 200000, 131072, 65536, 32768, 16384),
     "kv_types": (("q8_0", 0.53), ("q4_0", 0.28)),   # (name, size relative to f16)
     "speed_keep": 0.92,           # the context chosen keeps at least this share of the best predicted speed
+    # Default context per mode. Long contexts slow generation (attention reads the whole KV cache for every token and
+    # the speed model does not see that), so the default stays moderate; the user can ask for more.
+    "context_cap": {"gpu": 131072, "hybrid": 65536, "unified": 131072, "cpu": 32768},
     "bandwidth_fallback_gbs": {"ram": 20.0, "gpu": 150.0},
     "uncertainty": (0.6, 1.35),   # prediction range relative to the mid estimate
 }
@@ -160,7 +163,8 @@ def _best_fit(res, cfg, m, q):
         for name, factor in cfg["kv_types"]:
             fit, why = _fit(res, cfg, m, q, ctx, name, factor)
             if fit:
-                fits.append(fit)
+                if ctx <= cfg["context_cap"].get(fit["mode"], 65536):
+                    fits.append(fit)
                 break
             reason = why
     if not fits:

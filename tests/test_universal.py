@@ -162,6 +162,15 @@ class Properties(unittest.TestCase):
         self.assertEqual(p["mode"], "hybrid")
         self.assertTrue(0 < p["settings"]["ngl"] < 32)
 
+    def test_default_context_is_capped_per_mode(self):
+        caps = planner.DEFAULTS["context_cap"]
+        for name in HW:
+            for cat in (REAL, SYN):
+                p = plan(name, cat)
+                if p["ok"]:
+                    self.assertLessEqual(p["settings"]["context"], caps[p["mode"]], (name, p["mode"]))
+        self.assertLessEqual(plan("epyc7551x2_512g_cpu", SYN)["settings"]["context"], 32768)
+
     def test_deterministic(self):
         self.assertEqual(plan("rx9070xt_16g_32g"), plan("rx9070xt_16g_32g"))
 
