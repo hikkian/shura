@@ -64,10 +64,9 @@ time per token = bytes on fast memory / its bandwidth  +  bytes in RAM / RAM ban
 tok/s          = 1 / ( time per token / efficiency  +  KV cache in use / (KV memory bandwidth x attention efficiency) )
 ```
 
-- **The KV cache** is read for every generated token, so a fuller window is slower: the planner reports the speed for an
-  empty window, for 32k tokens in the window (the level speed and quants are judged at, because a huge window is capacity,
-  not a reason to run a worse model) and for a full window (`speed_by_fill`). The KV cache sits in VRAM (or unified memory) when a GPU is used,
-  otherwise in RAM.
+- **The KV cache** is read for every generated token, so a fuller window is slower. The planner judges speed with the
+  **window half full** (a working session, not an empty chat) and also reports the speed for an empty and for a full
+  window (`speed_by_fill`). The KV cache sits in VRAM (or unified memory) when a GPU is used, otherwise in RAM.
 - **MoE on a discrete GPU** keeps attention, shared experts and the KV cache in VRAM and fills what is left with whole
   expert layers (`--n-cpu-moe` = how many layers' experts stay in RAM). The routed experts read per token are split by
   the share of layers on the GPU.
@@ -87,40 +86,79 @@ mid value) and as `low`/`medium` confidence (`low` when bandwidth was not measur
 unified memory). Calibration on the user's machine is what makes the final decision; if it disagrees strongly, a more
 modest choice is made and the user is told why.
 
+## The fork tier (NVIDIA + Linux)
+
+Our CUDA fork adds three things that change both what fits and how fast it runs: the `turbo3` KV cache (about 4 KB per
+token instead of 10 KB for `q8_0`), an **expert cache** (the hottest experts of the layers that stay in RAM are kept in
+VRAM) and MTP (speculative decoding, about x1.32). The planner therefore searches two numbers *together*: how many expert
+layers stay in RAM (`--n-cpu-moe`) and how many cache slots the remaining VRAM pays for. They compete for the same bytes,
+which is why "layers first, cache with what is left" is worse than the joint search.
+
+```
+seconds/token = ( scale x (GPU bytes / GPU bandwidth + RAM bytes / RAM bandwidth) + sync x CPU layers ) / MTP
+                + KV read at depth (turbo3, measured 7.2 ms per token at 187k)
+cache hit rate = slots / (slots + 12)
+```
+
+The constants are fitted to **one** machine and **anchored** on its measurements instead of trusting raw bandwidth:
+ncmoe 26 + 24 slots reaches 54 tok/s near empty and 38.6-39.2 at 187k (`docs/BENCHMARKS.md`), 16 slots cost about 8%, and
+"all experts in RAM + 80-110 slots" was measured *slower* (per-layer synchronisation), which the `sync` term reproduces.
+VRAM is budgeted from the same log: 885 MiB of compute buffers and state, 400 MiB of CUDA context, 6 KB per token of
+window (turbo3 KV plus the f16 KV of the MTP draft) and about 36 MiB per cache slot.
+The search stays near what was measured: at most 24 slots, and a layout that keeps more layers in VRAM than the measured
+machine (fewer than 20 in RAM) is marked *extrapolated* with lower confidence. The prediction only picks candidates;
+calibration on your machine has the last word.
+
 ## Selection policy
 
-1. **Reserves.** RAM: `max(4 GiB, 15%)` stays free for the system and desktop. VRAM: 1.5 GiB stays free on a GPU that
-   drives a display (0.5 GiB on a headless one), on top of what the desktop already uses.
-2. **Context.** The window is decided by memory and nothing else: the largest one the model supports that fits in VRAM and
-   RAM after the reserves (KV cache `q8_0`, or `q4_0` if only that lets it fit), as long as the GPU stays in use (a window
-   so large that the KV cache would push a small GPU out of the picture is passed over). It is capacity; what a fuller window costs
-   in speed is shown, not used to shrink it, and you can ask for a smaller one. Models and quants are compared at a standard
-   64k window first and the window is then enlarged for the chosen quant, so a huge window never forces a worse quant. A
-   dual-socket server with 256 GB gets the full window; a 12 GB GPU gets the full window too, at the price of keeping
-   fewer experts in VRAM (more layers go to RAM), which the card shows as a lower speed.
-3. **Quant.** Each model has a tested `default_quant`. If it fits and reaches the comfortable speed (20 tok/s) it is taken,
-   and a higher-quality quant is taken only if it still reaches 1.5x that speed. If the default is too slow or does not
-   fit, the next smaller quants are tried, first for comfortable speed and then for the 15 tok/s minimum.
-4. **Model.** Among the models that reach the comfortable speed, the most capable one wins; if none does, among those
-   that reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is a refusal
-   with the reason (for example, how much RAM is missing).
-5. **Backends.** NVIDIA: CUDA, then Vulkan. AMD: ROCm and Vulkan. Intel: SYCL, Vulkan and OpenVINO. Apple: Metal. No GPU:
+1. **Reserves.** RAM: `max(6 GiB, 15%)` stays free for the system and desktop (a browser, an IDE and a messenger take about
+   that). VRAM: what the desktop already uses, plus 0.8 GiB (0.3 GiB on a headless GPU).
+2. **Speed target: 35+ tok/s, judged with the window half full.** Three rungs are tried in turn: target 35, comfortable 20,
+   minimum 15 tok/s. Between models the comfortable speed decides (a far more capable model is not given up for a weaker,
+   faster one); the target steers the quant and the window inside one model.
+3. **The window is given up before the quality.** On each rung: first the model's tested default quant with the largest
+   window that reaches the speed, but not below 100k; then the next quants down (never below the catalog's `min_quant`,
+   Q3_K_XL for Tiel-Coder) at 100k or more; then the same at 64k. Windows below 64k are chosen only if nothing larger reaches
+   the comfortable speed. A quant above the default is taken only with the same window and a 15% speed margin.
+4. **The window is the largest that reaches the rung**, and when the target is out of reach (a CPU server at 18 tok/s, for
+   example) the largest that memory allows while the speed stays above the minimum. A dual-socket server with 256 GB gets
+   the full window; what it costs in speed is shown, and you can ask for a smaller one.
+5. **A window nobody has run needs proof.** The catalog records the window a model was verified at (Tiel-Coder with the
+   fork: 200k; a window that fits only just could run out of VRAM in a transient buffer at full context, which was
+   measured). Beyond it a window is taken only if 25% of the VRAM budget stays free and the speed keeps a 15% margin.
+   A 12 GB card stays at 200k; a 16 GB card with good bandwidth or a 24 GB card gets the full 262k.
+6. **KV cache precision.** Fork tier: `turbo3`. Standard tier: `q8_0`, or `q4_0` only if that is what lets the window fit.
+7. **Model.** Among the models that reach the comfortable speed the most capable one wins; if none does, among those that
+   reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is a refusal with the
+   reason (for example, how much RAM is missing).
+8. **Backends.** NVIDIA: CUDA, then Vulkan. AMD: ROCm and Vulkan. Intel: SYCL, Vulkan and OpenVINO. Apple: Metal. No GPU:
    CPU. When there is more than one candidate the installer measures them.
+
+What the planner gives for described machines (Tiel-Coder, predictions, not promises; `tests/fixtures/hardware/`):
+
+| Machine | Plan |
+|---|---|
+| RTX 4070 SUPER 12 GB + 32 GB | fork: IQ4_XS, 200k, 27 layers in RAM + 24 slots; 44 tok/s at 100k filled, 37 full |
+| 12 GB + 16 GB RAM | fork: Q3_K_XL (IQ4_XS does not fit the RAM after the reserve), 200k; about 41 at 100k filled |
+| RTX 4070 Ti SUPER 16 GB + 32 GB | fork: IQ4_XS, 262k; about 47 at 131k filled |
+| RTX 4060 8 GB + 32 GB | fork: IQ4_XS, 200k, 27 tok/s: 35 is out of reach on this bandwidth, the window is kept |
+| RTX 4090 24 GB + 64 GB | fork: Q5_K_XL, 262k; about 60 |
+| Dual EPYC 256 GB, CPU only | standard: IQ4_XS, full 262k window, about 18 at 131k filled |
 
 The thresholds are in `DEFAULTS` and can be overridden (`config=`), so a hardware report can argue for a different
 value with data.
 
 ## What the plan contains
 
-`ok`, `model`, `quant`, `backend_candidates`, `needs_probe`, `mode` (`cpu`/`hybrid`/`gpu`/`unified`), `settings`
-(context, KV type, `n_cpu_moe` or GPU layers, threads, `numa`), `predicted_tok_s` (`low`/`mid`/`high`), `confidence`,
+`ok`, `model`, `quant`, `tier` (`fork`/`standard`), `speed_rung` (`target`/`comfort`/`minimum`/`none`), `backend_candidates`,
+`needs_probe`, `mode` (`cpu`/`hybrid`/`gpu`/`unified`), `settings` (context, KV type, `n_cpu_moe`, `moe_cache_slots`, GPU layers, threads, `numa`), `predicted_tok_s` (`low`/`mid`/`high`), `confidence`,
 `memory` (needed and available RAM and VRAM), `reasons`, `warnings` and `alternatives`. Settings are *intents*
 (what we want); the launcher turns them into flags for the chosen llama.cpp build after checking what that build supports.
 
 ## Limits, stated plainly
 
-- NVIDIA-specific speed-ups (the MoE expert cache, `turbo3` KV, the VRAM guard) live in our CUDA fork and are an
-  optional upgrade on top of this plan; other backends use upstream llama.cpp.
+- NVIDIA-specific speed-ups (the MoE expert cache, `turbo3` KV, MTP, the VRAM guard) live in our CUDA fork (Linux only);
+  other backends use upstream llama.cpp and the standard tier.
 - Several GPUs: the largest one is planned for; a multi-GPU split is not planned yet.
 - The efficiency constants come from one machine. Expect the prediction to be wrong by a factor on other hardware,
   more on dual-socket servers. That is why calibration exists and why reports matter.

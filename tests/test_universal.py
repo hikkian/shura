@@ -61,10 +61,23 @@ class ReferenceMachine(unittest.TestCase):
         self.assertTrue(20 <= p["settings"]["n_cpu_moe"] <= 34)
         self.assertEqual(p["settings"]["threads"], 6)
 
-    def test_prediction_is_near_what_upstream_style_offload_measured(self):
+    def test_fork_tier_reproduces_the_measured_curve(self):
+        # Measured with the fork, ncmoe 26 + 24 slots + turbo3 + MTP (docs/BENCHMARKS.md): 54 tok/s near empty, 42 at 128k,
+        # 38.6-39.2 at 187k. The plan for this machine is that layout's neighbour.
+        p = plan("ref_rtx4070s_12g_32g")
+        self.assertEqual((p["tier"], p["settings"]["context"], p["settings"]["kv_type"]), ("fork", 200000, "turbo3"))
+        by = p["speed_by_fill"]
+        self.assertTrue(48 <= by["empty"] <= 58, by)
+        self.assertTrue(35 <= by["full"] <= 41, by)
+        self.assertTrue(24 >= p["settings"]["moe_cache_slots"] >= 16)
+        self.assertEqual(p["speed_rung"], "target")
+        self.assertLessEqual(p["memory"]["vram_need"], p["memory"]["vram_budget"])
+
+    def test_standard_tier_stays_in_the_range_stock_llama_cpp_measured(self):
         # Stock llama.cpp with --n-cpu-moe on this machine measured about 26-30 tok/s at ~187k (docs/BENCHMARKS.md).
-        mid = plan("ref_rtx4070s_12g_32g")["predicted_tok_s"]["mid"]
-        self.assertTrue(20 <= mid <= 40, mid)
+        p = plan("ref_rtx4070s_12g_32g", config={"fork": {"enabled": False}})
+        self.assertEqual(p["tier"], "standard")
+        self.assertTrue(20 <= p["predicted_tok_s"]["mid"] <= 45, p["predicted_tok_s"])
 
     def test_no_quality_upgrade_without_speed_headroom(self):
         self.assertEqual(plan("ref_rtx4070s_12g_32g")["quant"], "IQ4_XS")
@@ -162,30 +175,37 @@ class Properties(unittest.TestCase):
         self.assertEqual(p["mode"], "hybrid")
         self.assertTrue(0 < p["settings"]["ngl"] < 32)
 
-    def test_the_window_is_the_largest_that_fits_memory(self):
+    def test_no_bigger_window_reaches_the_same_speed_rung(self):
+        # the window is the largest one that reaches the speed rung the plan reached (or the largest that fits, when the
+        # target is out of reach); asking for a bigger one must land on a lower rung or not fit at all
+        rank = {"target": 3, "comfort": 2, "minimum": 1, "none": 0}
         by_id = {m["id"]: m for cat in (REAL, SYN) for m in cat["models"]}
         for name in HW:
             for cat in (REAL, SYN):
                 p = plan(name, cat)
-                if not p["ok"]:
+                if not p["ok"] or p["speed_rung"] == "none":
                     continue
                 w, model_max = p["settings"]["context"], by_id[p["model"]]["context_max"]
                 bigger = tuple(c for c in planner.DEFAULTS["contexts"] if w < c <= model_max)
                 self.assertLessEqual(p["memory"]["ram_need"], p["memory"]["ram_budget"])
-                if bigger:   # asking for any larger window must not fit
+                if bigger:
                     again = planner.plan(HW[name], cat, model=p["model"], quant=p["quant"],
-                                         config={"contexts": bigger, "reference_context": max(bigger)})
-                    self.assertFalse(again["ok"], (name, p["model"], w))
+                                         config={"contexts": bigger, "window_floors": (min(bigger),)})
+                    self.assertTrue(not again["ok"] or rank[again["speed_rung"]] < rank[p["speed_rung"]] or
+                                    (p["speed_rung"] != "target" and again["speed_rung"] == p["speed_rung"] == "minimum"),
+                                    (name, p["model"], w, again.get("speed_rung")))
 
     def test_more_vram_or_ram_never_shrinks_the_window(self):
         small, large = copy.deepcopy(HW["rtx3060_12g_16g"]), copy.deepcopy(HW["rtx3060_12g_16g"])
+        small["gpus"][0]["vram_total"], large["gpus"][0]["vram_total"] = 8 * GiB, 24 * GiB
+        small, large = copy.deepcopy(HW["ref_rtx4070s_12g_32g"]), copy.deepcopy(HW["ref_rtx4070s_12g_32g"])
         small["gpus"][0]["vram_total"], large["gpus"][0]["vram_total"] = 8 * GiB, 24 * GiB
         kw = dict(model="tiel-coder-35b-a3b-mtp", quant="IQ3_XXS")
         self.assertLessEqual(planner.plan(small, REAL, **kw)["settings"]["context"],
                              planner.plan(large, REAL, **kw)["settings"]["context"])
         lean, rich = copy.deepcopy(HW["epyc7551x2_256g_cpu"]), copy.deepcopy(HW["epyc7551x2_256g_cpu"])
-        lean["memory"]["total"], lean["memory"]["available"] = 18 * GiB, 14 * GiB
-        kw2 = dict(model="tiel-coder-35b-a3b-mtp", quant="Q2_K_XL")      # the smallest quant just fits 18 GB of RAM
+        lean["memory"]["total"], lean["memory"]["available"] = 20 * GiB, 16 * GiB
+        kw2 = dict(model="tiel-coder-35b-a3b-mtp", quant="Q2_K_XL")      # the smallest quant just fits 20 GB of RAM
         self.assertLess(planner.plan(lean, REAL, **kw2)["settings"]["context"],
                         planner.plan(rich, REAL, **kw2)["settings"]["context"])
 
@@ -212,6 +232,52 @@ class Properties(unittest.TestCase):
         p = planner.plan(hw, REAL)
         self.assertEqual(p["confidence"], "low")
         self.assertTrue(any("not measured" in w for w in p["warnings"]))
+
+
+class FitToMemory(unittest.TestCase):
+    """The user-facing promise: the plan follows the VRAM and RAM of the machine, aims for 35+ tok/s and gives up the window
+    before the quality (docs/HARDWARE.md, "Selection policy")."""
+
+    def test_12g_vram_and_32g_ram_gets_200k_at_target_speed(self):
+        p = plan("ref_rtx4070s_12g_32g")
+        self.assertEqual((p["quant"], p["settings"]["context"], p["speed_rung"]), ("IQ4_XS", 200000, "target"))
+        self.assertGreaterEqual(p["speed_by_fill"]["typical"], 35)
+
+    def test_12g_vram_and_16g_ram_keeps_the_window_and_steps_the_quant_down_to_q3(self):
+        p = plan("rtx4070s_12g_16g")
+        self.assertTrue(p["ok"])
+        self.assertLessEqual(p["memory"]["ram_need"], p["memory"]["ram_budget"])      # never overcommits the small RAM
+        self.assertIn(p["quant"], ("IQ4_XS", "Q3_K_XL"))                              # never below Q3-class quality
+        self.assertGreaterEqual(p["settings"]["context"], 100000)
+        self.assertEqual(p["speed_rung"], "target")
+
+    def test_16g_vram_gets_a_bigger_window_than_12g(self):
+        big, ref = plan("rtx4070tisuper_16g_32g"), plan("ref_rtx4070s_12g_32g")
+        self.assertGreater(big["settings"]["context"], ref["settings"]["context"])
+        self.assertEqual(big["speed_rung"], "target")
+
+    def test_8g_vram_keeps_a_useful_window_even_when_35_tok_s_is_out_of_reach(self):
+        p = plan("rtx4060_8g_32g")
+        self.assertGreaterEqual(p["settings"]["context"], 65536)
+        self.assertIn(p["speed_rung"], ("target", "comfort"))
+        self.assertGreaterEqual(p["speed_by_fill"]["typical"], 20)
+
+    def test_never_below_the_catalog_quant_floor_unless_forced(self):
+        for name in HW:
+            p = plan(name)
+            if p["ok"] and p["model"] == "tiel-coder-35b-a3b-mtp":
+                self.assertNotIn(p["quant"], ("Q2_K_XL", "IQ3_XXS"), name)
+        self.assertEqual(plan("rtx4060_8g_32g", model="tiel-coder-35b-a3b-mtp", quant="IQ3_XXS")["quant"], "IQ3_XXS")
+
+    def test_a_window_nobody_ran_needs_a_speed_margin_and_vram_headroom(self):
+        # the fork was verified at 200k: a 12 GB card stays at 200k, a card with room to spare may go beyond
+        self.assertEqual(plan("ref_rtx4070s_12g_32g")["settings"]["context"], 200000)
+        self.assertEqual(plan("rtx4090_24g_64g")["settings"]["context"], 262144)
+
+    def test_the_vram_plan_leaves_the_desktop_reserve(self):
+        p = plan("ref_rtx4070s_12g_32g")
+        gpu = HW["ref_rtx4070s_12g_32g"]["gpus"][0]
+        self.assertLessEqual(p["memory"]["vram_need"] + gpu["vram_used"], gpu["vram_total"] - 0.7 * GiB)
 
 
 if __name__ == "__main__":

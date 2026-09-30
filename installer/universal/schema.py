@@ -113,6 +113,14 @@ def validate_catalog(cat):
             _num(q, "quality", errs, qp, minimum=0, kind=int)
             if q.get("nonexpert_bytes") and q.get("file_bytes") and q["nonexpert_bytes"] > q["file_bytes"]:
                 errs.append(f"{qp}.nonexpert_bytes: larger than file_bytes")
+        if m.get("min_quant") is not None and m["min_quant"] not in ids:
+            errs.append(f"{p}.min_quant: {m['min_quant']!r} is not one of {ids}")
+        fk = m.get("fork")
+        if fk is not None:
+            if m.get("kind") != "moe":
+                errs.append(f"{p}.fork: only MoE models have a fork tier")
+            _num(fk, "kv_factor", errs, f"{p}.fork", minimum=0.01)
+            _num(fk, "verified_context", errs, f"{p}.fork", minimum=512, kind=int)
         if len(set(q.get("quality") for q in qs)) != len(qs):
             errs.append(f"{p}.quants: quality values must be unique (they order the quants)")
     return errs

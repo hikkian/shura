@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64"
+  },
+  "cpu": {
+    "model": "Ryzen 5 5600",
+    "physical_cores": 6,
+    "logical_cores": 12,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 34359738368,
+    "available": 22333829939,
+    "bandwidth_gbs": 39.7
+  },
+  "gpus": [
+    {
+      "vendor": "nvidia",
+      "name": "RTX 4060 8GB",
+      "vram_total": 8589934592,
+      "vram_used": 734003200,
+      "bandwidth_gbs": 272,
+      "driver": null,
+      "backends": [
+        "cuda",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  }
+}

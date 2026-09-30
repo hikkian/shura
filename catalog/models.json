@@ -71,7 +71,13 @@
           "result": "34-39 tok/s decode at ~187k context",
           "date": "2026-09-30"
         }
-      ]
+      ],
+      "min_quant": "Q3_K_XL",
+      "fork": {
+        "kv_type": "turbo3",
+        "kv_factor": 0.195,
+        "verified_context": 200000
+      }
     }
   ]
 }
