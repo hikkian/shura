@@ -251,7 +251,7 @@ def plan(hw, catalog, *, config=None, model=None, quant=None):
                             f"{fit['settings']['kv_type']} KV cache"]
     return {
         "ok": True,
-        "model": best["model"]["id"], "quant": best["quant"]["id"],
+        "model": best["model"]["id"], "model_name": best["model"]["name"], "quant": best["quant"]["id"],
         "backend_candidates": backends, "needs_probe": probe,
         "settings": fit["settings"], "mode": fit["mode"],
         "predicted_tok_s": {"low": round(mid * lo, 1), "mid": round(mid, 1), "high": round(mid * hi, 1)},

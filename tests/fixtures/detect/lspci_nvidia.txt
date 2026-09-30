@@ -1,0 +1,1 @@
+2b:00.0 "VGA compatible controller" "NVIDIA Corporation" "AD104 [GeForce RTX 4070 SUPER]" -ra1 -p00 "ASUSTeK Computer Inc." "Device 8975"

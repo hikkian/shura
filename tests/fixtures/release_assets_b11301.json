@@ -1,0 +1,93 @@
+{
+ "tag": "b11301",
+ "note": "asset names of ggml-org/llama.cpp release b11301 (2026-09-30), as listed by the GitHub API",
+ "assets": [
+  {
+   "name": "llama-b11301-bin-macos-arm64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-macos-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-xcframework.zip"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-arm64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-s390x.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-cuda-12.8-x64.tar.gz"
+  },
+  {
+   "name": "cudart-llama-bin-ubuntu-cuda-12.8-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-cuda-13.4-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-cuda-13.4-arm64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-rocm-10.0-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-vulkan-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-vulkan-arm64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-openvino-2026.4-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-sycl-fp32-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-ubuntu-sycl-fp16-x64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-linux-arm64-snapdragon.tar.gz"
+  },
+  {
+   "name": "llama-b11301-bin-win-cpu-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-cpu-arm64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-cuda-12.4-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-cuda-13.4-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-cuda-13.4-arm64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-rocm-10.0-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-vulkan-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-openvino-2026.4-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-sycl-x64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-win-opencl-adreno-arm64.zip"
+  },
+  {
+   "name": "llama-b11301-bin-android-arm64.tar.gz"
+  },
+  {
+   "name": "llama-b11301-ui.tar.gz"
+  }
+ ]
+}

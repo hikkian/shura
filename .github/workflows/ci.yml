@@ -51,3 +51,45 @@ jobs:
       - uses: actions/checkout@v7
       - name: ${{ matrix.image }}
         run: docker run --rm -v "$PWD:/repo:ro" "${{ matrix.image }}" bash /repo/tests/distro-packages.sh
+
+  universal:
+    # The universal installer core on every OS we target: unit tests, then a real download and self-test of the CPU
+    # build of llama.cpp on a 19 MB model. Proves the detect -> resolve -> download -> run path, not GPU speed.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Universal unit tests
+        run: python -m unittest tests.test_universal tests.test_detect tests.test_backends tests.test_cli_report tests.test_engine tests.test_bandwidth -v
+      - name: Hardware check on this runner
+        run: python installer/universal/cli.py check --no-measure
+        continue-on-error: true   # a plan can legitimately be a refusal on a small runner
+      - name: Self-test the CPU build (download + run)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python installer/universal/cli.py selftest --backend cpu
+
+  vulkan-software:
+    # The Vulkan build, run on Mesa's software Vulkan (lavapipe) as llama.cpp's own CI does: no GPU needed.
+    # Experimental until it has passed a few times, hence continue-on-error.
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+      - name: Self-test the Vulkan build on lavapipe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GGML_VK_DISABLE_F16: "1"
+          GGML_VK_DISABLE_COOPMAT: "1"
+        run: python installer/universal/cli.py selftest --backend vulkan
+

@@ -172,6 +172,7 @@ slots (not faster at equal depth) · more than 24 expert slots at 200k context (
 | Persistent context checkpoints (`slotSaveCheckpoints`) | Implemented and accepted in tests; **opt-in**, off by default |
 | VRAM guard (`vramGuard`): park the session in RAM under VRAM pressure | Implemented and accepted in tests; **opt-in**, off by default |
 | Elastic expert cache that resizes itself at runtime | **In development.** A CUDA virtual-memory prototype can return VRAM to the card in milliseconds; quality validation is not finished and it is not part of a release |
+| Universal planner (`shura check`, `shura report`, backend self-test) | Implemented and unit-tested on described machines; wiring into the installer is next |
 | Faster attention at 187k | **Being investigated**: profiling shows attention takes about half of the GPU time at that depth |
 
 ## Quick start
@@ -211,6 +212,29 @@ start.
 `/forget` `/memory` `/test` `/commit`, a read-only **Plan** mode next to **Build** (Tab), and a live model
 status in the footer. It is our customization layer on top of the OpenCode engine, in its own repository:
 **[hikkian/shuracode](https://github.com/hikkian/shuracode)**; the installer sets it up.
+
+## Run it on your hardware
+
+Shura chooses the model and the settings from what your machine can do, not from its brand: how fast its memory
+really is (measured), how much of it there is, what the GPU has, and which backend actually works. Three commands
+need no install and no root, and send nothing anywhere:
+
+```bash
+shura check     # describes your machine and shows what Shura would pick, with a speed estimate
+shura report    # writes an anonymous report you can paste into a GitHub issue
+python3 installer/universal/cli.py selftest --backend vulkan   # downloads one llama.cpp build and a 19 MB model, runs it
+```
+
+- **Classes by resources, not by device type:** a GPU with system RAM, unified memory (Apple), or a CPU-only machine.
+  CPU-only does not mean small models: a many-channel server can run models no 12 GB card can hold.
+- **Backends:** NVIDIA (CUDA, Vulkan), AMD (ROCm or Vulkan, whichever measures faster), Intel (SYCL, Vulkan, OpenVINO),
+  Apple (Metal), or the CPU. The prebuilt llama.cpp builds are used, nothing is compiled on your machine.
+- **Honest status:** the planner is implemented and unit-tested on described machines (AMD, Intel, Apple, dual-socket
+  servers and more), but only NVIDIA on Linux has been verified on real hardware. The one-command installer
+  (`setup.sh`) still targets NVIDIA on Linux; wiring the universal plan into it is the next step.
+
+How the decision is made: **[docs/HARDWARE.md](docs/HARDWARE.md)**. To add your hardware, a model or a backend (a report
+is enough): **[CONTRIBUTING-hardware.md](CONTRIBUTING-hardware.md)**.
 
 ## Tested environment and limits
 

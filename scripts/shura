@@ -10,6 +10,8 @@
 #   shura off | on   disable / re-enable the AI entirely
 #   shura logs       follow gateway + llama-server logs
 #   shura restart    restart the gateway service
+#   shura check      describe this machine and show what Shura would pick for it (installs nothing)
+#   shura report     write an anonymous hardware report to paste into a GitHub issue
 #
 # Works with any desktop and terminal. Terminal: $SHURA_TERMINAL, then $TERMINAL, then the first one
 # found. Folder dialog: zenity, kdialog or yad (optional).
@@ -18,6 +20,7 @@ set -euo pipefail
 GW="${SHURA_GATEWAY:-http://127.0.0.1:8080}"
 APP_ID="io.github.hikkian.Shura"
 export PATH="$HOME/.local/bin:$PATH"
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 
 notify() {
   if command -v notify-send >/dev/null; then notify-send -a Shura "Shura" "$1" || true; fi
@@ -127,6 +130,7 @@ case "${1:-}" in
   on)      curl -s -X POST "$GW/guardian/ai-on" >/dev/null && notify "AI enabled" ;;
   logs)    exec journalctl --user -u ai-gateway -f -o cat ;;
   restart) systemctl --user restart ai-gateway.service && notify "Gateway restarted" ;;
-  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  check|report) exec python3 "$REPO_DIR/installer/universal/cli.py" "$@" ;;
+  -h|--help|help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
   *)       echo "unknown command: $1 (see: shura help)"; exit 2 ;;
 esac
