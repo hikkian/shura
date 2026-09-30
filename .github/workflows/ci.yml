@@ -66,7 +66,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Universal unit tests
-        run: python -m unittest tests.test_universal tests.test_detect tests.test_backends tests.test_cli_report tests.test_engine tests.test_bandwidth tests.test_install -v
+        shell: bash
+        run: |
+          python -m unittest tests.test_universal tests.test_detect tests.test_backends tests.test_cli_report tests.test_engine tests.test_bandwidth tests.test_install -v > unittest.log 2>&1 && code=0 || code=$?
+          tail -n 40 unittest.log
+          if [ "$code" != 0 ]; then python tests/ci_annotate.py unittest.log; fi
+          exit $code
       - name: Hardware check on this runner
         run: python installer/universal/cli.py check --no-measure
         continue-on-error: true   # a plan can legitimately be a refusal on a small runner
