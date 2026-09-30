@@ -138,3 +138,46 @@ Run the tests locally:
 python3 -m unittest discover -s tests
 docker run --rm -v "$PWD:/repo:ro,Z" ubuntu:24.04 bash /repo/tests/distro-packages.sh
 ```
+
+
+---
+
+# `shura install` (every other machine)
+
+`setup.sh` above is the path for NVIDIA on Linux (it builds our CUDA fork). Everything else (AMD, Intel, Apple, Windows,
+CPU-only servers, NVIDIA on Windows or macOS) uses the universal installer, which needs only Python 3.9+ and uses prebuilt
+llama.cpp, so nothing is compiled:
+
+```bash
+./scripts/shura install --dry-run   # the plan, the download sizes and the disk needed; changes nothing
+./scripts/shura install             # asks, then: engine -> model -> test launch -> ready
+./scripts/shura start | status | stop
+./scripts/shura uninstall           # deletes everything under the Shura home folder
+```
+
+| Option | |
+|---|---|
+| `--dry-run` | print the plan and what would be downloaded; touch nothing |
+| `--yes` | do not ask (required when there is no terminal; without a terminal it never downloads silently) |
+| `--quant Q`, `--model-id ID` | force a quant or a model from the catalog |
+| `--context N` | never use a window larger than N tokens |
+| `--dir DIR` | Shura home (default `$SHURA_HOME`, else `~/.local/share/shura`, `~/Library/Application Support/shura`, `%LOCALAPPDATA%\shura`) |
+| `--port N` | server port (default 8080; the server listens on 127.0.0.1 only) |
+
+What it does, in order, and what protects you at each step:
+
+1. **Plan.** The same planner as `shura check` ([how it decides](HARDWARE.md)). If nothing fits it says why and stops.
+2. **Engine.** Downloads the prebuilt llama.cpp for each backend that could run your GPU (AMD and Intel have more than one),
+   checks it against the release's SHA-256, runs a 10-second self-test on a 19 MB model and keeps the fastest that works.
+   If no GPU build works, it plans again for the CPU and tells you.
+3. **Model.** Size and SHA-256 come from the Hugging Face file list. The free disk space is checked first, a partial file
+   is resumed (`.part`), and a file that fails the hash is moved aside as `.corrupt` and never used.
+4. **Test launch.** Starts the real server with the planned settings and generates tokens. If it runs out of memory, the plan
+   is made again with 1 GiB more left free (then 2 GiB and a window of at most 131k), up to three attempts. You end with a
+   configuration that was seen to work, or with a report and the downloads kept.
+5. **Ready.** Writes `state.json` and `shura-hardware-report.md` (no names, paths or IDs) into the Shura home and prints the
+   OpenAI-compatible endpoint. Nothing is ever sent anywhere by the installer; `shura report --issue` prints a pre-filled
+   GitHub link that you open yourself.
+
+Files: `engines/` (llama.cpp builds), `models/`, `logs/`, `state.json`, `server.pid`. All of it is under the Shura home and
+`shura uninstall` removes it. SSD wear: the only large write is the model download itself (once; it is reused by reruns).

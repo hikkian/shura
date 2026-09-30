@@ -216,23 +216,34 @@ status in the footer. It is our customization layer on top of the OpenCode engin
 ## Run it on your hardware
 
 Shura chooses the model and the settings from what your machine can do, not from its brand: how fast its memory
-really is (measured), how much of it there is, what the GPU has, and which backend actually works. Three commands
-need no install and no root, and send nothing anywhere:
+really is (measured), how much of it there is, what the GPU has, and which backend actually works.
 
 ```bash
-# from a clone of this repository, nothing to install (`shura check` works the same once Shura is installed):
-./scripts/shura check     # describes your machine and shows what Shura would pick, with a speed estimate
-./scripts/shura report    # writes an anonymous report you can paste into a GitHub issue
-python3 installer/universal/cli.py selftest --backend vulkan   # downloads one llama.cpp build and a 19 MB model, runs it
+git clone https://github.com/hikkian/shura && cd shura
+./scripts/shura check             # what your machine can run and how fast (installs nothing, sends nothing)
+./scripts/shura install --dry-run # what would be downloaded, how much disk it needs (downloads nothing)
+./scripts/shura install           # download, test and set up; then `shura start` / `shura stop`
+./scripts/shura report --issue    # an anonymous report for a GitHub issue: helps everyone with your hardware
 ```
+
+On Windows use `scripts\shura.cmd` (or `py installer\universal\cli.py`). NVIDIA on Linux gets the fast tier (our
+CUDA fork) through `setup.sh`; `shura install` points you to it. Every other machine is installed by `shura install`
+itself, without compiling anything and without root.
+
+`shura install` is built so that a bad day costs you nothing: it asks before it downloads; it checks the free disk space
+first; a dropped download **resumes**; every file is verified (size and SHA-256); it runs the real server with the planned
+settings to **prove** they work; if the machine runs out of memory it plans again with more room left free and retries; and
+if nothing works it leaves a report without personal data and keeps the downloads, so the next run does not start over.
+`shura uninstall` removes everything it put on your disk.
 
 - **Classes by resources, not by device type:** a GPU with system RAM, unified memory (Apple), or a CPU-only machine.
   CPU-only does not mean small models: a many-channel server can run models no 12 GB card can hold.
 - **Backends:** NVIDIA (CUDA, Vulkan), AMD (ROCm or Vulkan, whichever measures faster), Intel (SYCL, Vulkan, OpenVINO),
   Apple (Metal), or the CPU. The prebuilt llama.cpp builds are used, nothing is compiled on your machine.
-- **Honest status:** the planner is implemented and unit-tested on described machines (AMD, Intel, Apple, dual-socket
-  servers and more), but only NVIDIA on Linux has been verified on real hardware. The one-command installer
-  (`setup.sh`) still targets NVIDIA on Linux; wiring the universal plan into it is the next step.
+- **Honest status:** the planner and the install flow are unit-tested on described machines and against a fake server
+  (AMD, Intel, Apple, dual-socket servers and more), and CI downloads and runs real llama.cpp builds on Linux, macOS and
+  Windows runners, but only NVIDIA on Linux has been verified end to end on real hardware with the real model. Your first
+  run on other hardware is a test for everyone: please send the report.
 
 How the decision is made: **[docs/HARDWARE.md](docs/HARDWARE.md)**. To add your hardware, a model or a backend (a report
 is enough): **[CONTRIBUTING-hardware.md](CONTRIBUTING-hardware.md)**.

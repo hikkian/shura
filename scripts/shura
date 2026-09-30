@@ -12,6 +12,8 @@
 #   shura restart    restart the gateway service
 #   shura check      describe this machine and show what Shura would pick for it (installs nothing)
 #   shura report     write an anonymous hardware report to paste into a GitHub issue
+#   shura install    any OS/GPU/CPU: download, test and set up the best configuration (--dry-run shows the plan)
+#   shura start|stop run / stop the server installed by `shura install` (the Linux+NVIDIA setup.sh uses the gateway)
 #
 # Works with any desktop and terminal. Terminal: $SHURA_TERMINAL, then $TERMINAL, then the first one
 # found. Folder dialog: zenity, kdialog or yad (optional).
@@ -123,14 +125,16 @@ case "${1:-}" in
   "")      ensure_gateway; (warm &) ; exec shuracode ;;
   launch)  launch ;;
   window)  open_terminal "$PWD" ;;
-  status)  status ;;
+  status)  if [ -f "${SHURA_HOME:-$HOME/.local/share/shura}/state.json" ] && ! systemctl --user cat ai-gateway.service >/dev/null 2>&1; then
+             exec python3 "$REPO_DIR/installer/universal/cli.py" status      # installed by `shura install`: no gateway
+           else status; fi ;;
   warm)    ensure_gateway; s=$(date +%s); warm; notify "Model loaded in $(( $(date +%s) - s ))s" ;;
   unload)  curl -s -X POST "$GW/guardian/unload" >/dev/null && notify "Model unloaded" ;;
   off)     curl -s -X POST "$GW/guardian/ai-off" >/dev/null && notify "AI disabled (shura on to re-enable)" ;;
   on)      curl -s -X POST "$GW/guardian/ai-on" >/dev/null && notify "AI enabled" ;;
   logs)    exec journalctl --user -u ai-gateway -f -o cat ;;
   restart) systemctl --user restart ai-gateway.service && notify "Gateway restarted" ;;
-  check|report) exec python3 "$REPO_DIR/installer/universal/cli.py" "$@" ;;
-  -h|--help|help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+  check|report|install|uninstall|start|stop) exec python3 "$REPO_DIR/installer/universal/cli.py" "$@" ;;
+  -h|--help|help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
   *)       echo "unknown command: $1 (see: shura help)"; exit 2 ;;
 esac

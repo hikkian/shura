@@ -46,6 +46,8 @@ def card(hw, plan):
              "cpu": "all in RAM, computed by the CPU", "unified": "all in unified memory"}
     lines += [f"  Model    : {plan.get('model_name', plan['model'])}, quant {plan['quant']}",
               f"  Mode     : {plan['mode']} ({modes[plan['mode']]})",
+              "  Engine   : " + ("Shura CUDA fork (turbo3 KV cache, expert cache, MTP)" if plan.get("tier") == "fork"
+                               else "upstream llama.cpp"),
               f"  Context  : {s['context']} tokens, KV cache {s['kv_type']}",
               f"  Backends : {', '.join(plan['backend_candidates'])}" + (" (measured at install)" if plan["needs_probe"] else ""),
               f"  Expected : ~{t['mid']:.0f} tok/s with {plan['speed_by_fill']['typical_tokens']} tokens in the window "
@@ -84,3 +86,12 @@ def make_report(hw, plan, *, shura_version="dev", measured=None, errors=None, sc
     md += ["<details><summary>Machine-readable data</summary>", "", "```json", json.dumps(data, indent=2), "```", "",
            "</details>"]
     return data, "\n".join(md)
+
+
+def issue_url(md, repo="hikkian/shura", title="Hardware report", limit=6000):
+    """A pre-filled GitHub 'new issue' link (nothing is sent: the user opens it and presses the button). GitHub truncates long
+    URLs, so the body is cut to `limit` characters and ends with a note to paste the full file."""
+    import urllib.parse
+    body = md if len(md) <= limit else md[:limit].rsplit("\n", 1)[0] + "\n\n_(cut: paste the rest from shura-hardware-report.md)_"
+    q = urllib.parse.urlencode({"template": "hardware_report.md", "title": title, "body": body, "labels": "hardware-report"})
+    return f"https://github.com/{repo}/issues/new?{q}"

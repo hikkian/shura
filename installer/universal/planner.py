@@ -190,7 +190,7 @@ def _fit_fork(res, cfg, m, q, ctx):
     fk, f = m.get("fork"), cfg["fork"]
     if not fk or m["kind"] != "moe" or not res["fork"]:
         return None, "not available"
-    n, g = m["n_layers"], res["gpu"]
+    n = m["n_layers"]
     budget, kv_main = res["vram_budget"], ctx * m["kv_bytes_per_token_f16"] * fk["kv_factor"]
     if ctx > fk.get("verified_context", m["context_max"]):
         budget *= f["unverified_headroom"]          # a window nobody has run: keep 25% of the VRAM budget free
