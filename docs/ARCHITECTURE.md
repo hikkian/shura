@@ -130,7 +130,8 @@ answer, gates new requests, backs up the guardian config, atomically disables `v
 only the existing user service, and restores the prior manual on/off setting. A failed restart restores
 the original config and retries the service. This command has offline tests and has **not** been run
 against the live service. Part A preserves the original gateway source in `_gateway_legacy.py` and does
-not replace the llama-server binary. Before a later binary deployment, a verified binary backup and
+not replace the llama-server binary. The preserved legacy gateway runs only when both `vramGuard` and
+`slotSaveCheckpoints` are disabled; enabling either selects the new gateway. Before a later binary deployment, a verified binary backup and
 its rollback step must be added.
 
 The revised guard has offline fault tests. **GPU validation and acceptance are pending.** The earlier

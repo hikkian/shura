@@ -1024,7 +1024,7 @@ def shutdown(signum, _frame):
 
 
 def main():
-    if G["vramGuard"] is not True:
+    if G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0:
         return legacy_main()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)

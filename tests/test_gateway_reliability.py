@@ -255,11 +255,47 @@ class GuardReliability(fixtures.GatewayGuard):
         self.assertEqual((self.root / 'override.flag').read_text(), 'OFF')
 
     def test_guard_switch_off_calls_preserved_entrypoint(self):
-        self.gw.G['vramGuard'] = False
+        self.gw.G.update(vramGuard=False, slotSaveCheckpoints=0)
         with patch.object(self.gw, 'legacy_main') as legacy, patch.object(self.gw, 'monitor') as monitor:
             self.gw.main()
         legacy.assert_called_once()
         monitor.assert_not_called()
+
+    def assert_new_entrypoint(self, guard, checkpoints):
+        self.gw.G.update(vramGuard=guard, slotSaveCheckpoints=checkpoints)
+        self.gw.st.proc = None
+        self.gw.st.ram_backend = False
+        with (patch.object(self.gw, 'legacy_main') as legacy,
+              patch.object(self.gw, 'ThreadingHTTPServer') as server,
+              patch.object(self.gw.threading, 'Thread') as thread,
+              patch.object(self.gw.signal, 'signal'),
+              patch.object(self.gw, 'prepare_ram_slot_dir', side_effect=AssertionError('unexpected RAM directory'))):
+            self.gw.main()
+        legacy.assert_not_called()
+        server.return_value.serve_forever.assert_called_once()
+        thread.return_value.start.assert_called_once()
+        self.assertIs(self.gw.status_snapshot()['vram_guard_enabled'], guard)
+        argv = self.gw.build_args(self.gw.M['models'][self.gw.M['defaultModel']], False)
+        self.assertEqual('--slot-save-checkpoints' in argv, checkpoints > 0)
+        if checkpoints:
+            self.assertEqual(argv[argv.index('--slot-save-checkpoints') + 1], str(checkpoints))
+        if not guard:
+            self.assertEqual(self.gw.server_slot_dir(), self.disk)
+            self.assertFalse(self.gw.st.ram_backend)
+            self.gw.st.last_request = time.time()
+            self.gw.monitor_tick(1, 0, 24)
+            self.assertFalse(self.gw.st.vram_pressure)
+            self.assertFalse(self.gw.st.vram_emergency)
+            self.assertEqual(list(self.ram.iterdir()), [])
+
+    def test_checkpoint_only_selects_new_without_guard(self):
+        self.assert_new_entrypoint(False, 1)
+
+    def test_guard_only_selects_new(self):
+        self.assert_new_entrypoint(True, 0)
+
+    def test_guard_and_checkpoints_select_new(self):
+        self.assert_new_entrypoint(True, 1)
 
     def test_disabled_flag_is_the_shipped_default(self):
         example = json.loads((REPO / 'config' / 'guardian.example.json').read_text())
