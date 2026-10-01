@@ -56,13 +56,13 @@ def check(task):
             problems.append("the hidden tests already PASS on the starting files")
         if task["kind"] == "bugfix":                   # the symptom the prompt promises must be visible, and must go away with the fix
             shutil.rmtree(work / "hidden_tests", ignore_errors=True)       # the agent never has the hidden tests next to it
-            r = subprocess.run(["python3", "-m", "unittest", "-q"], cwd=work, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(["python3", "-B", "-m", "unittest", "-q"], cwd=work, capture_output=True, text=True, timeout=60)
             if r.returncode == 0:
                 problems.append("the visible test of a bugfix task already passes on the buggy files")
         overlay(d / "solution", work)
         if task["kind"] == "bugfix":
             shutil.rmtree(work / "hidden_tests", ignore_errors=True)
-            r = subprocess.run(["python3", "-m", "unittest", "-q"], cwd=work, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(["python3", "-B", "-m", "unittest", "-q"], cwd=work, capture_output=True, text=True, timeout=60)
             if r.returncode != 0:
                 problems.append("the visible test still fails with the reference fix: " + (r.stdout + r.stderr)[-200:])
         for i in range(3):

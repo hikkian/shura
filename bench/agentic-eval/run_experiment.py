@@ -48,7 +48,7 @@ def make_rounds(tasks, size, seed):
 
 def start_server(cfg, model, port, parallel, log_path):
     """llama-server for one arm. Returns the Popen; the caller stops it."""
-    argv = [cfg["exe"], "-m", model, "--host", "127.0.0.1", "--port", str(port), "-np", str(parallel), "-c",
+    argv = [*cfg.get("prefix", []), cfg["exe"], "-m", model, "--host", "127.0.0.1", "--port", str(port), "-np", str(parallel), "-c",
             str(cfg.get("ctx_per_slot", 32768) * parallel), "--jinja", *cfg.get("args", [])]
     log = open(log_path, "wb")
     proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
@@ -78,7 +78,7 @@ def stop_server(proc):
 
 
 def run_arm_round(arm, task_ids, tasks_by_id, reps, parallel, server_cfg, out_dir, base_port, seed, runner=None,
-                  server_starter=start_server, server_stopper=stop_server):
+                  server_starter=start_server, server_stopper=stop_server, stop_flag=None):
     """One arm on one round of tasks. Returns the list of result records."""
     server = server_starter(server_cfg, arm["model"], base_port, parallel, Path(out_dir) / f"server-{arm['name']}.log")
     proxies, results, lock = [], [], threading.Lock()
@@ -96,6 +96,8 @@ def run_arm_round(arm, task_ids, tasks_by_id, reps, parallel, server_cfg, out_di
 
         def one(item):
             tid, rep = item
+            if stop_flag and stop_flag():                       # the time budget or the watchdog: leave the rest undone
+                return None
             with lock:
                 i = free.pop()
             try:

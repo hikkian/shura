@@ -21,7 +21,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TASKS = HERE / "tasks"
-SHURACODE = os.environ.get("SHURACODE_BIN", str(Path.home() / ".local/bin/shuracode"))
 STOCK_RULES = """# Verification discipline
 
 - Never claim a task is complete, a bug is fixed, or a test passes without actually running it and seeing the real output.
@@ -61,6 +60,7 @@ def write_config(cfg_dir, port, context=32768, output=8192, effort="medium"):
                                                "settings": {"reasoningEffort": effort}}}}},
         "model": "eval/m", "small_model": "eval/m", "instructions": [str(cfg_dir / "AGENTS.md")],
         "agent": {"build": {"temperature": 0.6, "top_p": 0.95}},
+        "permission": {"edit": "allow", "bash": "allow", "webfetch": "deny", "external_directory": "deny"},
     }
     (cfg_dir / "shuracode.json").write_text(json.dumps(conf, indent=2))
     (cfg_dir / "tui.json").write_text("{}")
@@ -73,20 +73,60 @@ def run_tests(workdir, hidden, test_cmd, timeout=120):
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(hidden, dest)
+    for cache in Path(workdir).rglob("__pycache__"):          # a stale .pyc (same size, same second) must never decide the outcome
+        shutil.rmtree(cache, ignore_errors=True)
     try:
-        r = subprocess.run(test_cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(test_cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
     except subprocess.TimeoutExpired:
         return False, "hidden tests timed out"
     return r.returncode == 0, (r.stdout + r.stderr)[-1500:]
 
 
+ENGINE = os.environ.get("SHURACODE_ENGINE", str(Path.home() / ".local/share/shuracode/libexec/shuracode"))
+ENGINE_ENV = {"OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_SHARE": "1", "OPENCODE_DISABLE_MODELS_FETCH": "1",
+              "OPENCODE_DISABLE_DEFAULT_PLUGINS": "1", "OPENCODE_DISABLE_TERMINAL_TITLE": "1",
+              "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT": "1", "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1", "NO_COLOR": "1"}
+
+
+def sandboxed(argv, scratch, workdir, engine=None, env=None):
+    """Wrap a command in bubblewrap so that an unattended agent can change NOTHING outside its scratch folder: the system is
+    read-only, the user's home is not there at all (no keys, no dotfiles), the environment is cleared. Network stays on
+    (the agent talks to the measuring proxy on 127.0.0.1). Returns the argv to run."""
+    engine_dir = str(Path(engine or ENGINE).resolve().parent)
+    scratch = str(scratch)
+    cmd = ["bwrap", "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--clearenv",
+           "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+           "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin", "--ro-bind", "/etc", "/etc",
+           "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", engine_dir, engine_dir,
+           "--bind", scratch, scratch, "--chdir", str(workdir),
+           "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "HOME", f"{scratch}/home",
+           "--setenv", "XDG_DATA_HOME", f"{scratch}/home/.local/share", "--setenv", "XDG_CACHE_HOME", f"{scratch}/home/.cache",
+           "--setenv", "XDG_CONFIG_HOME", f"{scratch}/home/.config", "--setenv", "LANG", "C.UTF-8", "--setenv", "TERM", "dumb"]
+    for k, v in (env or {}).items():
+        cmd += ["--setenv", k, v]
+    return cmd + list(argv)
+
+
+def agent_argv(workdir, prompt):
+    return [ENGINE, "run", "--format", "json", "--auto", "--dir", str(workdir), prompt]
+
+
 def run_agent(workdir, prompt, cfg_dir, data_dir, timeout_s, log_path):
-    """One-shot agent run in its own process group, killed at the deadline. Returns (exit_code or None, timed_out, seconds)."""
-    env = {**os.environ, "SHURACODE_CONFIG_DIR": str(cfg_dir), "SHURACODE_HOME": str(data_dir), "NO_COLOR": "1"}
+    """One-shot agent run in its own process group, killed at the deadline. Returns (exit_code or None, timed_out, seconds).
+    The agent runs inside the sandbox (set AGENTIC_EVAL_NO_SANDBOX=1 only for a supervised dry run)."""
+    scratch = Path(workdir).parent
+    (scratch / "home").mkdir(parents=True, exist_ok=True)
+    env = {**ENGINE_ENV, "OPENCODE_CONFIG": str(Path(cfg_dir) / "shuracode.json"), "OPENCODE_CONFIG_DIR": str(cfg_dir)}
+    argv = agent_argv(workdir, prompt)
+    if os.environ.get("AGENTIC_EVAL_NO_SANDBOX") == "1":
+        run_env, argv = {**os.environ, **env, "HOME": f"{scratch}/home"}, argv
+    else:
+        argv, run_env = sandboxed(argv, scratch, workdir, env=env), dict(os.environ)
     t0 = time.monotonic()
     with open(log_path, "wb") as log:
-        proc = subprocess.Popen([SHURACODE, "run", "--format", "json", "--auto", "--dir", str(workdir), prompt], cwd=workdir,
-                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+        proc = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=run_env,
+                                start_new_session=True)
         try:
             code = proc.wait(timeout=timeout_s)
             timed_out = False
