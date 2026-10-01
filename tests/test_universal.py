@@ -272,6 +272,14 @@ class FitToMemory(unittest.TestCase):
         self.assertTrue(p["needs_probe"])
         self.assertGreaterEqual(p["speed_by_fill"]["typical"], 35)
 
+    def test_rx9070_16g_with_48g_ddr4_on_fedora(self):
+        # the same machine on Linux (how it will really be installed): upstream engine, a big window, q4_0 KV where q8_0 is too slow
+        p = plan("rx9070_16g_48g_fedora")
+        self.assertEqual((p["tier"], p["quant"], p["speed_rung"]), ("standard", "IQ4_XS", "target"))
+        self.assertGreaterEqual(p["settings"]["context"], 200000)
+        self.assertIn(p["settings"]["kv_type"], ("q4_0", "q8_0"))
+        self.assertEqual(p["backend_candidates"][:2], ["rocm", "vulkan"])
+
     def test_the_kv_cache_is_as_precise_as_the_speed_target_allows(self):
         # a machine that reaches 35 tok/s with q8_0 keeps q8_0; one that only reaches it with q4_0 gets q4_0
         roomy = plan("rx9070xt_16g_32g", config={"contexts": (65536,)})

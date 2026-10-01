@@ -307,6 +307,25 @@ class EndToEnd(unittest.TestCase):
             self.assertIn("Trying again", out.text)
             self.assertTrue(launch.load_state(d)["measured"]["verified"])
 
+    def test_a_measured_speed_far_below_the_prediction_replans_without_downloading_again(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub, \
+                mock.patch.dict(os.environ, {"FAKE_TOK_S": "12"}):             # the plan expects ~50
+            code, out = self.run_install(d, hub, fake_server(bin_dir))
+            self.assertEqual(code, 0, out.text)
+            self.assertIn("Planning again with the measured speed", out.text)
+            state = launch.load_state(d)
+            cal = state["measured"]["calibration"]
+            self.assertTrue(cal["replanned"] and cal["adopted"])
+            self.assertLess(cal["ratio"], 0.7)
+            self.assertEqual(len(list((Path(d) / "models").glob("*.gguf"))), 1)         # the same file, no second download
+
+    def test_a_prediction_close_to_the_measurement_keeps_the_first_plan(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            code, out = self.run_install(d, hub, fake_server(bin_dir))              # the fake reports 50, the plan ~51
+            self.assertEqual(code, 0, out.text)
+            self.assertFalse(launch.load_state(d)["measured"]["calibration"]["replanned"])
+            self.assertNotIn("Planning again", out.text)
+
     def test_always_failing_leaves_a_report_and_the_downloads(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
             code, out = self.run_install(d, hub, fake_server(bin_dir, oom_first=99))

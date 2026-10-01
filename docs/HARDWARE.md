@@ -111,30 +111,41 @@ calibration on your machine has the last word.
 
 ## Selection policy
 
-1. **Reserves.** RAM: `max(6 GiB, 15%)` stays free for the system and desktop (a browser, an IDE and a messenger take about
-   that). VRAM: what the desktop already uses, plus 0.8 GiB (0.3 GiB on a headless GPU).
-2. **Speed target: 35+ tok/s, judged with the window half full.** Three rungs are tried in turn: target 35, comfortable 20,
-   minimum 15 tok/s. Between models the comfortable speed decides (a far more capable model is not given up for a weaker,
-   faster one); the target steers the quant and the window inside one model.
-3. **The window is given up before the quality.** On each rung: first the model's tested default quant with the largest
-   window that reaches the speed, but not below 100k; then the next quants down (never below the catalog's `min_quant`,
-   Q3_K_XL for Tiel-Coder) at 100k or more; then the same at 64k. Windows below 64k are chosen only if nothing larger reaches
-   the comfortable speed. A quant above the default is taken only with the same window and a 15% speed margin.
-4. **The window is the largest that reaches the rung**, and when the target is out of reach (a CPU server at 18 tok/s, for
-   example) the largest that memory allows while the speed stays above the minimum. A dual-socket server with 256 GB gets
-   the full window; what it costs in speed is shown, and you can ask for a smaller one.
-5. **A window nobody has run needs proof.** The catalog records the window a model was verified at (Tiel-Coder with the
-   fork: 200k; a window that fits only just could run out of VRAM in a transient buffer at full context, which was
-   measured). Beyond it a window is taken only if 25% of the VRAM budget stays free and the speed keeps a 15% margin.
-   A 12 GB card stays at 200k; a 16 GB card with good bandwidth or a 24 GB card gets the full 262k.
-6. **KV cache precision.** Fork tier: `turbo3`. Standard tier: `q8_0`, and `q4_0` (half the memory and half the bytes read
-   for every token) only where `q8_0` misses the speed target at that window or does not fit. So a 16 GB card without the fork
-   reaches a bigger window at 35+ tok/s with `q4_0` instead of stopping at a smaller one with `q8_0`.
-7. **Model.** Among the models that reach the comfortable speed the most capable one wins; if none does, among those that
-   reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is a refusal with the
-   reason (for example, how much RAM is missing).
-8. **Backends.** NVIDIA: CUDA, then Vulkan. AMD: ROCm and Vulkan. Intel: SYCL, Vulkan and OpenVINO. Apple: Metal. No GPU:
-   CPU. When there is more than one candidate the installer measures them.
+Everything that fits is a *candidate*: every allowed quant, every window from 16k to the model's maximum, every KV cache type
+that fits (and, on the fork tier, the best split of layers and cache slots). Each candidate gets **one score**; the best score
+wins. There are no thresholds that flip a plan for one token per second: an earlier version had a ladder of speed rungs, and
+a prediction of 34.0 tok/s against a target of 35 cost a machine 70,000 tokens of window.
+
+```
+score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4  x  speed credit^0.3 (shape below)
+```
+
+- **Reserves** (never touched): RAM `max(6 GiB, 15%)` for the system and desktop; VRAM what the desktop already uses plus
+  0.8 GiB (0.3 GiB on a headless GPU).
+- **Quality of the quant** is a prior from its bits per weight (it falls off quickly below about 4 bits), plus 3% for the
+  catalog's tested default. **Quality of the KV cache:** `q8_0` 1.0, `turbo3` 0.985, `q4_0` 0.975. The quant is never below the
+  catalog's `min_quant` (Q3_K_XL for Tiel-Coder) unless you force one.
+- **The window** is worth a diminishing amount: 65k scores 0.61, 131k 0.76, 200k 0.90, 262k 1.0 (before speed).
+- **Speed** is judged with the window half full. It counts fully up to 1.3x the target (35 tok/s), because predictions are only
+  good to +-40% and a margin is worth having; far above that it is a windfall and counts for almost nothing. Below the
+  target the slope is soft, below 20 tok/s steeper, and a candidate under 15 tok/s is only taken when nothing faster exists.
+- **A window nobody has run** (beyond the one a model was verified at: 200k for Tiel-Coder on the fork) is taken only with
+  25% of the VRAM budget free and 15% more speed than the target. A 12 GB card stays at 200k; a faster 16 GB card gets 262k.
+- **KV cache type** is just another candidate: `q4_0` (half the memory and half the bytes read per token) wins exactly where
+  `q8_0` would cost more speed or window than its quality is worth. On the fork tier it is `turbo3`.
+- **Model**: among the models whose best candidate reaches the comfortable speed (20 tok/s) the most capable wins; if none
+  does, among those that reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is
+  a refusal with the reason.
+- **Backends.** NVIDIA: CUDA, then Vulkan. AMD: ROCm and Vulkan. Intel: SYCL, Vulkan and OpenVINO. Apple: Metal. No GPU:
+  CPU. With more than one candidate the installer measures them.
+
+**Profiles.** The weights are exponents, so a different priority is a different weight, not different code:
+`--optimize balanced` (default), `fast` (short window, speed counts more), `long` (the biggest window), `quality` (the quant
+counts more). `shura check` shows what each would choose on your machine.
+
+**Closed loop.** The prediction is only a prediction. After the test launch the installer compares the measured speed with
+the predicted one; if they differ by more than 15%, it plans again with all predictions scaled by the measured/predicted ratio
+(same model file, nothing is downloaded), starts the new settings and keeps them only if they really work.
 
 What the planner gives for described machines (Tiel-Coder, predictions, not promises; `tests/fixtures/hardware/`):
 
@@ -145,7 +156,8 @@ What the planner gives for described machines (Tiel-Coder, predictions, not prom
 | RTX 4070 Ti SUPER 16 GB + 32 GB | fork: IQ4_XS, 262k; about 47 at 131k filled |
 | RTX 4060 8 GB + 32 GB | fork: IQ4_XS, 200k, 27 tok/s: 35 is out of reach on this bandwidth, the window is kept |
 | RTX 4090 24 GB + 64 GB | fork: Q5_K_XL, 262k; about 60 |
-| Dual EPYC 256 GB, CPU only | standard: IQ4_XS, full 262k window, about 18 at 131k filled |
+| Radeon RX 9070 16 GB + 48 GB DDR4 | standard (upstream llama.cpp): IQ4_XS, 262k with `q4_0` KV (`q8_0` would cost speed); about 38 at 131k filled |
+| Dual EPYC 256 GB, CPU only | standard: IQ4_XS, full 262k window with `q4_0` KV, about 25 at 131k filled |
 
 The thresholds are in `DEFAULTS` and can be overridden (`config=`), so a hardware report can argue for a different
 value with data.

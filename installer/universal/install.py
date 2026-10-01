@@ -110,6 +110,33 @@ def reconcile(hw, server, backend, out, tolerance=0.10):
     return fixed
 
 
+def refine(hw, catalog, plan, argv, verdict, server, model_path, args, base_cfg, out, home):
+    """Close the loop: the plan was predicted, the server was really run. If the measured speed is far from the prediction,
+    plan again with the predictions scaled by the measured/predicted ratio (same model file, so nothing is downloaded) and
+    keep the new plan only if it really starts and answers. Returns (plan, argv, verdict, calibration info)."""
+    predicted = plan["speed_by_fill"]["empty"]
+    ratio = max(0.25, min(1.6, verdict["tok_s"] / predicted)) if predicted else 1.0
+    info = {"ratio": round(ratio, 2), "replanned": False, "adopted": False}
+    if abs(ratio - 1.0) <= 0.15:
+        return plan, argv, verdict, info
+    cfg = {**relaxed_config(base_cfg, 0, hw), "speed_scale": ratio}
+    new = planner.plan(hw, catalog, config=cfg, model=plan["model"], quant=plan["quant"], menu=False,
+                       profile=getattr(args, "profile_name", "balanced"))
+    key = lambda p: (p["settings"]["context"], p["settings"]["kv_type"], p["settings"].get("n_cpu_moe"))   # noqa: E731
+    if not new["ok"] or key(new) == key(plan):
+        return plan, argv, verdict, info
+    info["replanned"] = True
+    out.say(f"  Measured {verdict['tok_s']} tok/s, the plan said {predicted:.0f} (x{ratio:.2f}). Planning again with the "
+            f"measured speed: {new['settings']['context']} tokens of context, {new['settings']['kv_type']} KV cache.")
+    new_argv = launch.server_args(new, server, model_path, port=args.port, alias=new["model"])
+    check = verify(new_argv, args.port, home=home, wait_s=args.wait)
+    if check["ok"]:
+        info["adopted"] = True
+        return new, new_argv, check, info
+    out.say("  The new settings did not start; keeping the ones that worked.")
+    return plan, argv, verdict, info
+
+
 def verify(argv, port, *, home, wait_s=900, n_predict=64):
     """Start the planned server, generate some tokens, stop it. Returns {ok, load_s, tok_s, prompt_tok_s, error, oom}."""
     res = {"ok": False}
@@ -236,9 +263,14 @@ def run(args, hw, catalog, out=None, *, release=None):
                 f"'Hardware report' issue helps everyone with this hardware.")
         return 1
     plan, argv = final
+    first_predicted = plan["speed_by_fill"]["empty"]
+    first_measured = verdict["tok_s"]
+    plan, argv, verdict, calibration = refine(hw if backend != "cpu" else {**hw, "gpus": []}, catalog, plan, argv, verdict,
+                                              server, path, args, base_cfg, out, home)
     predicted = plan["speed_by_fill"]["empty"]
     measured = {"verified": True, "tok_s_short_prompt": verdict["tok_s"], "predicted_tok_s_empty": predicted,
-                "load_s": verdict["load_s"], "backend": backend, "llama_cpp": args.tag}
+                "first_plan_predicted": round(first_predicted, 1), "first_plan_measured": first_measured,
+                "calibration": calibration, "load_s": verdict["load_s"], "backend": backend, "llama_cpp": args.tag}
     launch.save_state(home, {"schema": 1, "plan": plan, "model_path": str(path), "server": str(server), "backend": backend,
                              "argv": argv, "port": args.port, "measured": measured})
     _, md = report.make_report(hw, plan, measured=measured, scrub_args=_scrub())

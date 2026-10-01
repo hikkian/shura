@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "os": {
+    "family": "linux",
+    "arch": "x86_64",
+    "distro": "fedora"
+  },
+  "cpu": {
+    "model": "AMD Ryzen 7 5700X3D 8-Core Processor",
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "flags": [],
+    "numa_nodes": 1
+  },
+  "memory": {
+    "total": 51539607552,
+    "available": 42949672960,
+    "bandwidth_gbs": 40.0
+  },
+  "gpus": [
+    {
+      "vendor": "amd",
+      "name": "AMD Radeon RX 9070",
+      "vram_total": 17163091968,
+      "vram_used": 858993459,
+      "bandwidth_gbs": 640,
+      "driver": null,
+      "backends": [
+        "rocm",
+        "vulkan"
+      ],
+      "unified": false,
+      "display": true
+    }
+  ],
+  "disk": {
+    "free": 536870912000
+  },
+  "detection_notes": []
+}
