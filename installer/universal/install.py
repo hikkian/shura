@@ -20,6 +20,7 @@ GiB = 1024 ** 3
 OOM = re.compile(r"out of memory|failed to allocate|cudaMalloc|cannot allocate|ErrorOutOfDeviceMemory|bad_alloc|"
                  r"unable to allocate|insufficient memory", re.I)
 MAX_ATTEMPTS = 3
+WARMUP_RUNS, MEASURE_RUNS = 2, 3         # speed is the median of 3 runs after 2 warm-up runs
 NATIVE = {"nvidia": "cuda", "amd": "rocm", "intel": "sycl", "apple": "metal"}   # each vendor's own stack: the main engine there
 NATIVE_BONUS = 1.10                  # anything else must be 10% faster, measured on this machine, to replace it
 
@@ -189,14 +190,12 @@ def verify(argv, port, *, home, wait_s=900, n_predict=64):
         return res
     try:
         res["load_s"] = round(time.monotonic() - t0, 1)
-        _complete(port, "Hello", 16)                      # warm-up: shader compilation and first-use costs would read as slowness
         prompt = "Write a short Python function that returns the n-th Fibonacci number, with a docstring.\n"
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", method="POST",
-                                     data=json.dumps({"prompt": prompt, "n_predict": n_predict, "temperature": 0,
-                                                      "seed": 1}).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=600) as r:
-            body = json.load(r)
+        for _ in range(WARMUP_RUNS):    # shader compilation, and an adaptive expert cache that fills as it goes (measured: the first
+            _complete(port, prompt, 48)  # requests ran at half speed), would otherwise read as a slow machine
+        runs = [_complete(port, prompt, n_predict) for _ in range(MEASURE_RUNS)]
+        runs.sort(key=lambda b: b.get("timings", {}).get("predicted_per_second", 0.0))
+        body = runs[len(runs) // 2]                                      # the median run
         tm = body.get("timings", {})
         res.update(ok=bool(body.get("content", "").strip()), tokens=tm.get("predicted_n", 0),
                    tok_s=round(tm.get("predicted_per_second", 0.0), 1),
