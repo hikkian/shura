@@ -173,7 +173,7 @@ slots (not faster at equal depth) · more than 24 expert slots at 200k context (
 | VRAM guard (`vramGuard`): park the session in RAM under VRAM pressure | Implemented and accepted in tests; **opt-in**, off by default |
 | Elastic expert cache that resizes itself at runtime | **In development.** A CUDA virtual-memory prototype can return VRAM to the card in milliseconds; quality validation is not finished and it is not part of a release |
 | Universal installer (`shura install`) for AMD, Intel, Apple, Windows and CPU-only machines | **Experimental, not yet run on that hardware.** Unit-tested and exercised against fake servers; see [what is verified](#what-is-verified-and-what-is-not) |
-| Faster attention at 187k | **Being investigated**: profiling shows attention takes about half of the GPU time at that depth |
+| Faster attention at 187k (`scripts/build-llama.sh --attention-decode`) | Implemented and accepted in tests on the author's machine; **opt-in**, off by default. At 187k the attention kernel is 17% faster and generation about 5% faster, quality unchanged (see [BENCHMARKS](docs/BENCHMARKS.md)) |
 
 ## Quick start
 
