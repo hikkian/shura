@@ -1,0 +1,51 @@
+--- a/ggml/CMakeLists.txt
++++ b/ggml/CMakeLists.txt
+@@ -206,6 +206,7 @@
+ option(GGML_CUDA_NO_VMM                     "ggml: do not try to use CUDA VMM"                OFF)
+ option(GGML_CUDA_FA                         "ggml: compile ggml FlashAttention CUDA kernels"  ON)
+ option(GGML_CUDA_FA_ALL_QUANTS              "ggml: compile all quants for FlashAttention"     OFF)
++option(GGML_CUDA_TURBO3_DECODE_GROUP8       "ggml: group turbo3 decode tile loads"            OFF)
+ option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
+ option(GGML_CUDA_NCCL                       "ggml: use NVIDIA Collective Comm. Library"       ON)
+ set   (GGML_CUDA_COMPRESSION_MODE "size" CACHE STRING
+--- a/ggml/src/ggml-cuda/CMakeLists.txt
++++ b/ggml/src/ggml-cuda/CMakeLists.txt
+@@ -145,6 +145,12 @@
+             template-instances/fattn-vec-instance-turbo2_0-turbo4_0.cu)
+     endif()
+ 
++    if (GGML_CUDA_TURBO3_DECODE_GROUP8)
++        file(GLOB TURBO3_DECODE_SOURCES "template-instances/fattn-mma-turbo*.cu")
++        set_source_files_properties(${TURBO3_DECODE_SOURCES} PROPERTIES
++                                    COMPILE_DEFINITIONS GGML_CUDA_TURBO3_DECODE_GROUP8)
++    endif()
++
+     ggml_add_backend_library(ggml-cuda
+                              ${GGML_HEADERS_CUDA}
+                              ${GGML_SOURCES_CUDA}
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -561,14 +561,19 @@
+         const int D2, const int stride_bytes, const int col_offset, const int i_sup) {
+     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+     const int tid = threadIdx.y * warp_size + threadIdx.x;
+-#pragma unroll
+-    for (int row = tid; row < nbatch_fa; row += nthreads) {
++#if defined(GGML_CUDA_TURBO3_DECODE_GROUP8)
++    constexpr int lanes_per_row = nthreads == 64 && nbatch_fa == 32 ? 8 : 1;
++#else
++    constexpr int lanes_per_row = 1;
++#endif
++#pragma unroll
++    for (int row = tid / lanes_per_row; row < nbatch_fa; row += nthreads / lanes_per_row) {
+         if (oob_check && row >= i_sup) {
+-            for (int c = 0; c < D2; ++c) tile_KV[row*stride_tile + c] = make_half2(0.0f, 0.0f);
++            for (int c = tid % lanes_per_row; c < D2; c += lanes_per_row) tile_KV[row*stride_tile + c] = make_half2(0.0f, 0.0f);
+             continue;
+         }
+         const char * row_ptr = KV_raw + (int64_t)row * stride_bytes;
+-        for (int c = 0; c < D2; ++c) {
++        for (int c = tid % lanes_per_row; c < D2; c += lanes_per_row) {
+             const int col   = col_offset + c;                // absolute half2 column
+             const int elem0 = col * 2;                       // even; elem0,elem0+1 share block/qs/signs
+             const int ib    = elem0 / QK_TURBO3;
