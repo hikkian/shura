@@ -30,7 +30,10 @@ def load(args):
         hw = json.loads(Path(args.profile).read_text())
     else:
         hw = detect.detect()
-        if not args.no_measure:
+        if args.ram_gbs:                       # the user knows better than a missing compiler (typical: dual-channel DDR4-3200 ~ 40)
+            hw["memory"]["bandwidth_gbs"] = float(args.ram_gbs)
+            hw["detection_notes"].append(f"RAM bandwidth set by the user: {args.ram_gbs} GB/s")
+        elif not args.no_measure:
             gbs = bandwidth.measure(hw["cpu"]["physical_cores"], hw["memory"]["available"])
             if gbs:
                 hw["memory"]["bandwidth_gbs"] = round(gbs, 1)
@@ -122,6 +125,8 @@ def main(argv=None):
     ap.add_argument("--profile", help="use this hardware profile (JSON) instead of detecting the machine")
     ap.add_argument("--catalog", help="use this model catalog (JSON) instead of catalog/models.json")
     ap.add_argument("--no-measure", action="store_true", help="skip the few-second RAM bandwidth measurement")
+    ap.add_argument("--ram-gbs", type=float, help="RAM read speed in GB/s when it cannot be measured (no C compiler, as on most "
+                                                  "Windows PCs): dual-channel DDR4-3200 is about 40, DDR5-6000 about 80")
     ap.add_argument("--json", action="store_true", help="print the plan as JSON (check)")
     ap.add_argument("-o", "--output", default="shura-hardware-report.md", help="report file (report)")
     args = ap.parse_args(argv)
@@ -147,7 +152,8 @@ def main(argv=None):
         print(json.dumps(plan, indent=2) if args.json else report.card(hw, plan))
     else:
         scrub_args = {"home": str(Path.home()), "user": getpass.getuser(), "host": socket.gethostname()}
-        _, md = report.make_report(hw, plan, scrub_args=scrub_args)
+        state = launch.load_state(Path(args.dir) if args.dir else launch.home_dir())
+        _, md = report.make_report(hw, plan, scrub_args=scrub_args, measured=(state or {}).get("measured"))
         Path(args.output).write_text(md + "\n")
         print(f"Report written to {args.output}\nOpen a 'Hardware report' issue on GitHub and paste it. "
               f"Nothing was sent anywhere.")

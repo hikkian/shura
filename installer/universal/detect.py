@@ -17,13 +17,20 @@ GiB = 1024 * MiB
 
 # Published memory bandwidth (GB/s) of common GPUs. Unknown GPUs are not guessed: the planner falls back to a
 # conservative default and the installer can measure the GPU instead.
-GPU_BANDWIDTH_GBS = {
-    "rtx 3060": 360, "rtx 3070": 448, "rtx 3080": 760, "rtx 3090": 936, "rtx 4060 ti": 288, "rtx 4060": 272,
-    "rtx 4070 ti super": 672, "rtx 4070 ti": 504, "rtx 4070 super": 504, "rtx 4070": 504, "rtx 4080 super": 736,
-    "rtx 4080": 717, "rtx 4090": 1008, "rtx 5090": 1792,
-    "rx 7900 xtx": 960, "rx 7900 xt": 800, "rx 7800 xt": 624, "rx 9070 xt": 640,
-    "arc a770": 560,
-    "m2 ultra": 800, "m2 max": 400, "m3 ultra": 800, "m4 max": 546,
+GPU_BANDWIDTH_GBS = {      # memory bandwidth in GB/s from the vendors' specifications (longest key wins: "4070 ti super" before "4070")
+    "rtx 3050": 224, "rtx 3060 ti": 448, "rtx 3060": 360, "rtx 3070 ti": 608, "rtx 3070": 448, "rtx 3080 ti": 912,
+    "rtx 3080": 760, "rtx 3090 ti": 1008, "rtx 3090": 936,
+    "rtx 4060 ti": 288, "rtx 4060": 272, "rtx 4070 ti super": 672, "rtx 4070 ti": 504, "rtx 4070 super": 504,
+    "rtx 4070": 504, "rtx 4080 super": 736, "rtx 4080": 717, "rtx 4090": 1008,
+    "rtx 5050": 320, "rtx 5060 ti": 448, "rtx 5060": 448, "rtx 5070 ti": 896, "rtx 5070": 672, "rtx 5080": 960,
+    "rtx 5090": 1792,
+    "rx 6600 xt": 256, "rx 6600": 224, "rx 6650 xt": 280, "rx 6700 xt": 384, "rx 6750 xt": 432, "rx 6800 xt": 512,
+    "rx 6800": 512, "rx 6900 xt": 512, "rx 6950 xt": 576,
+    "rx 7600 xt": 288, "rx 7600": 288, "rx 7700 xt": 432, "rx 7800 xt": 624, "rx 7900 gre": 576, "rx 7900 xtx": 960,
+    "rx 7900 xt": 800, "rx 9060 xt": 322, "rx 9070 xt": 640, "rx 9070 gre": 576, "rx 9070": 640,
+    "arc a380": 186, "arc a580": 512, "arc a750": 512, "arc a770": 560, "arc b570": 380, "arc b580": 456,
+    "m1 max": 400, "m1 ultra": 800, "m2 ultra": 800, "m2 max": 400, "m3 max": 400, "m3 ultra": 800, "m4 max": 546,
+    "m4 pro": 273, "m3 pro": 150, "m2 pro": 200,
 }
 VENDOR_IDS = {"10de": "nvidia", "1002": "amd", "8086": "intel"}
 
@@ -137,6 +144,40 @@ def parse_windows_video(text):
     return out
 
 
+def parse_windows_cpu(text):
+    """`Get-CimInstance Win32_Processor | Select Name,NumberOfCores,NumberOfLogicalProcessors | ConvertTo-Json` ->
+    (name, physical cores, logical cores) summed over sockets, or None."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    data = data if isinstance(data, list) else [data]
+    try:
+        cores = sum(int(d["NumberOfCores"]) for d in data)
+        logical = sum(int(d["NumberOfLogicalProcessors"]) for d in data)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (data[0].get("Name") or "unknown").strip(), max(1, cores), max(1, logical), len(data)
+
+
+def parse_windows_vram(text):
+    """Registry `HardwareInformation.qwMemorySize` per display adapter -> {adapter name: bytes}. The 32-bit `AdapterRAM` of
+    Win32_VideoController stops at 4 GiB, this 64-bit value does not. Some drivers store it as 8 raw bytes (a JSON list)."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    data = data if isinstance(data, list) else [data]
+    out = {}
+    for d in data:
+        raw = d.get("HardwareInformation.qwMemorySize")
+        if isinstance(raw, list) and raw and all(isinstance(x, int) for x in raw):
+            raw = int.from_bytes(bytes(x & 255 for x in raw[:8]), "little")
+        if isinstance(raw, int) and raw > 0 and d.get("DriverDesc"):
+            out[d["DriverDesc"].strip()] = max(raw, out.get(d["DriverDesc"].strip(), 0))
+    return out
+
+
 # ------------------------------------------------------------------------------------------ detection flow
 def _amd_vram(env, names):
     """VRAM of AMD GPUs from sysfs (amdgpu): (total, used) per card with mem_info_vram_total."""
@@ -213,16 +254,60 @@ def _windows_memory():
         return 0, 0
 
 
+PS_CPU = "Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors | ConvertTo-Json -Compress"
+PS_VIDEO = "Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | ConvertTo-Json -Compress"
+PS_VRAM = (r"Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0*' "
+           r"-ErrorAction SilentlyContinue | Select-Object DriverDesc,'HardwareInformation.qwMemorySize' | ConvertTo-Json -Compress")
+WINDOWS_DESKTOP_VRAM = 1024 ** 3        # what the Windows desktop and a browser typically hold in VRAM (not measurable cheaply)
+UNKNOWN_VRAM = 4 * 1024 ** 3            # placeholder when the driver does not tell; the llama.cpp build corrects it at install
+
+
+def _powershell(env, script):
+    for exe in ("powershell", "pwsh"):
+        out = env.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], timeout=40)
+        if out:
+            return out
+    return None
+
+
 def detect_windows(env):
     n = os.cpu_count() or 1
     cpu = {"model": platform.processor() or "unknown", "physical_cores": max(1, n // 2), "logical_cores": n,
            "numa_nodes": 1, "flags": []}
-    notes = ["Windows detection is limited: CPU cores are estimated, VRAM only comes from nvidia-smi"]
+    notes = []
+    parsed = parse_windows_cpu(_powershell(env, PS_CPU) or "")
+    if parsed:
+        name, cores, logical, sockets = parsed
+        cpu.update(model=name, physical_cores=cores, logical_cores=logical, numa_nodes=max(1, sockets))
+    else:
+        notes.append("CPU cores are estimated (half of the logical processors)")
     smi = env.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.used,driver_version",
                    "--format=csv,noheader,nounits"])
     gpus = parse_nvidia_smi(smi or "")
     for g in gpus:
         g["backends"] = ["cuda", "vulkan"]
+    video = _powershell(env, PS_VIDEO)
+    if video:
+        vram = parse_windows_vram(_powershell(env, PS_VRAM) or "")
+        have = {g["name"].lower() for g in gpus}
+        for v in parse_windows_video(video):
+            if v["vendor"] == "nvidia" and gpus:
+                continue                                       # nvidia-smi already described it, with the exact numbers
+            if v["name"].lower() in have:
+                continue
+            total = vram.get(v["name"])
+            if not total:
+                total = UNKNOWN_VRAM
+                notes.append(f"{v['name']}: video memory size is unknown, assuming {UNKNOWN_VRAM // 1024 ** 3} GiB until the "
+                             f"llama.cpp build reports it")
+            backends = {"amd": ["rocm", "vulkan"], "intel": ["sycl", "vulkan", "openvino"],
+                        "nvidia": ["cuda", "vulkan"]}[v["vendor"]]
+            gpus.append({"vendor": v["vendor"], "name": v["name"], "vram_total": total,
+                         "vram_used": min(WINDOWS_DESKTOP_VRAM, total // 2), "display": True,
+                         "driver": v.get("driver"), "backends": backends})
+            have.add(v["name"].lower())
+        if any(g["vendor"] != "nvidia" for g in gpus):
+            notes.append("VRAM in use by the desktop is assumed (1 GiB) on non-NVIDIA GPUs under Windows")
     total, avail = _windows_memory()
     mem = {"total": total, "available": avail}
     if not total:

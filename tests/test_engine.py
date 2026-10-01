@@ -96,6 +96,25 @@ class SelfTest(unittest.TestCase):
         self.assertIn("empty", r["error"])
 
 
+class Devices(unittest.TestCase):
+    REAL = "Available devices:\n  Vulkan0: NVIDIA GeForce RTX 4070 SUPER (12282 MiB, 10791 MiB free)\n"   # a real capture, b11301
+
+    def test_real_output_is_parsed(self):
+        d = E.parse_devices(self.REAL)
+        self.assertEqual(len(d), 1)
+        self.assertEqual((d[0]["id"], d[0]["name"], d[0]["total"], d[0]["free"]),
+                         ("Vulkan0", "NVIDIA GeForce RTX 4070 SUPER", 12282 * 1024 ** 2, 10791 * 1024 ** 2))
+
+    def test_noise_and_cpu_only_output_give_nothing(self):
+        self.assertEqual(E.parse_devices("Available devices:\n"), [])
+        self.assertEqual(E.parse_devices(None), [])
+        self.assertEqual(E.parse_devices("load_backend: loaded CPU backend\n"), [])
+
+    def test_several_gpus_with_odd_names(self):
+        text = "Available devices:\n  ROCm0: AMD Radeon RX 9070 (16304 MiB, 15900 MiB free)\n  Vulkan1: Intel(R) Arc(TM) A770 Graphics (16128 MiB, 16000 MiB free)\n"
+        self.assertEqual([x["id"] for x in E.parse_devices(text)], ["ROCm0", "Vulkan1"])
+
+
 class Choice(unittest.TestCase):
     def r(self, b, tok_s, ok=True):
         return {"backend": b, "ok": ok, "tok_s": tok_s}

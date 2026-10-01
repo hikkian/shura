@@ -3,6 +3,7 @@
 import json
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,70 @@ class FakeEnv:
 
     def listdir(self, path):
         return sorted({f[len(path) + 1:].split("/")[0] for f in self.files if f.startswith(path + "/")})
+
+
+class PowerShellEnv(FakeEnv):
+    """Answers each PowerShell script with its own canned JSON."""
+
+    def __init__(self, cpu=None, video=None, vram=None, smi=None):
+        super().__init__()
+        self.by = {"Win32_Processor": cpu, "Win32_VideoController": video, "HardwareInformation": vram}
+        self.smi = smi
+
+    def run(self, cmd, timeout=15):
+        if cmd[0] == "nvidia-smi":
+            return self.smi
+        if cmd[0] in ("powershell", "pwsh"):
+            return next((v for k, v in self.by.items() if k in cmd[-1]), None)
+        return None
+
+
+class WindowsAmd(unittest.TestCase):
+    """The machine that made this necessary: Ryzen 7 5700X3D, 48 GB, Radeon RX 9070 16 GB, Windows 11."""
+    CPU = json.dumps({"Name": "AMD Ryzen 7 5700X3D 8-Core Processor", "NumberOfCores": 8, "NumberOfLogicalProcessors": 16})
+    VIDEO = json.dumps({"Name": "AMD Radeon RX 9070", "DriverVersion": "32.0.21001.1009"})
+    VRAM = json.dumps({"DriverDesc": "AMD Radeon RX 9070", "HardwareInformation.qwMemorySize": 17163091968})
+
+    def detect(self, **kw):
+        env = PowerShellEnv(**{"cpu": self.CPU, "video": self.VIDEO, "vram": self.VRAM, **kw})
+        with unittest.mock.patch.object(D, "_windows_memory", return_value=(48 * 1024 ** 3, 40 * 1024 ** 3)):
+            return D.detect_windows(env)
+
+    def test_the_radeon_is_found_with_its_real_vram_and_cores(self):
+        cpu, mem, gpus, notes = self.detect()
+        self.assertEqual((cpu["physical_cores"], cpu["logical_cores"]), (8, 16))
+        self.assertEqual(len(gpus), 1)
+        g = gpus[0]
+        self.assertEqual((g["vendor"], g["vram_total"]), ("amd", 17163091968))
+        self.assertEqual(g["backends"], ["rocm", "vulkan"])
+        self.assertTrue(g["display"])
+        self.assertEqual(D.gpu_bandwidth(g["name"]), 640)
+
+    def test_vram_stored_as_raw_bytes_is_read_too(self):
+        raw = list((17163091968).to_bytes(8, "little"))
+        self.assertEqual(D.parse_windows_vram(json.dumps({"DriverDesc": "X", "HardwareInformation.qwMemorySize": raw})),
+                         {"X": 17163091968})
+
+    def test_unknown_vram_is_a_flagged_placeholder_not_a_missing_gpu(self):
+        _, _, gpus, notes = self.detect(vram=None)
+        self.assertEqual(len(gpus), 1)
+        self.assertTrue(any("unknown" in n for n in notes))
+
+    def test_no_powershell_falls_back_to_estimates_and_says_so(self):
+        cpu, _, gpus, notes = self.detect(cpu=None, video=None, vram=None)
+        self.assertEqual(gpus, [])
+        self.assertTrue(any("estimated" in n for n in notes))
+
+    def test_nvidia_comes_from_nvidia_smi_and_is_not_listed_twice(self):
+        smi = "NVIDIA GeForce RTX 3060, 12288, 900, 555.85\n"
+        video = json.dumps({"Name": "NVIDIA GeForce RTX 3060", "DriverVersion": "32.0.15.5585"})
+        _, _, gpus, _ = self.detect(smi=smi, video=video, vram=None)
+        self.assertEqual([g["vendor"] for g in gpus], ["nvidia"])
+        self.assertEqual(gpus[0]["vram_total"], 12288 * 1024 ** 2)
+
+    def test_two_sockets_are_summed(self):
+        two = json.dumps([{"Name": "Xeon", "NumberOfCores": 12, "NumberOfLogicalProcessors": 24}] * 2)
+        self.assertEqual(D.parse_windows_cpu(two)[1:], (24, 48, 2))
 
 
 class Parsers(unittest.TestCase):
