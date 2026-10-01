@@ -46,12 +46,22 @@ def make_rounds(tasks, size, seed):
     return [ids[i:i + size] for i in range(0, len(ids), size)]
 
 
+def expendable():
+    """preexec_fn: if the machine runs out of memory the kernel kills OUR processes first, not the user's browser or editor."""
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+    except OSError:
+        pass
+
+
 def start_server(cfg, model, port, parallel, log_path):
     """llama-server for one arm. Returns the Popen; the caller stops it."""
     argv = [*cfg.get("prefix", []), cfg["exe"], "-m", model, "--host", "127.0.0.1", "--port", str(port), "-np", str(parallel), "-c",
             str(cfg.get("ctx_per_slot", 32768) * parallel), "--jinja", *cfg.get("args", [])]
     log = open(log_path, "wb")
-    proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                            preexec_fn=expendable)
     t0 = time.monotonic()
     while time.monotonic() - t0 < 600:
         if proc.poll() is not None:

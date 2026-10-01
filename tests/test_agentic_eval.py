@@ -356,6 +356,7 @@ class Rehearsal(unittest.TestCase):
             patches = [mock.patch.object(overnight, "TIEL", tiel), mock.patch.object(overnight, "EVAL_DIR", eval_dir),
                        mock.patch.object(overnight, "RUNNER", agent), mock.patch.object(overnight, "wait_for_free_gpu", return_value=True),
                        mock.patch.object(overnight, "plumbing_ok", return_value=True),
+                       mock.patch.object(overnight, "arm_deadman", return_value=None),
                        mock.patch.object(overnight, "shura", side_effect=lambda c: calls.append(c) or True),
                        mock.patch.object(overnight.rx, "start_server", return_value=Proc()),
                        mock.patch.object(overnight.rx, "stop_server", return_value=None),
@@ -363,7 +364,7 @@ class Rehearsal(unittest.TestCase):
             for p in patches:
                 p.start()
             try:
-                code = overnight.main(["--out", str(d / "out"), "--max-hours", "0.2", "--reps", "1", "--keep-models", "--min-disk-gb", "1"])
+                code = overnight.main(["--out", str(d / "out"), "--max-hours", "0.2", "--keep-models", "--min-disk-gb", "1"])
             finally:
                 for p in patches:
                     p.stop()
@@ -477,7 +478,7 @@ class Night(unittest.TestCase):
         self.assertIn("fewer than two", text)
 
     def test_server_layouts_are_tried_from_the_best_down(self):
-        self.assertEqual(overnight.LAYOUTS[0], (4, 24))
+        self.assertEqual(overnight.LAYOUTS[0], (2, 24))
         self.assertTrue(all(p >= 1 for p, _ in overnight.LAYOUTS))
         cfg = overnight.server_cfg(16)
         self.assertIn("--moe-cache-slots", cfg["args"])

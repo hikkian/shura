@@ -108,6 +108,14 @@ def sandboxed(argv, scratch, workdir, engine=None, env=None):
     return cmd + list(argv)
 
 
+def _expendable():
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")                 # out of memory: the kernel kills the agent before anything the user is working in
+    except OSError:
+        pass
+
+
 def agent_argv(workdir, prompt):
     return [str(Path(ENGINE).resolve()), "run", "--format", "json", "--auto", "--dir", str(workdir), prompt]
 
@@ -126,7 +134,7 @@ def run_agent(workdir, prompt, cfg_dir, data_dir, timeout_s, log_path):
     t0 = time.monotonic()
     with open(log_path, "wb") as log:
         proc = subprocess.Popen(argv, cwd=workdir, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=run_env,
-                                start_new_session=True)
+                                start_new_session=True, preexec_fn=_expendable)
         try:
             code = proc.wait(timeout=timeout_s)
             timed_out = False
