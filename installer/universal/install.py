@@ -282,6 +282,12 @@ def _attempt(args, hw, catalog, out, release, base_cfg, home, cache, label, only
         errors.append(f"{label}, attempt {attempt + 1}: {verdict.get('error', '?')[:300]}")
         out.say("  did not work" + (" (out of memory)" if verdict.get("oom") else "") + ": "
                 + str(verdict.get("error", ""))[:200].replace("\n", " "))
+        kv = plan["settings"]["kv_type"]
+        if kv in planner.DEFAULTS["kv_exotic"] and not verdict.get("oom") and kv not in base_cfg.get("kv_unavailable", ()):
+            base_cfg = {**base_cfg, "kv_unavailable": tuple(base_cfg.get("kv_unavailable", ())) + (kv,)}
+            out.say(f"  This build may not run a {kv} KV cache with flash attention: trying q8_0 / q4_0 instead.")
+            replan = True
+            continue
         if plan["settings"].get("mtp") and not verdict.get("oom") and base_cfg.get("mtp_standard", True):
             base_cfg = {**base_cfg, "mtp_standard": False}                  # this build may not run the MTP head: try without
             out.say("  Trying without the MTP draft (speculative decoding).")
@@ -312,7 +318,7 @@ def run(args, hw, catalog, out=None, *, release=None):
     no_turbo = bool(getattr(args, "no_turbo", False))
     profile = getattr(args, "profile_name", "balanced")
     up_cfg = {**base_cfg, "tqp_enabled": False}
-    tq_cfg = {**base_cfg, "kv_unavailable": ("q8_0", "q4_0")}               # only TurboQuant+ candidates
+    tq_cfg = {**base_cfg, "kv_unavailable": ("q8_0", "q5_0", "q4_0")}               # only TurboQuant+ candidates
     plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg if not no_turbo else up_cfg, 0, hw),
                         model=args.model_id, quant=args.quant, profile=profile)
     out.say(report.card(hw, plan))

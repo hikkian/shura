@@ -28,7 +28,8 @@ DEFAULTS = {
     "tqp_kv_factor": 0.3625,      # K stays q8_0 (auto-asymmetric on GQA 8:1) and V is turbo3: (0.53 + 0.195) / 2 of f16, seen in its log
     "tqp_time_penalty": 1.42,     # its Vulkan kernels vs our CUDA fork's: measured 34.4 vs 54 tok/s on an RTX 4070 SUPER (empty window)
     "tqp_trust": 1.0,             # measured end to end on one machine (NVIDIA over Vulkan); AMD is still unmeasured
-    "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "turbo3_tqp": 0.99, "q4_0": 0.975},   # share of quality kept by each KV cache type
+    "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "turbo3_tqp": 0.99, "q5_0": 0.99, "q4_0": 0.975},   # share of quality kept by each KV cache type
+    "kv_exotic": ("q5_0",),       # KV types the common builds may not run with flash attention (CUDA/HIP prebuilts: only q8_0/q4_0 pairs)
     "kv_unavailable": (),         # KV types the engine on this machine cannot run
     "unverified_margin": 1.15,    # a window nobody has run (beyond the verified one) is taken only with 15% more speed than the target
     "target_tolerance": 0.95,     # within 5% of the target counts as reaching it (measured run-to-run spread is 5-8%)
@@ -48,7 +49,7 @@ DEFAULTS = {
     "host_base": int(1.5 * GiB),  # the server process itself
     "min_context": 16384,
     "contexts": (262144, 200000, 131072, 65536, 32768, 16384),
-    "kv_types": (("q8_0", 0.53), ("q4_0", 0.28), ("turbo3", 0.3625)),   # (name, size relative to f16); turbo3 needs a TurboQuant+ build, which keeps K at q8_0 on GQA 8:1 models (measured)
+    "kv_types": (("q8_0", 0.53), ("q5_0", 0.34), ("q4_0", 0.28), ("turbo3", 0.3625)),   # (name, size relative to f16); turbo3 needs a TurboQuant+ build, which keeps K at q8_0 on GQA 8:1 models (measured)
     "bandwidth_fallback_gbs": {"ram": 20.0, "gpu": 150.0},
     "uncertainty": (0.6, 1.35),   # prediction range relative to the mid estimate
     # The "fork" tier: NVIDIA + Linux with the Shura CUDA fork (turbo3 KV, MoE expert cache, MTP). It is fitted to ONE

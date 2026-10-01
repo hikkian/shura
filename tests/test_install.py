@@ -203,7 +203,7 @@ class Store(unittest.TestCase):
             self.assertEqual(modelstore.listing("x/y", allow_local=True, base=hub.base), {"a.gguf": (3, sha(b"abc"))})
 
 
-def fake_server(tmp, *, oom_first=0, no_mtp=False, no_turbo=False):
+def fake_server(tmp, *, oom_first=0, no_mtp=False, no_turbo=False, no_q5=False):
     """An executable that behaves like llama-server (POSIX). The first `oom_first` runs die with an out-of-memory message."""
     counter = Path(tmp) / "runs"
     script = Path(tmp) / "llama-server"
@@ -211,6 +211,7 @@ def fake_server(tmp, *, oom_first=0, no_mtp=False, no_turbo=False):
 case "$*" in *--list-devices*) exit 0;; esac            # not a server start: does not count as a run
 {'case "$*" in *draft-mtp*) echo "error: unknown spec type draft-mtp" >&2; exit 2;; esac' if no_mtp else ''}
 {'case "$*" in *turbo3*) echo "error: unsupported cache type turbo3" >&2; exit 2;; esac' if no_turbo else ''}
+{'case "$*" in *q5_0*) echo "error: flash attention does not support q5_0 K/V" >&2; exit 2;; esac' if no_q5 else ''}
 n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"
 if [ "$n" -le {oom_first} ]; then echo "ggml_cuda: cudaMalloc failed: out of memory" >&2; exit 3; fi
 exec "{sys.executable}" "{FAKE}" "$@"
@@ -374,6 +375,18 @@ exec "{sys.executable}" "{FAKE}" "$@"
             self.assertEqual(state["measured"]["engine"], "llama.cpp")
             self.assertIn(state["argv"][state["argv"].index("-ctk") + 1], ("q8_0", "q4_0"))
 
+    def test_a_build_that_cannot_run_the_q5_0_kv_cache_falls_back_to_q8_0_or_q4_0(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            cat, out = tiny_catalog(0), Out()
+
+            def fake_choose(hw, plan, root, tag, out_, release=None, only_backend=None):
+                return only_backend or plan["backend_candidates"][0], fake_server(bin_dir, no_q5=True, no_turbo=True), []
+            with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
+                code = install.run(args(d, hub, no_turbo=True), HW[self.HW], cat, out)
+            self.assertEqual(code, 0, out.text)
+            argv = launch.load_state(d)["argv"]
+            self.assertIn(argv[argv.index("-ctk") + 1], ("q8_0", "q4_0"))
+
     def test_no_turbo_never_touches_the_third_party_build(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
             cat, out = tiny_catalog(0), Out()
@@ -500,7 +513,7 @@ class TurboBuild(unittest.TestCase):
         {"name": "turboquant-plus-tqp-v0.4.0-linux-x64-cpu.tar.gz", "url": "https://x/c", "digest": None}]}
 
     def plan(self):
-        return planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"kv_unavailable": ("q8_0", "q4_0")}, menu=False)
+        return planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"kv_unavailable": ("q8_0", "q5_0", "q4_0")}, menu=False)
 
     def test_the_plan_names_the_engine_and_the_only_backend_it_has(self):
         p = self.plan()
