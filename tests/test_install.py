@@ -598,6 +598,7 @@ class RocmFork(unittest.TestCase):
         self.assertIn("--n-cpu-moe", argv)
         self.assertIn("draft-mtp", argv)
 
+    @unittest.skipUnless(POSIX, "uses shell scripts")
     def test_the_build_script_refuses_to_mix_hip_with_the_cuda_only_patch(self):
         import subprocess
         r = subprocess.run(["bash", str(ROOT / "scripts/build-llama.sh"), "--hip", "--attention-decode", "/nonexistent/x"],
@@ -605,6 +606,7 @@ class RocmFork(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("cannot be combined", r.stderr)
 
+    @unittest.skipUnless(POSIX, "uses shell scripts")
     def test_a_failed_build_raises_with_the_log_so_the_installer_can_move_on(self):
         # no ROCm SDK here (nor on the CI runners): the real script stops at once and says why
         with tempfile.TemporaryDirectory() as d:
@@ -615,6 +617,7 @@ class RocmFork(unittest.TestCase):
             self.assertIn("build-hip.log", str(cm.exception))
             self.assertIn("hipconfig not found", str(cm.exception))
 
+    @unittest.skipUnless(POSIX, "uses shell scripts")
     def test_end_to_end_with_a_fake_build(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": os.urandom(200_000)}) as hub:
             server = fake_server(bin_dir)
@@ -636,6 +639,7 @@ class RocmFork(unittest.TestCase):
             self.assertEqual(m["measured"]["chosen"], "Shura fork (ROCm build)")       # rocm is native, a tie goes to the first
             self.assertIn("--moe-cache-slots", m["argv"])
 
+    @unittest.skipUnless(POSIX, "uses shell scripts")
     def test_a_failing_build_leaves_the_other_engines_to_finish_the_install(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": os.urandom(200_000)}) as hub:
             server = fake_server(bin_dir)
@@ -651,6 +655,7 @@ class RocmFork(unittest.TestCase):
             self.assertIn("Our ROCm build did not work here", out.text)
             self.assertNotEqual(launch.load_state(d)["measured"]["chosen"], "Shura fork (ROCm build)")
 
+    @unittest.skipUnless(POSIX, "uses shell scripts")
     def test_no_build_never_builds(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": os.urandom(200_000)}) as hub:
             server = fake_server(bin_dir)
