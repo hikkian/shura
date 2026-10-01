@@ -22,6 +22,33 @@ def run(*argv):
     return code, out.getvalue(), err.getvalue()
 
 
+class RamSpeedOverride(unittest.TestCase):
+    """Where nothing can measure the RAM (no C compiler: most Windows PCs) the user can say how fast it is."""
+
+    def fake_detect(self):
+        hw = json.loads((HWDIR / "rx9070xt_16g_32g.json").read_text())
+        hw["memory"].pop("bandwidth_gbs")
+        hw["detection_notes"] = []
+        return hw
+
+    def test_ram_gbs_is_used_and_nothing_is_measured(self):
+        from unittest import mock
+        with mock.patch.object(cli.detect, "detect", self.fake_detect), \
+                mock.patch.object(cli.bandwidth, "measure", side_effect=AssertionError("must not measure")):
+            code, out, _ = run("check", "--ram-gbs", "40")
+        self.assertEqual(code, 0)
+        self.assertIn("set by the user: 40.0 GB/s", out)
+        self.assertNotIn("not measured", out)
+
+    def test_without_it_the_unmeasured_estimate_is_flagged(self):
+        from unittest import mock
+        with mock.patch.object(cli.detect, "detect", self.fake_detect), \
+                mock.patch.object(cli.bandwidth, "measure", return_value=None):
+            _, out, _ = run("check")
+        self.assertIn("could not be measured", out)
+        self.assertIn("conservative estimate", out)
+
+
 class Card(unittest.TestCase):
     def test_check_prints_the_plan_for_a_profile(self):
         code, out, _ = run("check", "--profile", str(HWDIR / "ref_rtx4070s_12g_32g.json"))

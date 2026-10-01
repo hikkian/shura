@@ -193,6 +193,7 @@ def fake_server(tmp, *, oom_first=0):
     counter = Path(tmp) / "runs"
     script = Path(tmp) / "llama-server"
     script.write_text(f"""#!/bin/sh
+case "$*" in *--list-devices*) exit 0;; esac            # not a server start: does not count as a run
 n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"
 if [ "$n" -le {oom_first} ]; then echo "ggml_cuda: cudaMalloc failed: out of memory" >&2; exit 3; fi
 exec "{sys.executable}" "{FAKE}" "$@"
@@ -285,6 +286,11 @@ class EndToEnd(unittest.TestCase):
             self.assertTrue((Path(d) / "shura-hardware-report.md").exists())
             report_text = (Path(d) / "shura-hardware-report.md").read_text()
             self.assertNotIn(str(Path.home()), report_text)
+            # `shura report` after an install carries the speed that was measured
+            with redirect_stdout(io.StringIO()):
+                cli.main(["report", "--dir", d, "--profile", str(ROOT / "tests/fixtures/hardware" / f"{self.HW}.json"),
+                          "-o", str(Path(d) / "again.md")])
+            self.assertIn("Measured on this machine", (Path(d) / "again.md").read_text())
             # the same files through the command line
             with redirect_stdout(io.StringIO()) as buf:
                 self.assertEqual(cli.main(["start", "--dir", d, "--wait", "30"]), 0)
@@ -354,6 +360,34 @@ class ChooseEngine(unittest.TestCase):
     def test_nothing_working_is_an_error_with_a_reason(self):
         with self.assertRaises(install.engine.EngineError):
             self.run_choose({"vulkan": {"backend": "vulkan", "ok": False}, "cpu": {"backend": "cpu", "ok": False}})
+
+
+class Reconcile(unittest.TestCase):
+    def hw(self, total_gib=4, used_gib=0.5):
+        h = copy.deepcopy(HW["rx9070xt_16g_32g"])
+        h["gpus"][0].update(vram_total=int(total_gib * 1024 ** 3), vram_used=int(used_gib * 1024 ** 3))
+        return h
+
+    def devices(self, total_mib, free_mib):
+        return [{"id": "Vulkan0", "name": "AMD Radeon RX 9070", "total": total_mib * 1024 ** 2, "free": free_mib * 1024 ** 2}]
+
+    def test_a_wrong_placeholder_is_replaced_by_what_the_build_reports(self):
+        out = Out()
+        with mock.patch.object(install.engine, "list_devices", return_value=self.devices(16304, 15000)):
+            fixed = install.reconcile(self.hw(4), "server", "vulkan", out)
+        self.assertEqual(fixed["gpus"][0]["vram_total"], 16304 * 1024 ** 2)
+        self.assertIn("planning with that", out.text)
+
+    def test_a_matching_description_is_left_alone(self):
+        hw = self.hw(16, 0.9)
+        with mock.patch.object(install.engine, "list_devices", return_value=self.devices(16384, 15400)):
+            self.assertIs(install.reconcile(hw, "server", "vulkan", Out()), hw)
+
+    def test_cpu_backend_or_no_report_changes_nothing(self):
+        hw = self.hw(4)
+        self.assertIs(install.reconcile(hw, "server", "cpu", Out()), hw)
+        with mock.patch.object(install.engine, "list_devices", return_value=[]):
+            self.assertIs(install.reconcile(hw, "server", "vulkan", Out()), hw)
 
 
 class Relax(unittest.TestCase):

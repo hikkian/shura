@@ -90,6 +90,27 @@ def choose_engine(hw, plan, root, tag, out, release=None):
     return best, servers[best], tested
 
 
+def reconcile(hw, server, backend, out, tolerance=0.10):
+    """Trust what the downloaded build reports about the GPU over our own guess (Windows cannot read AMD/Intel video memory
+    reliably, and the desktop's share is only an estimate there). Returns a corrected copy of `hw`, or `hw` itself."""
+    if backend == "cpu" or not hw["gpus"]:
+        return hw
+    devices = [d for d in engine.list_devices(server) if not d["id"].upper().startswith("CPU")]
+    if not devices:
+        return hw
+    dev = max(devices, key=lambda d: d["total"])
+    gpu = max(hw["gpus"], key=lambda g: g["vram_total"])
+    used = max(0, dev["total"] - dev["free"])
+    if abs(dev["total"] - gpu["vram_total"]) <= tolerance * dev["total"] and gpu["vram_used"] >= used * 0.8:
+        return hw
+    fixed = copy.deepcopy(hw)
+    g = max(fixed["gpus"], key=lambda x: x["vram_total"])
+    g.update(vram_total=dev["total"], vram_used=used, display=g.get("display", True) or used > 256 * 1024 ** 2)
+    out.say(f"  The build reports {dev['name']} with {dev['total'] / GiB:.1f} GiB ({dev['free'] / GiB:.1f} GiB free): "
+            f"planning with that.")
+    return fixed
+
+
 def verify(argv, port, *, home, wait_s=900, n_predict=64):
     """Start the planned server, generate some tokens, stop it. Returns {ok, load_s, tok_s, prompt_tok_s, error, oom}."""
     res = {"ok": False}
@@ -148,9 +169,11 @@ def run(args, hw, catalog, out=None, *, release=None):
     if not args.yes and not out.ask("Continue?"):
         out.say("Cancelled. Nothing was changed.")
         return 0
+    first_hw = hw
     try:
         out.say("\n1/4  Engine (llama.cpp)")
         backend, server, tested = choose_engine(hw, plan, home, None if args.latest else args.tag, out, release)
+        hw = reconcile(hw, server, backend, out)
         if backend == "cpu" and hw["gpus"]:
             out.say("  No GPU build works here: planning for the CPU instead.")
             cpu_hw = {**hw, "gpus": []}
@@ -159,6 +182,12 @@ def run(args, hw, catalog, out=None, *, release=None):
             out.say(report.card(cpu_hw, plan))
             if not plan["ok"]:
                 return 1
+        if hw is not first_hw and backend != "cpu":
+            plan = planner.plan(hw, catalog, model=plan["model"], quant=args.quant, config=relaxed_config(base_cfg, 0, hw))
+            out.say(report.card(hw, plan))
+            if not plan["ok"]:
+                return 1
+            model = next(m for m in catalog["models"] if m["id"] == plan["model"])
         out.say("\n2/4  Model")
         files = modelstore.listing(model["source"]["hf_repo"], **({"base": args.hf_base, "allow_local": True} if args.hf_base else {}))
         name = modelstore.file_name(model, plan["quant"])

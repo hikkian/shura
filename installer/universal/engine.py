@@ -6,6 +6,7 @@ the tiny test model); archives are extracted with path-traversal checks; the sel
 """
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -174,6 +175,32 @@ def _stop(proc):
         except (OSError, subprocess.TimeoutExpired):
             proc.kill()
             proc.wait()
+
+
+DEVICE = re.compile(r"^\s*([A-Za-z]+\d*):\s*(.+?)\s*\((\d+) MiB,\s*(\d+) MiB free\)\s*$")
+
+
+def parse_devices(text):
+    """`llama-server --list-devices` -> [{id, name, total, free}] in bytes. Only devices that report memory are listed."""
+    out = []
+    for line in (text or "").splitlines():
+        m = DEVICE.match(line)
+        if m:
+            out.append({"id": m[1], "name": m[2], "total": int(m[3]) * 1024 ** 2, "free": int(m[4]) * 1024 ** 2})
+    return out
+
+
+def list_devices(server, timeout=60):
+    """The GPUs a downloaded build can really use, with their memory: the final word on what hardware there is."""
+    env = dict(os.environ)
+    lib = str(Path(server).parent)
+    for var in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        env[var] = lib + os.pathsep + env.get(var, "")
+    try:
+        r = subprocess.run([str(server), "--list-devices"], capture_output=True, text=True, env=env, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_devices(r.stdout) if r.returncode == 0 else []
 
 
 def choose_backend(results, order, tolerance=0.10):

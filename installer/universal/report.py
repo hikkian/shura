@@ -29,7 +29,8 @@ def card(hw, plan):
              f"  System   : {hw['os']['family']} {hw['os']['arch']} · {cpu['model']} "
              f"({cpu['physical_cores']} cores / {cpu['logical_cores']} threads, {cpu['numa_nodes']} NUMA node"
              f"{'s' if cpu['numa_nodes'] > 1 else ''})",
-             f"  Memory   : {_gib(mem['total'])} RAM, " + (f"{bw:.0f} GB/s (measured)" if bw else "speed not measured")]
+             f"  Memory   : {_gib(mem['total'])} RAM, " + ((f"{bw:.0f} GB/s" + (" (given by the user)" if any("set by the user" in n for n in hw.get("detection_notes", [])) else " (measured)"))
+             if bw else "speed not measured")]
     for g in hw["gpus"]:
         kind = "unified memory" if g.get("unified") else f"{_gib(g['vram_total'])} VRAM ({_gib(g['vram_used'])} in use)"
         lines.append(f"  GPU      : {g['name']}, {kind}, backends: {', '.join(g.get('backends') or ['?'])}")

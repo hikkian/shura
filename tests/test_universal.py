@@ -262,6 +262,15 @@ class FitToMemory(unittest.TestCase):
         self.assertIn(p["speed_rung"], ("target", "comfort"))
         self.assertGreaterEqual(p["speed_by_fill"]["typical"], 20)
 
+    def test_rx9070_16g_with_48g_ddr4_on_windows(self):
+        # the first real person this was written for (Ryzen 7 5700X3D, 48 GB, RX 9070): upstream tier, the default quant
+        p = plan("rx9070_16g_48g_windows")
+        self.assertEqual((p["tier"], p["quant"], p["speed_rung"]), ("standard", "IQ4_XS", "target"))
+        self.assertGreaterEqual(p["settings"]["context"], 100000)
+        self.assertEqual(p["backend_candidates"][:2], ["rocm", "vulkan"])
+        self.assertTrue(p["needs_probe"])
+        self.assertGreaterEqual(p["speed_by_fill"]["typical"], 35)
+
     def test_never_below_the_catalog_quant_floor_unless_forced(self):
         for name in HW:
             p = plan(name)
