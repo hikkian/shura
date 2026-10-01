@@ -27,6 +27,7 @@ DEFAULTS = {
     "tqp_enabled": True,          # may the installer use the third-party TurboQuant+ llama.cpp build (turbo KV, expert cache)?
     "tqp_kv_factor": 0.3625,      # K stays q8_0 (auto-asymmetric on GQA 8:1) and V is turbo3: (0.53 + 0.195) / 2 of f16, seen in its log
     "tqp_time_penalty": 1.42,     # its Vulkan kernels vs our CUDA fork's: measured 34.4 vs 54 tok/s on an RTX 4070 SUPER (empty window)
+    "tqp_cache_half_slots": 150.0,  # its expert cache gave ~0-5% in our sweeps (fork: 12): assume it barely helps, layers on the GPU matter more
     "tqp_trust": 1.0,             # measured end to end on one machine (NVIDIA over Vulkan); AMD is still unmeasured
     "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "turbo3_tqp": 0.99, "q5_0": 0.99, "q4_0": 0.975},   # share of quality kept by each KV cache type
     "kv_exotic": ("q5_0",),       # KV types the common builds may not run with flash attention (CUDA/HIP prebuilts: only q8_0/q4_0 pairs)
@@ -241,6 +242,7 @@ def _fit_fork(res, cfg, m, q, ctx, tier="fork"):
         usable = bool(res["tqp"]) and not (res["gpu"] or {}).get("unified") and "turbo3" not in cfg["kv_unavailable"]
         f["byte_time_scale"] *= cfg["tqp_time_penalty"]
         f["mtp_speedup"] = cfg["mtp_speedup"]
+        f["hit_half_slots"] = cfg["tqp_cache_half_slots"]
     if not fk or m["kind"] != "moe" or not usable:
         return None, "not available"
     n = m["n_layers"]

@@ -153,10 +153,14 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
   at an empty window and 29 tok/s with 28k filled, MTP accepts 46 of 48 drafted tokens, VRAM peak within the limit. That is about
   35% slower than our CUDA fork on the same card, which is why NVIDIA on Linux keeps the fork. In its log: on GQA 8:1 models it keeps
   K at `q8_0` and compresses only V, so its KV cache is about 0.36 of f16, not the 0.195 of pure turbo3. AMD is unmeasured.
-  **Its expert cache works, but it is a small gain at the budget a 12 GB card leaves (971 MiB):** the same settings with
-  `--moe-cache off` against `971`, alternating, 4 runs: about 33 tok/s without it and about 35.5 with it (+5 to +9%, inside the
-  5-8% run-to-run spread; 8k-filled runs 33.5-34.2 against 35.1). It is adaptive: the first requests after loading ran at about
-  half speed (it was filling), so the installer measures the median of 3 runs after 2 warm-up runs.
+  **Its expert cache did not give a meaningful gain here, so do not expect the speed of our CUDA fork from it.** Two sweeps on this
+  card (RTX 4070 SUPER over Vulkan, the median of 4 warmed-up runs, alternating): (1) same total VRAM, layers traded for cache:
+  28 layers on the CPU + 971 MiB of cache 36.8 and 37.5 tok/s; 34 + 3000 MiB 32.6 and 30.8; 40 + 4800 MiB 26.5 and 28.9. Moving layers off
+  the GPU costs more than a bigger cache returns (the CUDA fork found the same: "all experts on the CPU + 80-110 slots" was slower).
+  (2) layers fixed, window cut to 65k to free VRAM: cache off 37.4 and 37.6, 971 MiB 38.3 and 37.5, 2200 MiB 37.5 and 36.9: no difference
+  beyond noise, and the VRAM peak did not grow with the budget (about 10.1-10.4 GB for all), so the pools may not be filled in this
+  setup; the log (`-lv 4`) did not show the pool sizes. It is adaptive: the first requests after loading ran at about half speed, so the
+  installer measures the median of 3 runs after 2 warm-up runs. AMD is unmeasured, and the cache may behave differently there.
 - **TurboQuant+ on ROCm: do it yourself.** There is no prebuilt for it. The fork's source builds for HIP (RDNA4 included), which
   gives its turbo KV cache and MTP but **not** the expert cache (its release notes list that for CUDA, Metal and Vulkan only). The
   installer does not build it: it needs the ROCm SDK and takes tens of minutes. If you want to try, the fork's own `docs/build.md`
