@@ -105,6 +105,21 @@ class ServerArgs(unittest.TestCase):
         self.assertEqual(a[a.index("--port") + 1], "9000")
         self.assertEqual(a[a.index("--host") + 1], "127.0.0.1")          # never exposed to the network by default
 
+    def test_mtp_flags_follow_the_plan(self):
+        p = self.plan("rx9070xt_16g_32g")
+        self.assertTrue(p["settings"]["mtp"])
+        self.assertIn("draft-mtp", launch.server_args(p, "s", "m"))
+        off = planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"mtp_standard": False})
+        self.assertNotIn("--spec-type", launch.server_args(off, "s", "m"))
+        cpu = self.plan("epyc7551x2_256g_cpu")                      # no GPU: no draft model pass
+        self.assertNotIn("--spec-type", launch.server_args(cpu, "s", "m"))
+
+    def test_the_mtp_draft_is_paid_for_in_vram(self):
+        with_mtp = self.plan("rx9070xt_16g_32g")
+        without = planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"mtp_standard": False})
+        self.assertLessEqual(with_mtp["settings"]["context"], without["settings"]["context"])
+        self.assertLessEqual(with_mtp["memory"]["vram_need"], with_mtp["memory"]["vram_budget"])
+
     def test_hybrid_moe_gets_n_cpu_moe_and_kv_type(self):
         p = self.plan("rx9070xt_16g_32g")
         a = launch.server_args(p, "s", "m")
@@ -188,12 +203,13 @@ class Store(unittest.TestCase):
             self.assertEqual(modelstore.listing("x/y", allow_local=True, base=hub.base), {"a.gguf": (3, sha(b"abc"))})
 
 
-def fake_server(tmp, *, oom_first=0):
+def fake_server(tmp, *, oom_first=0, no_mtp=False):
     """An executable that behaves like llama-server (POSIX). The first `oom_first` runs die with an out-of-memory message."""
     counter = Path(tmp) / "runs"
     script = Path(tmp) / "llama-server"
     script.write_text(f"""#!/bin/sh
 case "$*" in *--list-devices*) exit 0;; esac            # not a server start: does not count as a run
+{'case "$*" in *draft-mtp*) echo "error: unknown spec type draft-mtp" >&2; exit 2;; esac' if no_mtp else ''}
 n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"
 if [ "$n" -le {oom_first} ]; then echo "ggml_cuda: cudaMalloc failed: out of memory" >&2; exit 3; fi
 exec "{sys.executable}" "{FAKE}" "$@"
@@ -318,6 +334,22 @@ class EndToEnd(unittest.TestCase):
             self.assertTrue(cal["replanned"] and cal["adopted"])
             self.assertLess(cal["ratio"], 0.7)
             self.assertEqual(len(list((Path(d) / "models").glob("*.gguf"))), 1)         # the same file, no second download
+
+    def test_a_build_without_mtp_is_retried_without_it(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            code, out = self.run_install(d, hub, fake_server(bin_dir, no_mtp=True))
+            self.assertEqual(code, 0, out.text)
+            self.assertIn("Trying without the MTP draft", out.text)
+            state = launch.load_state(d)
+            self.assertNotIn("--spec-type", state["argv"])
+            self.assertFalse(state["plan"]["settings"].get("mtp"))
+
+    def test_mtp_is_used_when_the_build_runs_it(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            code, out = self.run_install(d, hub, fake_server(bin_dir))
+            self.assertEqual(code, 0, out.text)
+            argv = launch.load_state(d)["argv"]
+            self.assertEqual(argv[argv.index("--spec-type") + 1], "draft-mtp")
 
     def test_a_prediction_close_to_the_measurement_keeps_the_first_plan(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:

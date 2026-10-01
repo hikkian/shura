@@ -133,6 +133,10 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
   25% of the VRAM budget free and 15% more speed than the target. A 12 GB card stays at 200k; a faster 16 GB card gets 262k.
 - **KV cache type** is just another candidate: `q4_0` (half the memory and half the bytes read per token) wins exactly where
   `q8_0` would cost more speed or window than its quality is worth. On the fork tier it is `turbo3`.
+- **MTP** (the model's own multi-token-prediction head, speculative decoding without a second model) is used with upstream
+  llama.cpp when there is a GPU: its draft cache is paid for in VRAM (2 KiB per token and 236 MiB), its speed-up is assumed to be
+  only x1.15 (the CUDA fork measured x1.32; nothing measured elsewhere), and if a build cannot start it the installer retries
+  without it.
 - **Model**: among the models whose best candidate reaches the comfortable speed (20 tok/s) the most capable wins; if none
   does, among those that reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is
   a refusal with the reason.
@@ -156,7 +160,7 @@ What the planner gives for described machines (Tiel-Coder, predictions, not prom
 | RTX 4070 Ti SUPER 16 GB + 32 GB | fork: IQ4_XS, 262k; about 47 at 131k filled |
 | RTX 4060 8 GB + 32 GB | fork: IQ4_XS, 200k, 27 tok/s: 35 is out of reach on this bandwidth, the window is kept |
 | RTX 4090 24 GB + 64 GB | fork: Q5_K_XL, 262k; about 60 |
-| Radeon RX 9070 16 GB + 48 GB DDR4 | standard (upstream llama.cpp): IQ4_XS, 262k with `q4_0` KV (`q8_0` would cost speed); about 38 at 131k filled |
+| Radeon RX 9070 16 GB + 48 GB DDR4 | standard (upstream llama.cpp): IQ4_XS, 262k with `q4_0` KV (`q8_0` would cost speed), MTP draft on; about 41 at 131k filled |
 | Dual EPYC 256 GB, CPU only | standard: IQ4_XS, full 262k window with `q4_0` KV, about 25 at 131k filled |
 
 The thresholds are in `DEFAULTS` and can be overridden (`config=`), so a hardware report can argue for a different

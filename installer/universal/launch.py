@@ -48,6 +48,8 @@ def server_args(plan, server, model, *, host="127.0.0.1", port=DEFAULT_PORT, ali
         argv += ["--n-cpu-moe", str(s["n_cpu_moe"])]
     if s.get("numa"):
         argv += ["--numa", s["numa"]]
+    if s.get("mtp"):                          # the model's own MTP head drafts tokens: speculative decoding without a second model
+        argv += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "1", "--spec-draft-p-min", "0.2"]
     if alias:
         argv += ["--alias", alias]
     return argv

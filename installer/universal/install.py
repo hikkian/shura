@@ -237,14 +237,17 @@ def run(args, hw, catalog, out=None, *, release=None):
 
     out.say("\n3/4  Test launch with the planned settings")
     measured, errors, final, verdict = {}, [], None, None
-    for attempt in range(MAX_ATTEMPTS):
-        if attempt:
+    attempt, replan = 0, False
+    while attempt < MAX_ATTEMPTS:
+        if attempt or replan:
             plan = planner.plan(hw if backend != "cpu" else {**hw, "gpus": []}, catalog, model=plan["model"],
                                 quant=plan["quant"], config=relaxed_config(base_cfg, attempt, hw))
             if not plan["ok"]:
                 break
-            out.say(f"  Trying again with more room left free (attempt {attempt + 1}): "
-                    f"{plan['settings']['context']} tokens of context")
+            if attempt:
+                out.say(f"  Trying again with more room left free (attempt {attempt + 1}): "
+                        f"{plan['settings']['context']} tokens of context")
+            replan = False
         argv = launch.server_args(plan, server, path, port=args.port, alias=plan["model"])
         verdict = verify(argv, args.port, home=home, wait_s=args.wait)
         if verdict["ok"]:
@@ -253,8 +256,14 @@ def run(args, hw, catalog, out=None, *, release=None):
         errors.append(f"attempt {attempt + 1}: {verdict.get('error', '?')[:300]}")
         out.say("  did not work" + (" (out of memory)" if verdict.get("oom") else "") + ": "
                 + str(verdict.get("error", ""))[:200].replace("\n", " "))
+        if plan["settings"].get("mtp") and not verdict.get("oom") and base_cfg.get("mtp_standard", True):
+            base_cfg = {**base_cfg, "mtp_standard": False}                  # this build may not run the MTP head: try without
+            out.say("  Trying without the MTP draft (speculative decoding).")
+            replan = True
+            continue
         if not verdict.get("oom") and attempt:
             break
+        attempt += 1
     if not final:
         out.say("\nNo configuration passed the test launch. The model and engine are downloaded and kept.")
         _, md = report.make_report(hw, plan, measured={"verified": False}, errors=errors, scrub_args=_scrub())

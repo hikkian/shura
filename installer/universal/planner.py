@@ -18,6 +18,10 @@ GB = 10 ** 9
 DEFAULTS = {
     "target_tok_s": 35.0,         # what a plan aims for, judged with the window half full (see fill_fraction)
     "weights": {"quality": 1.0, "window": 0.4, "speed": 0.3},   # exponents of the score: what matters how much (see `score`)
+    "mtp_standard": True,         # use the model's own MTP head (speculative decoding) with upstream llama.cpp when there is a GPU
+    "mtp_speedup": 1.15,          # unmeasured outside the CUDA fork (there x1.32), so conservative; calibration corrects it
+    "mtp_draft_kv_per_token": 2048,   # the MTP draft keeps its own f16 KV cache (measured in the fork: 2 KiB per token)
+    "mtp_compute": 236 * 1024 ** 2,   # and a compute buffer
     "default_bonus": 1.03,        # the catalog's tested quant is worth 2% more than an untested one of the same bits
     "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "q4_0": 0.975},   # share of quality kept by each KV cache type
     "kv_unavailable": (),         # KV types the engine on this machine cannot run
@@ -139,6 +143,8 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     file, kv = q["file_bytes"], ctx * m["kv_bytes_per_token_f16"] * kv_factor
     active, eff, g = _active_bytes(m, q), cfg["efficiency"], res["gpu"]
     s = {"context": ctx, "kv_type": kv_name, "flash_attn": True, "parallel": 1, "n_cpu_moe": None}
+    mtp = bool(g and cfg["mtp_standard"] and "mtp" in m.get("features", ()))
+    draft = (ctx * cfg["mtp_draft_kv_per_token"] + cfg["mtp_compute"]) if mtp else 0      # VRAM of the MTP draft
 
     def finish(mode, time_s, ram_need, vram_need, ngl, eta):
         if ram_need > res["ram_budget"]:
@@ -148,6 +154,9 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
         s["threads"] = min(res["cores"], 8) if mode in ("hybrid", "gpu", "unified") else res["cores"]
         s["numa"] = "distribute" if res["numa_nodes"] > 1 and mode in ("cpu", "hybrid") else None
         base = time_s / eta                                        # seconds per token with an empty window
+        if mtp and mode != "cpu":
+            base /= cfg["mtp_speedup"]
+            s["mtp"] = True
         kv_bw = (res["gpu_bw"] if mode in ("hybrid", "gpu", "unified") else res["ram_bw"]) * eff["attention"]
         typical = cfg["fill_fraction"]                             # share of the window in use during a working session
         speed = {fill: cfg["speed_scale"] / (base + fill * kv / kv_bw) if base else 0.0 for fill in (0.0, typical, 1.0)}
@@ -158,7 +167,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
                 "ram_need": ram_need, "vram_need": vram_need, "settings": s}, ""
 
     if g and g.get("unified"):                                    # Apple-style unified memory
-        need = file + kv + cfg["compute_buffer"]
+        need = file + kv + draft + cfg["compute_buffer"]
         if need > res["pool"]:
             return None, f"needs {need / GiB:.1f} GiB of unified memory, the GPU may use {res['pool'] / GiB:.1f} GiB"
         return finish("unified", active / res["gpu_bw"], cfg["host_base"], need, "all", eff["unified"])
@@ -166,7 +175,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     budget = res.get("vram_budget", 0) if g else 0
     if g and m["kind"] == "moe":
         expert_bytes = file - q["nonexpert_bytes"]
-        fixed = q["nonexpert_bytes"] + kv + cfg["compute_buffer"]
+        fixed = q["nonexpert_bytes"] + kv + draft + cfg["compute_buffer"]
         if fixed <= budget and expert_bytes > 0:
             per_layer = expert_bytes / m["n_layers"]
             on_gpu = min(m["n_layers"], int((budget - fixed) // per_layer))
@@ -180,7 +189,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
             return finish(mode, time_s, resident_cpu + cfg["host_base"], fixed + on_gpu * per_layer, "all",
                           eff[mode])
     elif g:                                                        # dense model, layers split by bandwidth time
-        fixed = kv + cfg["compute_buffer"]
+        fixed = kv + draft + cfg["compute_buffer"]
         if budget - fixed > 0:
             share = min(1.0, (budget - fixed) / file)
             time_s = share * file / res["gpu_bw"] + (1 - share) * file / res["ram_bw"]
