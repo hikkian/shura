@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
+from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
 
 CFG_DIR = Path(os.environ.get("AI_GATEWAY_CONFIG", Path(__file__).resolve().parent.parent / "config"))
 STATE_DIR = Path(os.path.expanduser(os.environ.get("AI_GATEWAY_STATE", "~/.local/state/ai-gateway")))
@@ -54,7 +55,7 @@ def load_config(name):
 G = load_config("guardian.json")
 M = load_config("model-launch.json")
 M["models"] = {mid: {k: expand(k, v) for k, v in mc.items()} for mid, mc in M["models"].items()}
-G = {"vramGuard": False, "vramIdleSeconds": 90,
+G = {**GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
      "vramEmergencyMiB": 60, "vramEmergencySeconds": 10,
      "vramFreeCriticalMiB": 120, "vramPressureSeconds": 5,
      "vramReloadWaitSeconds": 30, "vramPressureSlotReserveMiB": 512,
@@ -166,6 +167,9 @@ class State:
 
 
 st = State()
+GAME = GamePolicy(G)
+GAME_SIGNALS = GameSignals(G)
+GAME_REQUESTS = {}
 
 
 def event(reason, detail, fallback=False):
@@ -239,6 +243,8 @@ def build_args(mc, vision):
         a += ["--spec-type", mc["specType"], "--spec-draft-n-max", str(mc["specDraftNMax"]),
               "--spec-draft-p-min", str(mc["specDraftPMin"])]
     checkpoints = int(G.get("slotSaveCheckpoints", 0))
+    if GAME.enabled:
+        checkpoints = max(1, checkpoints)
     if checkpoints > 0:
         a += ["--slot-save-checkpoints", str(checkpoints)]
     a += ["--mmproj", mc["mmprojPath"]] if vision else ["--no-mmproj-auto"]
@@ -252,7 +258,7 @@ def build_args(mc, vision):
 
 def server_slot_dir():
     st.ram_backend = False
-    if G["vramGuard"]:
+    if G["vramGuard"] or GAME.enabled:
         try:
             path = prepare_ram_slot_dir()
             st.ram_backend = True
@@ -272,6 +278,8 @@ def preload_check(mc):
         return f"Not enough free RAM to load the model ({ram:.1f} GB available, need {G['ramFreeMinGBToLoad']} GB)"
     sample_age = time.time() - st.vram_sample_at if st.vram_sample_at is not None else math.inf
     if sample_age > G.get("vramTelemetryStaleSeconds", 5) or st.monitor_error:
+        if GAME.enabled:
+            return "Fresh VRAM admission data unavailable; retry shortly"
         st.monitor_error = "Fresh NVML data unavailable; skipping VRAM admission check"
         event("telemetry_failed", st.monitor_error, fallback=True)
         reset_pressure()
@@ -521,7 +529,9 @@ def notify_vram_yield(message="Видеопамять освобождена. М
 def stop_llama_locked(reason, save=True):
     if st.proc and st.proc.poll() is None:
         if save and st.status == "READY":
-            save_slot_locked()
+            if not save_slot_locked() and GAME.enabled:
+                event("game_save_failed", "Save failed; server stays loaded", fallback=True)
+                return False
         log(f"Stopping llama-server (pid {st.proc.pid}): {reason}")
         st.expected_exit = True
         try:
@@ -717,6 +727,8 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
             st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
 
         valid = math.isfinite(free_mib) and 0 <= free_mib <= 2097152
+        if GAME.enabled and valid:
+            st.monitor_error = ""
         idle = (time.time() if wall_now is None else wall_now) - st.last_request
         if G["vramGuard"]:
             if not valid:
@@ -779,14 +791,14 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
         else:
             reset_pressure()
 
-        if st.status == "READY" and st.busy == 0 and idle > G["idleUnloadSeconds"]:
+        if st.status == "READY" and st.busy == 0 and idle > G["idleUnloadSeconds"] and not (GAME.enabled and GAME.active):
             stop_llama_locked(f"idle for {int(idle)}s", save=True)
 
         if now - st.last_ram_poll >= G["pollIntervalSeconds"]:
             st.last_ram_poll = now
             if st.status == "READY":
                 st.pressure_sustain = st.pressure_sustain + 1 if ram < G["ramFreeMinGB"] else 0
-                if st.pressure_sustain >= G["memoryPressureSustainPolls"] and st.busy == 0:
+                if st.pressure_sustain >= G["memoryPressureSustainPolls"] and st.busy == 0 and not (GAME.enabled and GAME.active):
                     stop_llama_locked("memory pressure", save=True)
                     st.memory_pressure = True
                     st.status = "MEMORY_PRESSURE"
@@ -822,7 +834,9 @@ def acquire_model(model_id, vision):
     deadline = time.monotonic() + G["vramReloadWaitSeconds"]
     while True:
         with st.lock:
-            if G["vramGuard"] and RAM_SLOT_DIR is None:
+            if GAME.enabled and (GAME.active or not GAME.ready):
+                return "Model paused because of a game: " + (GAME.reason or "detector initializing")
+            if (G["vramGuard"] or GAME.enabled) and RAM_SLOT_DIR is None:
                 try:
                     prepare_ram_slot_dir()
                 except (OSError, RuntimeError) as e:
@@ -850,9 +864,81 @@ def acquire_model(model_id, vision):
         time.sleep(min(1, max(0, deadline - time.monotonic())))
 
 
+def game_tick(now, reasons, errors=()):
+    notifications = []
+    with st.lock:
+        changed = GAME.update(now, reasons, errors)
+        if changed:
+            event("game_active" if GAME.active else "game_quiet", GAME.reason or "Heavy GPU load ended")
+            if not GAME.active:
+                if st.status == "PARKED_BY_GAME":
+                    st.status = "UNLOADED"
+                GAME.parked = False
+                notifications.append("Игра окончена. Модель загрузится по следующему запросу.")
+        if not GAME.active:
+            return notifications
+        if st.busy:
+            GAME.drain_since = now if GAME.drain_since is None else GAME.drain_since
+            if now - GAME.drain_since >= G["gameDrainSeconds"]:
+                for lease in list(GAME_REQUESTS.values()):
+                    lease["cancel"].set()
+                    sock = lease.get("sock") or lease["conn"].sock
+                    if sock:
+                        try:
+                            sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                event("game_cancel_requested", "Drain timeout: client receives explicit error before checkpoint")
+            return notifications
+        if GAME.parked or now < GAME.next_save:
+            return notifications
+        if st.proc and st.proc.poll() is None:
+            try:
+                code, slots = llama_call("GET", "/slots")
+                if code != 200 or any(slot.get("is_processing", False) for slot in slots):
+                    return notifications
+            except (OSError, TypeError):
+                return notifications
+            if not save_slot_locked(ram_only=True):
+                GAME.next_save = now + 30
+                event("game_save_failed", "A2 save failed; model stays loaded", fallback=True)
+                notifications.append("Не удалось сохранить A2. Модель оставлена загруженной.")
+                return notifications
+            if not stop_llama_locked("game mode", save=False):
+                return notifications
+        st.status = "PARKED_BY_GAME"
+        st.last_error = ""
+        if st.guard_fallback.startswith(("A2 save failed", "Session checkpoint failed")):
+            st.guard_fallback = ""
+        GAME.next_save = 0
+        GAME.parked = True
+        event("game_parked", GAME.reason)
+        notifications.append("Модель на паузе из-за игры. Контекст сохранён в RAM.")
+    return notifications
+
+
+def game_monitor(stop=None):
+    stop = stop or threading.Event()
+    while not stop.is_set():
+        if not GAME.enabled:
+            stop.wait(G["gamePollSeconds"])
+            continue
+        try:
+            pid = st.proc.pid if st.proc else None
+            reasons, errors = GAME_SIGNALS.collect(pid, nvml_device() if G["gameDetectNvml"] else None)
+            for message in game_tick(time.monotonic(), reasons, errors):
+                notify_vram_yield(message)
+        except Exception as error:
+            with st.lock:
+                GAME.errors = [str(error)]
+                event("game_detector_failed", str(error), fallback=True)
+        stop.wait(G["gamePollSeconds"])
+
+
 def status_snapshot():
     proc = st.proc
     return {
+        "game_mode": GAME.snapshot(),
         "status": st.status, "model": st.model_id, "vision": st.vision, "override": st.override,
         "memory_pressure": st.memory_pressure, "multimedia_lock": st.multimedia_lock,
         "vram_pressure": st.vram_pressure, "last_yield_reason": st.last_yield_reason,
@@ -882,11 +968,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def send_json(self, code, obj):
+    def send_json(self, code, obj, retry_after=None):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         self.end_headers()
         self.wfile.write(body)
 
@@ -909,6 +997,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(503, {"error": f"Cannot persist rollback gate: {e}"})
                 event("rollback_prepared", "Active answer complete; requests gated for operator rollback")
                 self.send_json(200, {"ok": True, "previous_override": previous})
+        elif path in ("/guardian/pause", "/guardian/resume"):
+            if not GAME.enabled:
+                return self.send_json(409, {"error": "Game mode is disabled in configuration"})
+            with st.lock:
+                was_active = GAME.active
+                GAME.manual_switch(path.endswith("pause"), time.monotonic())
+                if was_active and not GAME.active:
+                    if st.status == "PARKED_BY_GAME":
+                        st.status = "UNLOADED"
+                    GAME.parked = False
+                    notify_vram_yield("Игра окончена. Модель загрузится по следующему запросу.")
+            self.send_json(200, {"ok": True, "game_mode": GAME.snapshot()})
         elif path == "/guardian/ai-on":
             OVERRIDE_FLAG.write_text("ON")
             with st.lock:
@@ -946,6 +1046,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.guardian_endpoint(path)
 
         st.last_request = time.time()
+        if GAME.enabled and (GAME.active or not GAME.ready):
+            return self.send_json(503, {"error": "Модель на паузе из-за игры", "reason": GAME.reason or "detector initializing"}, G["gameRetrySeconds"])
         if st.override == "OFF":
             return self.send_json(503, {"error": "AI is manually disabled (ai-off). POST /guardian/ai-on to re-enable."})
         if st.multimedia_lock:
@@ -967,14 +1069,72 @@ class Handler(BaseHTTPRequestHandler):
 
         err = acquire_model(model_id, vision)
         if err:
-            return self.send_json(503, {"error": f"Could not start model '{model_id}'", "reason": err})
+            return self.send_json(503, {"error": f"Could not start model '{model_id}'", "reason": err}, G["gameRetrySeconds"] if GAME.enabled and GAME.active else None)
 
         try:
-            self.proxy(body)
+            if GAME.enabled:
+                self.proxy_game(body)
+            else:
+                self.proxy(body)
         finally:
             with st.lock:
                 st.busy -= 1
                 st.last_request = time.time()
+
+    def proxy_game(self, body):
+        conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=3600)
+        key = id(self)
+        lease = {"conn": conn, "cancel": threading.Event()}
+        sent = False
+        chunked = False
+        with st.lock:
+            GAME_REQUESTS[key] = lease
+        try:
+            headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP_BY_HOP}
+            if body or self.command in ("POST", "PUT", "PATCH"):
+                headers["Content-Length"] = str(len(body))
+            conn.request(self.command, self.path, body=body or None, headers=headers)
+            lease["sock"] = conn.sock
+            reply = conn.getresponse()
+            if lease["cancel"].is_set():
+                raise ConnectionAbortedError("game drain timeout")
+            self.send_response(reply.status)
+            for name, value in reply.getheaders():
+                if name.lower() not in HOP_BY_HOP:
+                    self.send_header(name, value)
+            length = reply.getheader("Content-Length")
+            chunked = length is None
+            self.send_header("Transfer-Encoding", "chunked") if chunked else self.send_header("Content-Length", length)
+            self.end_headers()
+            sent = True
+            while self.command != "HEAD":
+                data = reply.read1(65536)
+                if not data:
+                    break
+                self.wfile.write((f"{len(data):X}\r\n".encode() + data + b"\r\n") if chunked else data)
+                self.wfile.flush()
+            if chunked:
+                if lease["cancel"].is_set():
+                    raise ConnectionAbortedError("game drain timeout")
+                self.wfile.write(b"0\r\n\r\n")
+        except (OSError, http.client.HTTPException) as error:
+            if lease["cancel"].is_set():
+                message = "Генерация остановлена для игрового режима; повторите запрос после игры."
+                if not sent:
+                    self.send_json(503, {"error": message, "type": "game_pause_timeout"}, G["gameRetrySeconds"])
+                elif chunked:
+                    data = ("data: " + json.dumps({"error": {"message": message, "type": "game_pause_timeout"}}) + "\n\ndata: [DONE]\n\n").encode()
+                    try:
+                        self.wfile.write(f"{len(data):X}\r\n".encode() + data + b"\r\n0\r\n\r\n")
+                        self.wfile.flush()
+                    except OSError:
+                        pass
+            elif not sent:
+                self.send_json(502, {"error": f"llama-server unreachable: {error}"})
+        finally:
+            conn.close()
+            with st.lock:
+                GAME_REQUESTS.pop(key, None)
 
     def proxy(self, body):
         conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=3600)
@@ -1024,7 +1184,7 @@ def shutdown(signum, _frame):
 
 
 def main():
-    if G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0:
+    if G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0 and not GAME.enabled:
         return legacy_main()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1032,6 +1192,8 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     st.monitor_thread = threading.Thread(target=monitor, daemon=True, name="shura-vram-guard")
     st.monitor_thread.start()
+    if GAME.enabled:
+        threading.Thread(target=game_monitor, daemon=True, name="shura-game-mode").start()
     server = ThreadingHTTPServer((G["gatewayHost"], G["gatewayPort"]), Handler)
     server.daemon_threads = True
     log(f"Gateway listening on http://{G['gatewayHost']}:{G['gatewayPort']} -> llama-server :{G['llamaPort']} "

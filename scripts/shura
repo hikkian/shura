@@ -7,6 +7,7 @@
 #   shura status     gateway / model state, RAM and VRAM headroom
 #   shura warm       load the model now
 #   shura unload     unload the model now (frees RAM/VRAM; long session is saved to disk)
+#   shura pause | resume  game-mode pause / request-based resume (requires opt-in)
 #   shura off | on   disable / re-enable the AI entirely
 #   shura logs       follow gateway + llama-server logs
 #   shura restart    restart the gateway service
@@ -64,6 +65,10 @@ if d.get("vram_guard_enabled"):
         print("last event : " + d["last_event"]["reason"] + " - " + d["last_event"]["detail"])
     if not d.get("monitor_healthy", True) or d.get("monitor_thread_alive") is False:
         print("monitor    : unhealthy - " + d.get("monitor_error", "thread stopped"))
+if d.get("game_mode", {}).get("enabled"):
+    g = d["game_mode"]
+    print(f"game mode  : {g['reason'] or 'quiet'} ({g['elapsed_seconds']} s), active={g['active']}")
+    if g.get("errors"): print("game errors: " + "; ".join(g["errors"]))
 if d["status"] == "READY":
     print(f"idle       : {d['idle_seconds']} s (auto-unload after {d['idle_unload_after_seconds']} s)")
 PY
@@ -130,6 +135,7 @@ case "${1:-}" in
            else status; fi ;;
   warm)    ensure_gateway; s=$(date +%s); warm; notify "Model loaded in $(( $(date +%s) - s ))s" ;;
   unload)  curl -s -X POST "$GW/guardian/unload" >/dev/null && notify "Model unloaded" ;;
+  pause|resume) curl --fail-with-body -s -X POST "$GW/guardian/$1"; echo ;;
   off)     curl -s -X POST "$GW/guardian/ai-off" >/dev/null && notify "AI disabled (shura on to re-enable)" ;;
   on)      curl -s -X POST "$GW/guardian/ai-on" >/dev/null && notify "AI enabled" ;;
   logs)    exec journalctl --user -u ai-gateway -f -o cat ;;

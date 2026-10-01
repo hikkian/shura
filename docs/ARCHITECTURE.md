@@ -184,3 +184,12 @@ of the conversation works as expected.
 server's `tools/list` response against an allowlist before the client sees it. Every tool schema sits
 in the system prompt of every request, so trimming Playwright from 25 to 14 tools and SearXNG from
 4 to 2 saves ~2,850 tokens of prefill per fresh session.
+
+
+### Opt-in game parking
+
+`gameMode` and automatic detector flags default to false. The mode uses A2 RAM snapshots and independent NVML/Steam/reaper/GameMode signals. Known desktop processes and the owned model are excluded. Activation requires5s; release requires60s quiet and never preloads the model. `shura pause`/`resume` use the same policy; status reports PARKED_BY_GAME, reason and elapsed time.
+
+Paused/draining admission returns503 with Retry-After. Active responses get up to gameDrainSeconds (default60); timeout produces an explicit game_pause_timeout SSE error or503. Stop follows a successful atomic A2 save; save failure keeps the server loaded and retries after30s. Ordinary idle save policy is unchanged. Snapshots are removed after restore.
+
+Isolated reduced4 tests:187k A2 cache_n186999/prompt_n33,6GiB CUDA hog after parking,3s false signal,20s flaps,manual control,final9/9. Real timeout used reduced4/mmap after load-mode none hit the PSI guard. Three short-context matched pairs gave medianON/OFF0.9814,identical output/MTP;CPU<=2.5 and pair delta<=0.8. GameMode registration was mocked to avoid its system-tuning hooks; installed ClientCount query inspected. Real games and instant VRAM allocation surges were not tested: delayed detection cannot guarantee game-start headroom. Local evidence:ignored bench/results/game-mode-a2-20261001.
