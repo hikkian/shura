@@ -109,7 +109,7 @@ def sandboxed(argv, scratch, workdir, engine=None, env=None):
 
 
 def agent_argv(workdir, prompt):
-    return [ENGINE, "run", "--format", "json", "--auto", "--dir", str(workdir), prompt]
+    return [str(Path(ENGINE).resolve()), "run", "--format", "json", "--auto", "--dir", str(workdir), prompt]
 
 
 def run_agent(workdir, prompt, cfg_dir, data_dir, timeout_s, log_path):

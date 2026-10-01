@@ -255,9 +255,12 @@ def main(argv=None):
                 break
         if not layout:
             raise RuntimeError("no server layout passed the pilot: see overnight.log")
-        reps = a.reps
-        est_hours = len(tasks) * reps * 4 * (took / 3 / layout[0] * 1.0) / 3600 * layout[0] / max(1, min(layout[0], 3))
-        log(out, f"layout {layout}; pilot took {took:.0f} s for 3 tasks; rough estimate for the whole night: {est_hours:.1f} h")
+        q = max(1, min(layout[0], len(PILOT_TASKS)))
+        remaining = deadline - time.monotonic()
+        est = {r: len(tasks) * r * len(arms) * took / q for r in (a.reps, 1)}          # seconds, from the pilot's throughput
+        reps = a.reps if est[a.reps] <= 0.8 * remaining else 1
+        log(out, f"layout {layout}; the pilot's {len(PILOT_TASKS)} tasks took {took:.0f} s; estimate for the night: "
+                 f"{est[a.reps] / 3600:.1f} h with {a.reps} reps, {est[1] / 3600:.1f} h with 1; budget left {remaining / 3600:.1f} h; using {reps} rep(s)")
         status(out, state="running", layout=list(layout), reps=reps)
         runs = run_all(out, arms, tasks, reps, layout, deadline, watchdog)
         keep, verdict_text, ver = decide_and_clean(out, runs, arms)
