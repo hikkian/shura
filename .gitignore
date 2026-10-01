@@ -23,3 +23,7 @@ __pycache__/
 
 # Raw benchmark run artifacts (logs contain local paths); summaries go into docs/BENCHMARKS.md
 bench/results/
+
+# Generated from bench/agentic-eval/families by build_tasks.py
+bench/agentic-eval/tasks/
+bench/agentic-eval/families/__pycache__/
