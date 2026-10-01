@@ -127,7 +127,9 @@ calibration on your machine has the last word.
    fork: 200k; a window that fits only just could run out of VRAM in a transient buffer at full context, which was
    measured). Beyond it a window is taken only if 25% of the VRAM budget stays free and the speed keeps a 15% margin.
    A 12 GB card stays at 200k; a 16 GB card with good bandwidth or a 24 GB card gets the full 262k.
-6. **KV cache precision.** Fork tier: `turbo3`. Standard tier: `q8_0`, or `q4_0` only if that is what lets the window fit.
+6. **KV cache precision.** Fork tier: `turbo3`. Standard tier: `q8_0`, and `q4_0` (half the memory and half the bytes read
+   for every token) only where `q8_0` misses the speed target at that window or does not fit. So a 16 GB card without the fork
+   reaches a bigger window at 35+ tok/s with `q4_0` instead of stopping at a smaller one with `q8_0`.
 7. **Model.** Among the models that reach the comfortable speed the most capable one wins; if none does, among those that
    reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is a refusal with the
    reason (for example, how much RAM is missing).

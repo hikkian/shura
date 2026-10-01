@@ -266,10 +266,18 @@ class FitToMemory(unittest.TestCase):
         # the first real person this was written for (Ryzen 7 5700X3D, 48 GB, RX 9070): upstream tier, the default quant
         p = plan("rx9070_16g_48g_windows")
         self.assertEqual((p["tier"], p["quant"], p["speed_rung"]), ("standard", "IQ4_XS", "target"))
-        self.assertGreaterEqual(p["settings"]["context"], 100000)
+        self.assertGreaterEqual(p["settings"]["context"], 200000)          # more VRAM and RAM than the 12 GB reference: not less window
+        self.assertEqual(p["settings"]["kv_type"], "q4_0")                  # q8_0 would miss 35 tok/s at that window
         self.assertEqual(p["backend_candidates"][:2], ["rocm", "vulkan"])
         self.assertTrue(p["needs_probe"])
         self.assertGreaterEqual(p["speed_by_fill"]["typical"], 35)
+
+    def test_the_kv_cache_is_as_precise_as_the_speed_target_allows(self):
+        # a machine that reaches 35 tok/s with q8_0 keeps q8_0; one that only reaches it with q4_0 gets q4_0
+        roomy = plan("rx9070xt_16g_32g", config={"contexts": (65536,)})
+        self.assertEqual((roomy["settings"]["kv_type"], roomy["speed_rung"]), ("q8_0", "target"))
+        tight = plan("rx9070_16g_48g_windows", config={"contexts": (262144,)})
+        self.assertEqual(tight["settings"]["kv_type"], "q4_0")
 
     def test_never_below_the_catalog_quant_floor_unless_forced(self):
         for name in HW:

@@ -241,20 +241,27 @@ def _fit_fork(res, cfg, m, q, ctx):
 
 
 def _best_fit_at(res, cfg, m, q, ctx):
-    """The best placement of one (quant, window): the fork tier when this machine has it, else the standard one, with the
-    KV cache as precise as fits (`q8_0`, then `q4_0`). Returns (fit, reason)."""
+    """The best placement of one (quant, window): the fork tier when this machine has it, else the standard one.
+
+    The KV cache is as precise as the speed target allows: `q8_0`, and `q4_0` (half the size, half the bytes read for every
+    token) only when `q8_0` misses the target at this window or does not fit. If neither reaches the target, the more precise
+    one is kept. Returns (fit, reason)."""
     fit, reason = _fit_fork(res, cfg, m, q, ctx)
     if fit:
         return fit, ""
     if res["fork"] and m.get("fork"):             # the fork tier is the plan on this machine; upstream's would be slower
         return None, reason
+    fits = []
     for name, factor in cfg["kv_types"]:
-        fit, why = _fit(res, cfg, m, q, ctx, name, factor)
-        if fit:
-            fit["tier"] = "standard"
-            return fit, ""
-        reason = why or reason
-    return None, reason or "no context size fits"
+        f, why = _fit(res, cfg, m, q, ctx, name, factor)
+        if f:
+            f["tier"] = "standard"
+            fits.append(f)
+        else:
+            reason = why or reason
+    if not fits:
+        return None, reason or "no context size fits"
+    return next((f for f in fits if f["tok_s"] >= cfg["target_tok_s"]), fits[0]), ""
 
 
 def _windows(res, cfg, m, q):
