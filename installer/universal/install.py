@@ -7,6 +7,7 @@ was seen to work instead of an error. Nothing is written outside the Shura home 
 """
 import copy
 import json
+import os
 import re
 import subprocess
 import sys
@@ -52,18 +53,56 @@ def relaxed_config(base, attempt, hw):
     return cfg
 
 
-def preview(plan, model, quant, dirs, server_bytes=120 * 1024 ** 2, turbo=None):
+def preview(plan, model, quant, dirs, server_bytes=120 * 1024 ** 2, turbo=None, hip=None):
     q = next(x for x in model["quants"] if x["id"] == quant)
     lines = [f"model file : {modelstore.file_name(model, quant)}  ({q['file_bytes'] / GiB:.1f} GiB)"]
+    if hip:
+        lines.append("our fork  : built on this machine for ROCm with scripts/build-llama.sh --hip (tens of minutes, ~1 GiB of "
+                     "disk; skip with --no-build): its expert cache is what makes our NVIDIA setup fast")
     if turbo:
         lines.append(f"engine     : TurboQuant+ llama.cpp {engine.TQP_TAG} (third-party fork, {turbo['backend_candidates'][0]}, "
-                     f"pinned SHA-256; skip with --no-turbo), then llama.cpp {engine.PINNED_TAG} to compare; the faster is kept")
+                     f"pinned SHA-256; skip with --no-turbo), then llama.cpp {engine.PINNED_TAG}; the fastest measured is kept")
     else:
         lines.append(f"engine     : llama.cpp {engine.PINNED_TAG}, backend {', '.join(plan['backend_candidates'])}  "
                      f"(~{server_bytes // 1024 ** 2} MB each)")
     lines += [f"folder     : {dirs}",
-              f"disk needed: about {(q['file_bytes'] + server_bytes * (len(plan['backend_candidates']) + (1 if turbo else 0))) / GiB + 2:.0f} GiB"]
+              f"disk needed: about {(q['file_bytes'] + server_bytes * (len(plan['backend_candidates']) + (1 if turbo else 0))) / GiB + 2 + (1 if hip else 0):.0f} GiB"]
     return lines
+
+
+def build_rocm_fork(home, out, arch=None):
+    """Build our fork (the expert cache) for ROCm with scripts/build-llama.sh --hip. Takes tens of minutes, runs at a low
+    priority, logs to <home>/logs/build-hip.log. Returns the path of llama-server or raises EngineError."""
+    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "build-llama.sh"
+    dest = Path(home) / "llama.cpp-rocm"
+    server = dest / "build" / "bin" / "llama-server"
+    if server.exists():
+        return server
+    log_path = Path(home) / "logs" / "build-hip.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = ["nice", "-n", "10", "bash", str(script), "--hip"] + ([arch] if arch else []) + [str(dest)]
+    out.say("  Building our fork for ROCm: this takes tens of minutes (log: " + str(log_path) + ")")
+    t0 = time.monotonic()
+    with open(log_path, "wb") as log:
+        proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env={**os.environ, "SHURA_BUILD_JOBS": "6"})
+        while proc.poll() is None:
+            time.sleep(1)
+            if int(time.monotonic() - t0) % 300 == 0 and time.monotonic() - t0 > 1:
+                out.say(f"  ... still building ({int((time.monotonic() - t0) / 60)} min)")
+                time.sleep(1)
+    if proc.returncode != 0 or not server.exists():
+        raise engine.EngineError(f"the ROCm build of our fork failed ({log_path}); attach the end of that log to a hardware report: "
+                                 + launch.tail(log_path, 400).replace("\n", " "))
+    return server
+
+
+def _choose_hipfork(hw, plan, root, out):
+    server = build_rocm_fork(root, out)
+    res = engine.selftest(server, engine.smoke_model(root / "models"), backend="rocm")
+    if not res["ok"]:
+        raise engine.EngineError(f"our ROCm build did not pass the self-test: {res.get('error', '?')}")
+    out.say(f"  rocm: works ({res['tok_s']} tok/s on the test model)")
+    return "rocm", server, [res]
 
 
 def _choose_tqp(hw, plan, root, out):
@@ -90,6 +129,8 @@ def choose_engine(hw, plan, root, tag, out, release=None, only_backend=None):
     Returns (backend, server, results)."""
     if plan.get("engine") == "turboquant-plus":
         return _choose_tqp(hw, plan, root, out)
+    if plan.get("engine") == "shura-fork-rocm":
+        return _choose_hipfork(hw, plan, root, out)
     release = release or engine.fetch_release(tag)
     builds = backends.builds_for(hw, plan["backend_candidates"], release["assets"])
     if only_backend:
@@ -315,10 +356,13 @@ def run(args, hw, catalog, out=None, *, release=None):
     home = Path(args.dir) if args.dir else launch.home_dir()
     base_cfg = {"contexts": tuple(c for c in planner.DEFAULTS["contexts"] if c <= args.context)} if args.context else {}
     no_turbo = bool(getattr(args, "no_turbo", False))
+    no_build = bool(getattr(args, "no_build", False))
     profile = getattr(args, "profile_name", "balanced")
-    up_cfg = {**base_cfg, "tqp_enabled": False}
-    tq_cfg = {**base_cfg, "kv_unavailable": ("q8_0", "q5_0", "q4_0")}               # only TurboQuant+ candidates
-    plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg if not no_turbo else up_cfg, 0, hw),
+    up_cfg = {**base_cfg, "tqp_enabled": False, "hipfork_enabled": False}
+    tq_cfg = {**base_cfg, "kv_unavailable": ("q8_0", "q5_0", "q4_0"), "hipfork_enabled": False}   # only TurboQuant+ candidates
+    hip_cfg = {**base_cfg, "only_tier": "hipfork", "tqp_enabled": False}                       # only our fork built for ROCm
+    first_cfg = {**base_cfg, **({"tqp_enabled": False} if no_turbo else {}), **({"hipfork_enabled": False} if no_build else {})}
+    plan = planner.plan(hw, catalog, config=relaxed_config(first_cfg, 0, hw),
                         model=args.model_id, quant=args.quant, profile=profile)
     out.say(report.card(hw, plan))
     if not plan["ok"]:
@@ -336,8 +380,13 @@ def run(args, hw, catalog, out=None, *, release=None):
         t = planner.plan(hw, catalog, config=relaxed_config(tq_cfg, 0, hw), model=args.model_id, quant=args.quant,
                          profile=profile, menu=False)
         turbo_plan = t if t["ok"] and t.get("tier") == "tqp" else None
+    hip_plan = None
+    if not no_build:
+        h = planner.plan(hw, catalog, config=relaxed_config(hip_cfg, 0, hw), model=args.model_id, quant=args.quant,
+                         profile=profile, menu=False)
+        hip_plan = h if h["ok"] and h.get("tier") == "hipfork" else None
     out.say("\nWhat will be downloaded")
-    for line in preview(plan, model, plan["quant"], home, turbo=turbo_plan):
+    for line in preview(plan, model, plan["quant"], home, turbo=turbo_plan, hip=hip_plan):
         out.say("  " + line)
     if args.dry_run:
         out.say("\nDry run: nothing was downloaded or changed.")
@@ -347,6 +396,13 @@ def run(args, hw, catalog, out=None, *, release=None):
         return 0
 
     cache, results = {}, []
+    if hip_plan:
+        out.say("\nTrying our fork built for ROCm (its expert cache keeps the hottest experts in VRAM)")
+        r = _attempt(args, hw, catalog, out, release, hip_cfg, home, cache, "Shura fork (ROCm build)")
+        if r["ok"]:
+            results.append(r)
+        else:
+            out.say("  Our ROCm build did not work here (" + "; ".join(r["errors"])[:300] + ").")
     if turbo_plan:
         out.say("\nTrying the TurboQuant+ build (third-party llama.cpp fork: turbo KV cache, expert cache, MTP)")
         r = _attempt(args, hw, catalog, out, release, tq_cfg, home, cache, "TurboQuant+")

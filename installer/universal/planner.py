@@ -24,6 +24,9 @@ DEFAULTS = {
     "mtp_compute": 236 * 1024 ** 2,   # and a compute buffer
     "default_bonus": 1.03,        # the catalog's tested quant is worth 2% more than an untested one of the same bits
     "attention_by_kv": {"turbo3": 0.16},   # KV read efficiency per type where it differs (turbo3 dequantises on the fly)
+    "hipfork_enabled": True,      # may the installer build our fork (with its expert cache) for ROCm where the SDK is installed?
+    "hipfork_time_penalty": 1.15, # the fork's CUDA constants are fitted on NVIDIA; nothing is measured on AMD, so a penalty (the A/B decides)
+    "only_tier": None,            # consider only this tier's candidates ("tqp", "hipfork", ...): the installer uses it to try each engine
     "tqp_enabled": True,          # may the installer use the third-party TurboQuant+ llama.cpp build (turbo KV, expert cache)?
     "tqp_kv_factor": 0.3625,      # K stays q8_0 (auto-asymmetric on GQA 8:1) and V is turbo3: (0.53 + 0.195) / 2 of f16, seen in its log
     "tqp_time_penalty": 1.42,     # its Vulkan kernels vs our CUDA fork's: measured 34.4 vs 54 tok/s on an RTX 4070 SUPER (empty window)
@@ -112,6 +115,7 @@ def _resources(hw, cfg):
         "arch": hw["os"]["arch"],
         "fork": False,
         "tqp": None,
+        "hipfork": False,
     }
     gpus = sorted(hw["gpus"], key=lambda g: g["vram_total"], reverse=True)
     if gpus:
@@ -128,6 +132,9 @@ def _resources(hw, cfg):
             res["vram_budget"] = g["vram_total"] - g["vram_used"] - reserve
             res["fork"] = bool(cfg["fork"]["enabled"] and g["vendor"] == "nvidia" and res["os"] == "linux")
     res["tqp"] = None if (res["fork"] or not cfg["tqp_enabled"]) else _tqp_backend(res, gpus[0] if gpus else None)
+    tool = hw.get("toolchain") or {}
+    res["hipfork"] = bool(cfg["hipfork_enabled"] and gpus and gpus[0]["vendor"] == "amd" and not gpus[0].get("unified")
+                          and res["os"] == "linux" and all(tool.get(t) for t in ("hipconfig", "cmake", "ninja", "git")))
     return res
 
 
@@ -227,7 +234,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     return finish("cpu", active / res["ram_bw"], file + kv + cfg["host_base"], 0, 0, eff["cpu"])
 
 
-def _fit_fork(res, cfg, m, q, ctx, tier="fork"):
+def _fit_fork(res, cfg, m, q, ctx, tier="fork", kv=None):
     """Fork tier (NVIDIA + Linux, our CUDA fork) or `tier="tqp"` (the TurboQuant+ build on a discrete GPU): turbo3 KV, expert
     layers on the CPU plus a cache of hot experts in VRAM. Both are the same idea; the TurboQuant+ numbers are the fork's with
     a time penalty, because nobody has measured that build on other hardware yet.
@@ -238,6 +245,11 @@ def _fit_fork(res, cfg, m, q, ctx, tier="fork"):
     fk, f = m.get("fork"), dict(cfg["fork"])
     if tier == "fork":
         usable = res["fork"]
+    elif tier == "hipfork":                 # our fork (expert cache and all) built for ROCm; plain KV types, the turbo kernels are CUDA
+        usable = res["hipfork"]
+        f["byte_time_scale"] *= cfg["hipfork_time_penalty"]
+        f["mtp_speedup"] = cfg["mtp_speedup"]
+        f["attention_efficiency"] = cfg["efficiency"]["attention"]
     else:
         usable = bool(res["tqp"]) and not (res["gpu"] or {}).get("unified") and "turbo3" not in cfg["kv_unavailable"]
         f["byte_time_scale"] *= cfg["tqp_time_penalty"]
@@ -246,7 +258,10 @@ def _fit_fork(res, cfg, m, q, ctx, tier="fork"):
     if not fk or m["kind"] != "moe" or not usable:
         return None, "not available"
     n = m["n_layers"]
-    kv_factor = fk["kv_factor"] if tier == "fork" else cfg["tqp_kv_factor"]
+    kv_name_, kv_factor = (fk.get("kv_type", "turbo3"), fk["kv_factor"]) if tier == "fork" else \
+        (kv or ("turbo3", cfg["tqp_kv_factor"]))[0:2] if tier == "tqp" else kv
+    if tier == "tqp" and kv is None:
+        kv_name_, kv_factor = "turbo3", cfg["tqp_kv_factor"]
     budget, kv_main = res["vram_budget"], ctx * m["kv_bytes_per_token_f16"] * kv_factor
     if ctx > fk.get("verified_context", m["context_max"]):
         budget *= f["unverified_headroom"]          # a window nobody has run: keep 25% of the VRAM budget free
@@ -285,12 +300,15 @@ def _fit_fork(res, cfg, m, q, ctx, tier="fork"):
     kv_bw = res["gpu_bw"] * f["attention_efficiency"]
     speed = {fill: cfg["speed_scale"] / (best["t"] + fill * kv_main / kv_bw) for fill in (0.0, cfg["fill_fraction"], 1.0)}
     pool = res["vram_budget"]
-    s = {"context": ctx, "kv_type": fk.get("kv_type", "turbo3"), "flash_attn": True, "parallel": 1,
+    s = {"context": ctx, "kv_type": kv_name_, "flash_attn": True, "parallel": 1,
          "n_cpu_moe": best["n_cpu"], "moe_cache_slots": best["slots"], "mtp": mtp, "ngl": "all",
          "threads": min(res["cores"], 8), "numa": None}
     if tier == "tqp":                       # the TurboQuant+ build takes a VRAM budget for the cache, not a slot count
         s["moe_cache_mib"] = int(best["slots"] * e_slot * best["n_cpu"] / (1024 ** 2))
-    extra = {"engine": "turboquant-plus", "backend": res["tqp"]} if tier == "tqp" else {}
+    if tier == "hipfork":
+        s["moe_cache_profile"] = "config/moe-trace/tiel-coder-agentic.csv"    # the routing profile our fork reads (repo-relative)
+    extra = ({"engine": "turboquant-plus", "backend": res["tqp"]} if tier == "tqp"
+             else {"engine": "shura-fork-rocm", "backend": "rocm"} if tier == "hipfork" else {})
     return {"mode": "hybrid" if best["n_cpu"] else "gpu", "tier": tier, **extra,
             "tok_s": speed[cfg["fill_fraction"]], "tok_empty": speed[0.0], "tok_full": speed[1.0],
             "fill_tokens": int(ctx * cfg["fill_fraction"]), "kv_bytes": kv_main + kv_draft,
@@ -309,6 +327,15 @@ def _options_at(res, cfg, m, q, ctx):
         return [], reason
     fits = []
     discrete_moe = bool(m.get("fork")) and m["kind"] == "moe" and not (res["gpu"] or {}).get("unified")
+    if res["hipfork"] and discrete_moe:
+        for name, factor in (("q8_0", 0.53), ("q4_0", 0.28)):
+            if name in cfg["kv_unavailable"]:
+                continue
+            h, why = _fit_fork(res, cfg, m, q, ctx, tier="hipfork", kv=(name, factor))
+            if h:
+                fits.append(h)
+            else:
+                reason = why or reason
     if res["tqp"] and discrete_moe:
         t, why = _fit_fork(res, cfg, m, q, ctx, tier="tqp")
         if t:
@@ -326,6 +353,8 @@ def _options_at(res, cfg, m, q, ctx):
             fits.append(f)
         else:
             reason = why or reason
+    if cfg["only_tier"]:
+        fits = [f for f in fits if f.get("tier") == cfg["only_tier"]]
     return fits, ("" if fits else reason or "no context size fits")
 
 
@@ -493,8 +522,8 @@ def _plan(hw, catalog, config, model, quant):
         "ok": True,
         "model": best["model"]["id"], "model_name": best["model"]["name"], "quant": best["quant"]["id"],
         "engine": fit.get("engine", "llama.cpp"),
-        "backend_candidates": [fit["backend"]] if fit.get("tier") == "tqp" else backends,
-        "needs_probe": False if fit.get("tier") == "tqp" else probe,
+        "backend_candidates": [fit["backend"]] if fit.get("tier") in ("tqp", "hipfork") else backends,
+        "needs_probe": False if fit.get("tier") in ("tqp", "hipfork") else probe,
         "speed_rung": best["rung"], "score": best["score"],
         "settings": fit["settings"], "mode": fit["mode"], "tier": fit.get("tier", "standard"),
         "predicted_tok_s": {"low": round(mid * lo, 1), "mid": round(mid, 1), "high": round(mid * hi, 1)},

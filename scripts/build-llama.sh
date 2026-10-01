@@ -3,15 +3,22 @@
 #
 #   scripts/build-llama.sh [--attention-decode] [destination]        (default: ~/ai/llama.cpp-perf)
 #   CUDA_ARCH=86 scripts/build-llama.sh          (RTX 30xx; default 89 = RTX 40xx)
+#   scripts/build-llama.sh --hip [gfx1201] [destination]     AMD with ROCm (HIP): the same fork and its expert cache, built for
+#                                                            your GPU (default: the one `rocminfo` reports). UNVERIFIED on AMD:
+#                                                            the author has no AMD card; it takes tens of minutes.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$HOME/ai/llama.cpp-perf"
 ATTENTION_DECODE=0
+HIP=0
+HIP_ARCH=""
 DEST_SET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --attention-decode) ATTENTION_DECODE=1 ;;
+    --hip) HIP=1
+      if [ "$#" -gt 1 ] && [[ "$2" =~ ^gfx[0-9a-f]+$ ]]; then HIP_ARCH="$2"; shift; fi ;;
     --*) echo "Unknown option: $1" >&2; exit 1 ;;
     *)
       if [ "$DEST_SET" -eq 1 ]; then echo "Only one destination is allowed" >&2; exit 1; fi
@@ -32,8 +39,18 @@ if ! [[ "$BUILD_JOBS" =~ ^[1-6]$ ]]; then
   exit 1
 fi
 
-command -v nvcc >/dev/null || export PATH="/usr/local/cuda/bin:$PATH"
-command -v nvcc >/dev/null || { echo "nvcc not found - install the CUDA toolkit first (see docs/INSTALL.md)"; exit 1; }
+if [ "$HIP" -eq 1 ]; then
+  [ "$ATTENTION_DECODE" -eq 0 ] || { echo "--attention-decode is an NVIDIA (CUDA) patch and cannot be combined with --hip" >&2; exit 1; }
+  command -v hipconfig >/dev/null || { echo "hipconfig not found - install the ROCm SDK first (Fedora: sudo dnf install rocm-hip-devel rocblas-devel hipblas-devel cmake gcc-c++ ninja-build)"; exit 1; }
+  if [ -z "$HIP_ARCH" ]; then
+    HIP_ARCH="$(rocminfo 2>/dev/null | grep -o -m1 'gfx[0-9a-f]\{3,5\}' | head -1 || true)"
+    [ -n "$HIP_ARCH" ] || { echo "could not tell your GPU's gfx target: pass it, e.g. --hip gfx1201 (rocminfo | grep gfx)"; exit 1; }
+  fi
+  echo "Building for HIP, GPU target $HIP_ARCH (this takes tens of minutes)"
+else
+  command -v nvcc >/dev/null || export PATH="/usr/local/cuda/bin:$PATH"
+  command -v nvcc >/dev/null || { echo "nvcc not found - install the CUDA toolkit first (see docs/INSTALL.md)"; exit 1; }
+fi
 
 if [ ! -d "$DEST/.git" ]; then
   git clone --branch perf --single-branch https://github.com/thecodacus/llama.cpp.git "$DEST"
@@ -69,7 +86,10 @@ if [ "$ATTENTION_DECODE" -eq 1 ]; then
 fi
 
 configure() { cmake -S "$DEST" -B "$DEST/build" -G Ninja -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA_TURBO3_DECODE_GROUP8="$ATTENTION_CMAKE" "$@"; }
-if ! configure; then
+if [ "$HIP" -eq 1 ]; then
+  HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+    cmake -S "$DEST" -B "$DEST/build" -G Ninja -DGGML_HIP=ON -DGPU_TARGETS="$HIP_ARCH" -DCMAKE_BUILD_TYPE=Release
+elif ! configure; then
   # Rolling distros (e.g. Arch) can ship a GCC newer than nvcc officially supports; it usually works anyway.
   echo "configure failed - retrying with -allow-unsupported-compiler"
   rm -rf "$DEST/build"

@@ -161,7 +161,17 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
   beyond noise, and the VRAM peak did not grow with the budget (about 10.1-10.4 GB for all), so the pools may not be filled in this
   setup; the log (`-lv 4`) did not show the pool sizes. It is adaptive: the first requests after loading ran at about half speed, so the
   installer measures the median of 3 runs after 2 warm-up runs. AMD is unmeasured, and the cache may behave differently there.
-- **TurboQuant+ on ROCm: do it yourself.** There is no prebuilt for it. The fork's source builds for HIP (RDNA4 included), which
+- **Our fork on ROCm (with its expert cache), built on your machine.** On Linux with an AMD GPU and the ROCm SDK installed
+  (`hipconfig`, `cmake`, `ninja`, `git`) the installer offers to build our fork (the same pinned commit as the NVIDIA setup) with
+  `scripts/build-llama.sh --hip`, which takes tens of minutes at a low priority and about 1 GiB of disk. The reason it can work
+  at all: the fork's expert cache is not CUDA code. It lives at the graph level (`src/llama-graph.cpp`: the hottest experts of each
+  layer are packed into a buffer on the GPU backend and the rest stay on the CPU, merged exactly), the author measured +21% to +78%
+  with it on an RTX 3060, and the kernels have HIP guards. The turbo KV kernels are CUDA-only, so this build uses `q8_0` / `q4_0`.
+  The planner predicts about 25% more speed than plain upstream ROCm on a 16 GB card (an estimate from the NVIDIA constants with a
+  15% penalty). **Nobody has built or run this on AMD yet** (the author has no AMD card): if the build fails the installer says so, keeps
+  the log in `logs/build-hip.log` and carries on with the other engines; `--no-build` skips it. Whichever engine measures fastest
+  on the real model is kept, and the vendor's own stack (ROCm) gets the 10% preference.
+- **TurboQuant+ on ROCm: do it yourself.** There is no prebuilt for it, and the installer does not build it. The fork's source builds for HIP (RDNA4 included), which
   gives its turbo KV cache and MTP but **not** the expert cache (its release notes list that for CUDA, Metal and Vulkan only). The
   installer does not build it: it needs the ROCm SDK and takes tens of minutes. If you want to try, the fork's own `docs/build.md`
   is the reference; in short, with ROCm installed: `git clone https://github.com/TheTom/llama-cpp-turboquant && cd

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import shutil
 import socketserver
 import stat
 import sys
@@ -560,6 +561,109 @@ class TurboBuild(unittest.TestCase):
         argv = launch.server_args(p, "s", "m")
         self.assertEqual(argv[argv.index("--moe-cache") + 1], str(p["settings"]["moe_cache_mib"]))
         self.assertEqual(argv[argv.index("-ctk") + 1], "turbo3")
+
+
+def amd_with_rocm_sdk():
+    hw = copy.deepcopy(HW["rx9070_16g_48g_fedora"])
+    hw["toolchain"] = {"hipconfig": True, "cmake": True, "ninja": True, "git": True}
+    return hw
+
+
+class RocmFork(unittest.TestCase):
+    """Our fork (with its expert cache) built for ROCm on an AMD machine that has the SDK. Unverified on real AMD hardware."""
+
+    def plan(self, **cfg):
+        return planner.plan(amd_with_rocm_sdk(), REAL, config={"only_tier": "hipfork", **cfg}, menu=False)
+
+    def test_it_is_offered_only_with_the_rocm_sdk_and_a_build_chain(self):
+        p = self.plan()
+        self.assertEqual((p["tier"], p["engine"], p["backend_candidates"]), ("hipfork", "shura-fork-rocm", ["rocm"]))
+        self.assertGreater(p["settings"]["moe_cache_slots"], 0)
+        self.assertIn(p["settings"]["kv_type"], ("q8_0", "q4_0"))                # the turbo kernels are CUDA-only
+        none = planner.plan(HW["rx9070_16g_48g_fedora"], REAL, config={"only_tier": "hipfork"}, menu=False)
+        self.assertNotEqual(none.get("tier"), "hipfork")                          # no SDK recorded: not offered
+        self.assertNotEqual(self.plan(hipfork_enabled=False).get("tier"), "hipfork")
+
+    def test_the_cache_is_predicted_to_help_on_amd_too(self):
+        hip = self.plan()["speed_by_fill"]["typical"]
+        plain = planner.plan(amd_with_rocm_sdk(), REAL, config={"hipfork_enabled": False, "tqp_enabled": False},
+                             menu=False)["speed_by_fill"]["typical"]
+        self.assertGreater(hip, plain)
+
+    def test_launch_flags_name_the_profile_and_the_slots(self):
+        p = self.plan()
+        argv = launch.server_args(p, "s", "m")
+        self.assertEqual(argv[argv.index("--moe-cache-slots") + 1], str(p["settings"]["moe_cache_slots"]))
+        self.assertTrue(Path(argv[argv.index("--moe-cache-profile") + 1]).exists())     # the CSV shipped in the repository
+        self.assertIn("--n-cpu-moe", argv)
+        self.assertIn("draft-mtp", argv)
+
+    def test_the_build_script_refuses_to_mix_hip_with_the_cuda_only_patch(self):
+        import subprocess
+        r = subprocess.run(["bash", str(ROOT / "scripts/build-llama.sh"), "--hip", "--attention-decode", "/nonexistent/x"],
+                           capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("cannot be combined", r.stderr)
+
+    def test_a_failed_build_raises_with_the_log_so_the_installer_can_move_on(self):
+        # no ROCm SDK here (nor on the CI runners): the real script stops at once and says why
+        with tempfile.TemporaryDirectory() as d:
+            if shutil.which("hipconfig"):
+                self.skipTest("this machine has the ROCm SDK: a real build would start")
+            with self.assertRaises(install.engine.EngineError) as cm:
+                install.build_rocm_fork(Path(d) / "home", Out())
+            self.assertIn("build-hip.log", str(cm.exception))
+            self.assertIn("hipconfig not found", str(cm.exception))
+
+    def test_end_to_end_with_a_fake_build(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": os.urandom(200_000)}) as hub:
+            server = fake_server(bin_dir)
+            cat, out = tiny_catalog(0), Out()
+
+            def fake_choose(hw, plan, root, tag, out_, release=None, only_backend=None):
+                if plan.get("engine") == "shura-fork-rocm":                       # the real path, with the build faked
+                    return install._choose_hipfork(hw, plan, root, out_)
+                return only_backend or plan["backend_candidates"][0], server, []
+            with mock.patch.object(install, "choose_engine", side_effect=fake_choose), \
+                    mock.patch.object(install, "build_rocm_fork", return_value=server), \
+                    mock.patch.object(install.engine, "smoke_model", return_value=Path("m.gguf")), \
+                    mock.patch.object(install.engine, "selftest", return_value={"ok": True, "tok_s": 5}):
+                code = install.run(args(d, hub), amd_with_rocm_sdk(), cat, out)
+            self.assertEqual(code, 0, out.text)
+            self.assertIn("our fork built for ROCm", out.text)
+            m = launch.load_state(d)
+            self.assertIn("Shura fork (ROCm build)", m["measured"]["engine_comparison"])
+            self.assertEqual(m["measured"]["chosen"], "Shura fork (ROCm build)")       # rocm is native, a tie goes to the first
+            self.assertIn("--moe-cache-slots", m["argv"])
+
+    def test_a_failing_build_leaves_the_other_engines_to_finish_the_install(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": os.urandom(200_000)}) as hub:
+            server = fake_server(bin_dir)
+            cat, out = tiny_catalog(0), Out()
+
+            def fake_choose(hw, plan, root, tag, out_, release=None, only_backend=None):
+                if plan.get("engine") == "shura-fork-rocm":
+                    raise install.engine.EngineError("the ROCm build of our fork failed (log)")
+                return only_backend or plan["backend_candidates"][0], server, []
+            with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
+                code = install.run(args(d, hub), amd_with_rocm_sdk(), cat, out)
+            self.assertEqual(code, 0, out.text)
+            self.assertIn("Our ROCm build did not work here", out.text)
+            self.assertNotEqual(launch.load_state(d)["measured"]["chosen"], "Shura fork (ROCm build)")
+
+    def test_no_build_never_builds(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": os.urandom(200_000)}) as hub:
+            server = fake_server(bin_dir)
+            cat, out = tiny_catalog(0), Out()
+            seen = []
+
+            def fake_choose(hw, plan, root, tag, out_, release=None, only_backend=None):
+                seen.append(plan.get("engine"))
+                return only_backend or plan["backend_candidates"][0], server, []
+            with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
+                code = install.run(args(d, hub, no_build=True), amd_with_rocm_sdk(), cat, out)
+            self.assertEqual(code, 0, out.text)
+            self.assertNotIn("shura-fork-rocm", seen)
 
 
 class Relax(unittest.TestCase):

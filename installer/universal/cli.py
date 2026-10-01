@@ -115,6 +115,7 @@ def main(argv=None):
     ap.add_argument("--optimize", dest="profile_name", choices=sorted(planner.PROFILES), default="balanced",
                     help="what to optimise for: balanced (default), fast, long (biggest window), quality")
     ap.add_argument("--no-turbo", action="store_true", help="never use the third-party TurboQuant+ llama.cpp build (install)")
+    ap.add_argument("--no-build", action="store_true", help="never build anything from source (our fork for ROCm) (install)")
     ap.add_argument("--model-id", help="model from the catalog (install; default: the best one that fits)")
     ap.add_argument("--context", type=int, help="do not use a window larger than this (install)")
     ap.add_argument("--port", type=int, default=launch.DEFAULT_PORT, help="server port (install, start)")

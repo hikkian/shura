@@ -339,5 +339,8 @@ def detect(env=None, *, ram_bandwidth_gbs=None):
     system = {"Linux": "linux", "Darwin": "macos", "Windows": "windows"}.get(platform.system(), "linux")
     cpu, mem, gpus, notes = {"linux": detect_linux, "macos": detect_macos, "windows": detect_windows}[system](env)
     arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
-    return build_profile(system, cpu, mem, gpus, notes, ram_bandwidth_gbs=ram_bandwidth_gbs, arch=arch,
-                         disk_free=shutil.disk_usage(os.path.expanduser("~")).free)
+    profile = build_profile(system, cpu, mem, gpus, notes, ram_bandwidth_gbs=ram_bandwidth_gbs, arch=arch,
+                            disk_free=shutil.disk_usage(os.path.expanduser("~")).free)
+    # what could build our fork here: the planner offers the ROCm build of it only where hipconfig and a build chain exist
+    profile["toolchain"] = {t: bool(shutil.which(t)) for t in ("hipconfig", "cmake", "ninja", "git")}
+    return profile

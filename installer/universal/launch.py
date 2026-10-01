@@ -46,6 +46,9 @@ def server_args(plan, server, model, *, host="127.0.0.1", port=DEFAULT_PORT, ali
             "-ctk", s["kv_type"], "-ctv", s["kv_type"], "-fa", "on" if s.get("flash_attn", True) else "off", "--jinja"]
     if s.get("n_cpu_moe"):
         argv += ["--n-cpu-moe", str(s["n_cpu_moe"])]
+        if plan.get("tier") == "hipfork" and s.get("moe_cache_slots"):        # our fork's expert cache: hot experts in VRAM
+            profile = Path(__file__).resolve().parent.parent.parent / s["moe_cache_profile"]
+            argv += ["--moe-cache-profile", str(profile), "--moe-cache-slots", str(s["moe_cache_slots"])]
         if plan.get("tier") == "tqp":              # the TurboQuant+ build caches hot experts in VRAM: give it exactly our budget
             argv += ["--moe-cache", str(s["moe_cache_mib"]) if s.get("moe_cache_mib") else "off"]
     if s.get("numa"):
