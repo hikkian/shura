@@ -257,8 +257,8 @@ if nothing works it leaves a report without personal data and keeps the download
 | Windows (any GPU, or CPU) | `shura install` | **Unverified**; only unit tests and CI runners |
 | CPU-only, including many-channel servers | `shura install` | **Unverified**; speed predictions are least certain here |
 
-What is checked automatically on every commit (CI): unit tests on Linux, macOS and Windows; the real llama.cpp CPU build
-is downloaded and run on a 19 MB model on all three; the Vulkan build runs on a software driver (experimental); the
+What is checked automatically on every commit (CI): unit tests on Linux, macOS and Windows; the real llama.cpp build
+is downloaded and run on a 19 MB model (the CPU build on Linux and Windows, the Metal build on macOS, inside a CI virtual machine); the Vulkan build runs on a software driver (experimental); the
 flags `shura install` passes to `llama-server` were checked against the real `--help` of the pinned release (b11301).
 
 What **no one has checked**: a real GPU other than the author's; loading the real 17 GB model on other hardware; the speed
