@@ -8,6 +8,7 @@ prediction is for choosing and ranking, never a promise. A short measurement on 
 corrects it. See docs/HARDWARE.md.
 """
 import copy
+import math
 
 from .schema import validate_catalog, validate_hardware
 
@@ -16,12 +17,16 @@ GB = 10 ** 9
 
 DEFAULTS = {
     "target_tok_s": 35.0,         # what a plan aims for, judged with the window half full (see fill_fraction)
+    "weights": {"quality": 1.0, "window": 0.4, "speed": 0.3},   # exponents of the score: what matters how much (see `score`)
+    "default_bonus": 1.03,        # the catalog's tested quant is worth 2% more than an untested one of the same bits
+    "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "q4_0": 0.975},   # share of quality kept by each KV cache type
+    "kv_unavailable": (),         # KV types the engine on this machine cannot run
+    "unverified_margin": 1.15,    # a window nobody has run (beyond the verified one) is taken only with 15% more speed than the target
+    "target_tolerance": 0.95,     # within 5% of the target counts as reaching it (measured run-to-run spread is 5-8%)
+    "speed_scale": 1.0,           # measured speed / predicted speed on this machine (set by the installer after a real run)
     "min_tok_s": 15.0,            # below this a model is not recommended at all
     "comfort_tok_s": 20.0,        # if the target is out of reach: the best that reaches this, then min_tok_s
-    "upgrade_margin": 1.15,       # a quant above the catalog default needs target * margin predicted speed
     "fill_fraction": 0.5,         # speed is judged with this share of the window filled (a working session, not an empty chat)
-    "window_floors": (100000, 65536, 32768, 16384),   # the window is given up step by step before the quant is
-    "useful_window": 65536,       # below this a window is hardly enough for an agent: only chosen when nothing larger works
     # "attention": efficiency of reading the KV cache for every generated token (attention kernels use a fraction of the
     # bandwidth; ~0.2 measured on the reference GPU at 187k context). It is what makes a long window cost speed.
     "efficiency": {"hybrid": 0.30, "gpu": 0.50, "cpu": 0.40, "unified": 0.45, "attention": 0.25},
@@ -52,6 +57,14 @@ DEFAULTS = {
         "max_slots": 24,                # measured: 24 best, 28 degraded at the time; beyond that is unmeasured
         "validated_min_cpu_layers": 20,     # layouts with more layers in VRAM than measured are flagged as extrapolated
     },
+}
+
+# What the user can ask for instead of the balanced default. They are only different weights on the same selection rules.
+PROFILES = {
+    "balanced": {},
+    "fast": {"weights": {"speed": 1.2, "window": 0.25}, "target_tok_s": 50.0},
+    "long": {"weights": {"window": 0.9, "speed": 0.15}},
+    "quality": {"weights": {"quality": 4.0}},
 }
 
 BACKEND_ORDER = {
@@ -137,7 +150,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
         base = time_s / eta                                        # seconds per token with an empty window
         kv_bw = (res["gpu_bw"] if mode in ("hybrid", "gpu", "unified") else res["ram_bw"]) * eff["attention"]
         typical = cfg["fill_fraction"]                             # share of the window in use during a working session
-        speed = {fill: 1.0 / (base + fill * kv / kv_bw) if base else 0.0 for fill in (0.0, typical, 1.0)}
+        speed = {fill: cfg["speed_scale"] / (base + fill * kv / kv_bw) if base else 0.0 for fill in (0.0, typical, 1.0)}
         pool = (res["pool"] if g and g.get("unified") else res.get("vram_budget", 0)) \
             if mode in ("hybrid", "gpu", "unified") else res["ram_budget"]
         return {"mode": mode, "tok_s": speed[typical], "tok_empty": speed[0.0], "tok_full": speed[1.0],
@@ -227,7 +240,7 @@ def _fit_fork(res, cfg, m, q, ctx):
     if best is None:
         return None, why or "no layout fits"
     kv_bw = res["gpu_bw"] * f["attention_efficiency"]
-    speed = {fill: 1.0 / (best["t"] + fill * kv_main / kv_bw) for fill in (0.0, cfg["fill_fraction"], 1.0)}
+    speed = {fill: cfg["speed_scale"] / (best["t"] + fill * kv_main / kv_bw) for fill in (0.0, cfg["fill_fraction"], 1.0)}
     pool = res["vram_budget"]
     s = {"context": ctx, "kv_type": fk.get("kv_type", "turbo3"), "flash_attn": True, "parallel": 1,
          "n_cpu_moe": best["n_cpu"], "moe_cache_slots": best["slots"], "mtp": mtp, "ngl": "all",
@@ -240,58 +253,70 @@ def _fit_fork(res, cfg, m, q, ctx):
             "extrapolated": best["n_cpu"] < f["validated_min_cpu_layers"]}, ""
 
 
-def _best_fit_at(res, cfg, m, q, ctx):
-    """The best placement of one (quant, window): the fork tier when this machine has it, else the standard one.
-
-    The KV cache is as precise as the speed target allows: `q8_0`, and `q4_0` (half the size, half the bytes read for every
-    token) only when `q8_0` misses the target at this window or does not fit. If neither reaches the target, the more precise
-    one is kept. Returns (fit, reason)."""
+def _options_at(res, cfg, m, q, ctx):
+    """Every placement worth scoring for one (quant, window): the fork tier when this machine has it, else the standard tier
+    with each KV cache type that fits. Returns (list of fits, reason when empty)."""
     fit, reason = _fit_fork(res, cfg, m, q, ctx)
     if fit:
-        return fit, ""
+        return [fit], ""
     if res["fork"] and m.get("fork"):             # the fork tier is the plan on this machine; upstream's would be slower
-        return None, reason
+        return [], reason
     fits = []
     for name, factor in cfg["kv_types"]:
+        if name in cfg["kv_unavailable"]:
+            continue
         f, why = _fit(res, cfg, m, q, ctx, name, factor)
         if f:
             f["tier"] = "standard"
             fits.append(f)
         else:
             reason = why or reason
-    if not fits:
-        return None, reason or "no context size fits"
-    return next((f for f in fits if f["tok_s"] >= cfg["target_tok_s"]), fits[0]), ""
+    return fits, ("" if fits else reason or "no context size fits")
 
 
-def _windows(res, cfg, m, q):
-    """{window: fit} for every window this quant can run. On a machine with a GPU, windows that would push the work off the
-    GPU are dropped as long as any window keeps it in use."""
-    out, reasons = {}, []
-    for ctx in cfg["contexts"]:
-        if ctx > m["context_max"] or ctx < cfg["min_context"]:
-            continue
-        fit, why = _best_fit_at(res, cfg, m, q, ctx)
-        if fit:
-            out[ctx] = fit
-        else:
-            reasons.append(why)
-    if res["gpu"] and any(f["mode"] != "cpu" for f in out.values()):
-        out = {c: f for c, f in out.items() if f["mode"] != "cpu"}
-    return out, (reasons[0] if reasons else "")
+def _bits_per_weight(m, q):
+    return q["file_bytes"] * 8 / (m["params_total_b"] * 1e9)
+
+
+def quality_of(m, q, cfg):
+    """Prior for how much of the full model's quality a quant keeps (1 = lossless), from its bits per weight. Quality falls off
+    quickly below about 4 bits. A prior, not a measurement: the catalog's tested default also gets a small bonus."""
+    bpw = _bits_per_weight(m, q)
+    base = 1.0 - 0.5 * math.exp(-(bpw - 2.0) * 1.1)
+    return base * (cfg["default_bonus"] if q["id"] == m["default_quant"] else 1.0)
+
+
+def speed_credit(tok, cfg):
+    """How much a predicted speed is worth (1 at the target). Predictions are only good to about +-40%, so a margin over the
+    target keeps counting up to 1.3x the target; far above that more speed is a windfall and counts for almost nothing. Below
+    the target the slope is soft, below the comfortable speed steeper. No cliff: 34 tok/s is worth 99% of 35."""
+    target, comfort = cfg["target_tok_s"], cfg["comfort_tok_s"]
+    cap = 1.3 * target
+    credit = (min(tok, cap) / target) ** cfg["weights"]["speed"]
+    if tok > cap:
+        credit *= 1.0 + 0.02 * math.log(tok / cap)
+    if tok < comfort:
+        credit *= (tok / comfort) ** 0.5
+    return credit
+
+
+def score(m, q, fit, cfg):
+    """One number for a candidate: quality of the quant and of the KV cache, the window, the speed. Multiplicative, so a
+    collapse in one of them cannot be bought back by the others. Weights are exponents (cfg['weights'])."""
+    w = cfg["weights"]
+    window = (fit["settings"]["context"] / m["context_max"]) ** w["window"]
+    kv = cfg["kv_quality"].get(fit["settings"]["kv_type"], 1.0)
+    return (quality_of(m, q, cfg) ** w["quality"]) * kv * window * speed_credit(fit["tok_s"], cfg)
 
 
 def _select(res, cfg, m, forced=None):
-    """Quant and window of one model.
+    """Quant, window and KV cache of one model: the candidate with the best score among everything that fits.
 
-    Three rungs of speed are tried in turn (target 35, comfortable 20, minimum 15 tok/s, judged with the window half full).
-    On each rung the window is given up before the quality is: first the tested default quant with the biggest window that
-    reaches the speed, but not smaller than 100k; then the next quants down (never below the catalog's `min_quant`) at
-    100k or more; then the same with 64k, 32k and 16k. A quant above the default is taken only if it keeps the same window
-    and a clear speed margin."""
+    Hard rules: the quant is not below the catalog's `min_quant` unless forced, and nothing slower than the minimum speed is
+    taken while a faster option exists. Everything else is one smooth objective (see `score`), so there are no thresholds
+    that flip a plan for a single token per second."""
     qs = sorted(m["quants"], key=lambda q: q["quality"])
     by_id = {q["id"]: q for q in qs}
-    default = by_id[m["default_quant"]]
     floor_q = by_id.get(m.get("min_quant"), qs[0])
     if forced:
         if forced not in by_id:
@@ -299,76 +324,75 @@ def _select(res, cfg, m, forced=None):
         allowed = [by_id[forced]]
     else:
         allowed = [q for q in qs if q["quality"] >= floor_q["quality"]]
-    win, reasons = {}, []
+    cands, reasons = [], []
     for q in allowed:
-        win[q["id"]], why = _windows(res, cfg, m, q)
-        reasons.append(why)
-    if not any(win.values()):
+        got = []
+        for ctx in cfg["contexts"]:
+            if ctx > m["context_max"] or ctx < cfg["min_context"]:
+                continue
+            fits, why = _options_at(res, cfg, m, q, ctx)
+            got += [(q, f) for f in fits]
+            if not fits:
+                reasons.append(why)
+        if res["gpu"] and any(f["mode"] != "cpu" for _, f in got):     # keep the GPU in use if any window allows it
+            got = [(qq, f) for qq, f in got if f["mode"] != "cpu"]
+        cands += got
+    if not cands:
         return {"model": m, "fit": None, "reason": next((r for r in reasons if r), "nothing fits"), "quant": None}
-    order = ([default] if default in allowed else []) + [q for q in reversed(allowed) if q["quality"] < default["quality"]]
-    order = order or allowed
-    above = [q for q in reversed(allowed) if q["quality"] > default["quality"]]
-
-    def reaches(f, thr):                            # a window nobody has run needs a clear margin on top
-        return f["tok_s"] >= thr * (1.0 if f.get("verified", True) else cfg["upgrade_margin"])
-
-    def best_window(q, thr, lo):
-        ok = [c for c, f in win[q["id"]].items() if reaches(f, thr) and c >= min(lo, m["context_max"])]
-        return max(ok) if ok else None
-
-    chosen = None
-    useful = tuple(lo for lo in cfg["window_floors"] if lo >= cfg["useful_window"])
-    small = tuple(lo for lo in cfg["window_floors"] if lo < cfg["useful_window"])
-    target, comfort, minimum = cfg["target_tok_s"], cfg["comfort_tok_s"], cfg["min_tok_s"]
-    rungs = ([(t, "target" if t == target else "comfort", lo) for lo in useful for t in (target, comfort)]
-             + [(t, "target" if t == target else "comfort", lo) for lo in small for t in (target, comfort)]
-             + [(minimum, "minimum", lo) for lo in cfg["window_floors"]])
-    for thr, label, lo in rungs:
-        for q in order:
-            ctx = best_window(q, thr, lo)
-            if ctx:
-                chosen = (q, ctx, thr, label, lo)
-                break
-        if chosen:
-            break
-    if chosen:
-        q, ctx, thr, label, lo = chosen
-        if label != "target":                       # the target is out of reach: the window is capacity, as big as memory
-            ctx = best_window(q, minimum, lo)       # allows while the speed stays usable
-        if not forced and q is default and label == "target":
-            for up in above:
-                f = win[up["id"]].get(ctx)
-                if f and reaches(f, thr * cfg["upgrade_margin"]):
-                    q = up
-                    break
-        why = {"target": "reaches the target speed", "comfort": "the target speed is out of reach; this is the best that "
-               "still feels responsive", "minimum": "nothing reaches the comfortable speed; this is the best that is still "
-               "usable"}[label]
-        if q is default:
-            why += " with the catalog's tested quant" if forced is None else ""
-        elif q["quality"] > default["quality"]:
-            why += " and a higher-quality quant still keeps a clear speed margin"
-        else:
-            why += (" with a smaller quant: the tested default does not reach it with a useful window on this machine"
-                    if not forced else "")
-        fit, thr_met = win[q["id"]][ctx], thr
-    else:                                           # nothing reaches even the minimum: the fastest that fits
-        cands = [(f["tok_s"], c, q) for q in allowed for c, f in win[q["id"]].items()]
-        _, ctx, q = max(cands, key=lambda t: (t[0], t[1]))
-        fit, thr_met = win[q["id"]][ctx], 0.0
-        why = "nothing reaches the minimum speed; this is the fastest that fits"
+    # evidence first: a window beyond the verified one needs a clear speed margin (it leaves room, so it is not a gamble)
+    cands = [c for c in cands if c[1].get("verified", True) or c[1]["tok_s"] >= cfg["target_tok_s"] * cfg["unverified_margin"]
+             ] or cands
+    usable = [c for c in cands if c[1]["tok_s"] >= cfg["min_tok_s"]]
+    pool = usable or cands
+    q, fit = max(pool, key=lambda c: (score(m, c[0], c[1], cfg), c[1]["settings"]["context"]))
+    best_score = score(m, q, fit, cfg)
+    tok = fit["tok_s"]
+    rung = ("target" if tok >= cfg["target_tok_s"] * cfg["target_tolerance"] else "comfort" if tok >= cfg["comfort_tok_s"]
+            else "minimum" if tok >= cfg["min_tok_s"] else "none")
+    why = {"target": "reaches the target speed", "comfort": "the target speed is out of reach with this window; the speed is "
+           "still comfortable", "minimum": "the speed is usable but low", "none": "nothing reaches the minimum speed; this "
+           "is the fastest that fits"}[rung]
+    if not usable:
+        fit = max(cands, key=lambda c: c[1]["tok_s"])[1]
+        q = max(cands, key=lambda c: c[1]["tok_s"])[0]
+        best_score = score(m, q, fit, cfg)
+    elif q["id"] != m["default_quant"] and not forced:
+        why += (" with a higher-quality quant than the tested default" if q["quality"] > by_id[m["default_quant"]]["quality"]
+                else " with a smaller quant than the tested default (it does not fit or is too slow here)")
     alts = []
     for a in reversed(allowed):
-        if a is not q and win[a["id"]]:
-            c, f = max(win[a["id"]].items())
-            if f["tok_s"] >= cfg["min_tok_s"]:
-                alts.append({"model": m["id"], "quant": a["id"], "context": c, "tok_s": round(f["tok_s"], 1)})
-    return {"model": m, "quant": q, "fit": fit, "window": fit, "why": why, "alts": alts, "reason": "", "thr": thr_met,
-            "rung": label if chosen else "none"}
+        if a is not q:
+            rest = [(aa, ff) for aa, ff in pool if aa is a]
+            if rest:
+                aq, af = max(rest, key=lambda c: (score(m, c[0], c[1], cfg), c[1]["settings"]["context"]))
+                alts.append({"model": m["id"], "quant": a["id"], "context": af["settings"]["context"],
+                             "tok_s": round(af["tok_s"], 1)})
+    return {"model": m, "quant": q, "fit": fit, "window": fit, "why": why, "alts": alts, "reason": "", "thr": tok,
+            "rung": rung, "score": round(best_score, 4)}
 
 
-def plan(hw, catalog, *, config=None, model=None, quant=None):
-    """Return a plan dict. Raises ValueError if the hardware profile or the catalog is malformed."""
+def plan(hw, catalog, *, config=None, model=None, quant=None, profile="balanced", menu=True):
+    """Return a plan dict. Raises ValueError if the hardware profile or the catalog is malformed.
+
+    `profile` is what to optimise for (see PROFILES). With `menu` the plan also carries `profiles`: what each profile would
+    choose on this machine, so that the user sees the alternatives instead of one hidden decision."""
+    if profile not in PROFILES:
+        raise ValueError(f"unknown profile {profile!r}; choose one of {', '.join(PROFILES)}")
+    result = _plan(hw, catalog, {**(config or {}), **PROFILES[profile]}, model, quant)
+    result["profile"] = profile
+    if menu and result["ok"]:
+        table = {}
+        for name in PROFILES:
+            p = result if name == profile else _plan(hw, catalog, {**(config or {}), **PROFILES[name]}, model, quant)
+            if p["ok"]:
+                table[name] = {"quant": p["quant"], "context": p["settings"]["context"], "kv_type": p["settings"]["kv_type"],
+                               "tok_s": p["speed_by_fill"]["typical"], "tok_s_full": p["speed_by_fill"]["full"],
+                               "speed_rung": p["speed_rung"]}
+        result["profiles"] = table
+    return result
+
+
+def _plan(hw, catalog, config, model, quant):
     problems = validate_hardware(hw) + validate_catalog(catalog)
     if problems:
         raise ValueError("invalid input: " + "; ".join(problems))
@@ -412,7 +436,7 @@ def plan(hw, catalog, *, config=None, model=None, quant=None):
         "ok": True,
         "model": best["model"]["id"], "model_name": best["model"]["name"], "quant": best["quant"]["id"],
         "backend_candidates": backends, "needs_probe": probe,
-        "speed_rung": best["rung"],
+        "speed_rung": best["rung"], "score": best["score"],
         "settings": fit["settings"], "mode": fit["mode"], "tier": fit.get("tier", "standard"),
         "predicted_tok_s": {"low": round(mid * lo, 1), "mid": round(mid, 1), "high": round(mid * hi, 1)},
         "speed_by_fill": {"empty": round(fit["tok_empty"], 1), "typical": round(mid, 1),

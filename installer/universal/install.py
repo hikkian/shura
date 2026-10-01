@@ -45,7 +45,6 @@ def relaxed_config(base, attempt, hw):
             cfg["vram_reserve_headless"] = planner.DEFAULTS["vram_reserve_headless"] + attempt * GiB
         cfg["os_reserve_min"] = planner.DEFAULTS["os_reserve_min"] + attempt * GiB
         if attempt >= 2:
-            cfg["window_floors"] = (65536, 32768, 16384)
             cfg["contexts"] = tuple(c for c in planner.DEFAULTS["contexts"] if c <= 131072)
     return cfg
 
@@ -148,7 +147,8 @@ def run(args, hw, catalog, out=None, *, release=None):
     out = out or Out()
     home = Path(args.dir) if args.dir else launch.home_dir()
     base_cfg = {"contexts": tuple(c for c in planner.DEFAULTS["contexts"] if c <= args.context)} if args.context else {}
-    plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg, 0, hw), model=args.model_id, quant=args.quant)
+    plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg, 0, hw), model=args.model_id, quant=args.quant,
+                        profile=getattr(args, "profile_name", "balanced"))
     out.say(report.card(hw, plan))
     if not plan["ok"]:
         return 1

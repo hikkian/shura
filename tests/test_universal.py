@@ -175,25 +175,25 @@ class Properties(unittest.TestCase):
         self.assertEqual(p["mode"], "hybrid")
         self.assertTrue(0 < p["settings"]["ngl"] < 32)
 
-    def test_no_bigger_window_reaches_the_same_speed_rung(self):
-        # the window is the largest one that reaches the speed rung the plan reached (or the largest that fits, when the
-        # target is out of reach); asking for a bigger one must land on a lower rung or not fit at all
-        rank = {"target": 3, "comfort": 2, "minimum": 1, "none": 0}
+    def test_the_chosen_window_scores_best_among_the_windows_that_fit(self):
+        # forcing any other window (same model and quant) never scores higher than what the planner chose
         by_id = {m["id"]: m for cat in (REAL, SYN) for m in cat["models"]}
         for name in HW:
             for cat in (REAL, SYN):
                 p = plan(name, cat)
-                if not p["ok"] or p["speed_rung"] == "none":
+                if not p["ok"]:
                     continue
-                w, model_max = p["settings"]["context"], by_id[p["model"]]["context_max"]
-                bigger = tuple(c for c in planner.DEFAULTS["contexts"] if w < c <= model_max)
                 self.assertLessEqual(p["memory"]["ram_need"], p["memory"]["ram_budget"])
-                if bigger:
-                    again = planner.plan(HW[name], cat, model=p["model"], quant=p["quant"],
-                                         config={"contexts": bigger, "window_floors": (min(bigger),)})
-                    self.assertTrue(not again["ok"] or rank[again["speed_rung"]] < rank[p["speed_rung"]] or
-                                    (p["speed_rung"] != "target" and again["speed_rung"] == p["speed_rung"] == "minimum"),
-                                    (name, p["model"], w, again.get("speed_rung")))
+                for ctx in planner.DEFAULTS["contexts"]:
+                    if ctx == p["settings"]["context"] or ctx > by_id[p["model"]]["context_max"]:
+                        continue
+                    if p["tier"] == "fork" and ctx > 200000:        # beyond the verified window: the margin rule, not the score
+                        continue
+                    other = planner.plan(HW[name], cat, model=p["model"], quant=p["quant"], menu=False,
+                                         config={"contexts": (ctx,)})
+                    too_slow = other["ok"] and other["speed_by_fill"]["typical"] < planner.DEFAULTS["min_tok_s"]
+                    self.assertTrue(not other["ok"] or too_slow or other["score"] <= p["score"] + 1e-9,
+                                    (name, p["model"], p["settings"]["context"], ctx))
 
     def test_more_vram_or_ram_never_shrinks_the_window(self):
         small, large = copy.deepcopy(HW["rtx3060_12g_16g"]), copy.deepcopy(HW["rtx3060_12g_16g"])

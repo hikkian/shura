@@ -112,6 +112,8 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="show what install would do and download nothing")
     ap.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation (install)")
     ap.add_argument("--quant", help="force a quant (install)")
+    ap.add_argument("--optimize", dest="profile_name", choices=sorted(planner.PROFILES), default="balanced",
+                    help="what to optimise for: balanced (default), fast, long (biggest window), quality")
     ap.add_argument("--model-id", help="model from the catalog (install; default: the best one that fits)")
     ap.add_argument("--context", type=int, help="do not use a window larger than this (install)")
     ap.add_argument("--port", type=int, default=launch.DEFAULT_PORT, help="server port (install, start)")
@@ -140,7 +142,7 @@ def main(argv=None):
         if problems:
             print("invalid input:\n  " + "\n  ".join(problems), file=sys.stderr)
             return 2
-        plan = planner.plan(hw, catalog)
+        plan = planner.plan(hw, catalog, profile=args.profile_name)
     except (OSError, ValueError, KeyError) as e:
         print(f"shura: {e}", file=sys.stderr)
         return 2

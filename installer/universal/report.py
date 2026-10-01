@@ -60,6 +60,20 @@ def card(hw, plan):
     lines += [f"  - {r}" for r in plan["reasons"]]
     if plan["warnings"]:
         lines += ["", "Warnings"] + [f"  - {w}" for w in plan["warnings"]]
+    prof = plan.get("profiles") or {}
+    groups = {}
+    for name, v in prof.items():
+        groups.setdefault((v["quant"], v["context"], v["kv_type"]), []).append((name, v))
+    if len(groups) > 1:
+        what = {"balanced": "balanced (default)", "fast": "fast (short window, quickest)", "long": "long (biggest window)",
+                "quality": "quality (best quant that stays usable)"}
+        lines += ["", "Other choices (`--optimize NAME`)"]
+        for members in groups.values():
+            v = members[0][1]
+            names = " = ".join(what.get(n, n) if len(members) == 1 else n for n, _ in members)
+            chosen = "  <- chosen" if any(n == plan.get("profile") for n, _ in members) else ""
+            lines.append(f"  - {names}: {v['quant']}, {v['context'] // 1000}k window, {v['kv_type']} KV, ~{v['tok_s']:.0f} tok/s"
+                         + chosen)
     if plan["alternatives"]:
         lines += ["", "Alternatives"] + [f"  - {a['model']} {a['quant']}: ~{a['tok_s']} tok/s" for a in plan["alternatives"]]
     lines += ["", "Predictions are estimates from measured memory speed. The installer measures real speed and corrects them."]
