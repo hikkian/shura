@@ -226,7 +226,7 @@ git clone https://github.com/hikkian/shura && cd shura
 ./scripts/shura report --issue    # an anonymous report for a GitHub issue: helps everyone with your hardware
 ```
 
-On Windows use `scripts\shura.cmd` (or `py installer\universal\cli.py`). NVIDIA on Linux gets the fast tier (our
+On Windows use `scripts\shura.cmd` (or `py installer\universal\cli.py`). Windows cannot measure RAM speed without a compiler: add `--ram-gbs 40` (dual-channel DDR4-3200; about 80 for DDR5-6000). NVIDIA on Linux gets the fast tier (our
 CUDA fork) through `setup.sh`; `shura install` points you to it. Every other machine is installed by `shura install`
 itself, without compiling anything and without root.
 

@@ -227,7 +227,7 @@ git clone https://github.com/hikkian/shura && cd shura
 ./scripts/shura report --issue    # обезличенный отчёт для issue на GitHub: помогает всем с таким же железом
 ```
 
-В Windows используйте `scripts\shura.cmd` (или `py installer\universal\cli.py`). NVIDIA на Linux получает быстрый уровень
+В Windows используйте `scripts\shura.cmd` (или `py installer\universal\cli.py`). Windows не может измерить скорость ОЗУ без компилятора: добавьте `--ram-gbs 40` (две планки DDR4-3200; для DDR5-6000 около 80). NVIDIA на Linux получает быстрый уровень
 (наш CUDA-форк) через `setup.sh`, `shura install` подскажет. Все остальные машины `shura install` устанавливает сам, ничего
 не компилируя и без root.
 
