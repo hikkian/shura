@@ -133,6 +133,16 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
   25% of the VRAM budget free and 15% more speed than the target. A 12 GB card stays at 200k; a faster 16 GB card gets 262k.
 - **KV cache type** is just another candidate: `q4_0` (half the memory and half the bytes read per token) wins exactly where
   `q8_0` would cost more speed or window than its quality is worth. On the fork tier it is `turbo3`.
+- **TurboQuant+ build (third-party).** Where it can run (Vulkan on Linux, Metal on Apple Silicon, CUDA on Windows with NVIDIA) the
+  installer tries the pinned release of [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) first: a
+  llama.cpp fork with a turbo KV cache, an adaptive cache of hot experts in spare VRAM (`--moe-cache`) and MTP. It then tries
+  upstream llama.cpp too, **measures both on your machine** and keeps the faster; a near tie (within 5%) goes to TurboQuant+.
+  A build that does not start never stops the install. The archive must match the SHA-256 pinned in `engine.TQP_SHA256`,
+  whatever the release page says later; `shura install --no-turbo` never touches it. Measured by us once: RTX 4070 SUPER over
+  Vulkan, the real model, 200k window, turbo3 + cache + MTP: loads in 16 s (warm), 34 tok/s at an empty window and 29 tok/s
+  with 28k filled, MTP accepts 46 of 48 drafted tokens, VRAM peak within the limit. That is about 35% slower than our CUDA fork
+  on the same card, which is why NVIDIA on Linux keeps the fork. Seen in its log: on GQA 8:1 models it keeps K at `q8_0`
+  and compresses only V, so its KV cache is about 0.36 of f16, not the 0.195 of pure turbo3. AMD is unmeasured.
 - **MTP** (the model's own multi-token-prediction head, speculative decoding without a second model) is used with upstream
   llama.cpp when there is a GPU: its draft cache is paid for in VRAM (2 KiB per token and 236 MiB), its speed-up is assumed to be
   only x1.15 (the CUDA fork measured x1.32; nothing measured elsewhere), and if a build cannot start it the installer retries

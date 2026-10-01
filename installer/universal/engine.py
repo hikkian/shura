@@ -22,6 +22,17 @@ from . import backends
 
 PINNED_TAG = "b11301"            # known-good llama.cpp release (2026-09-30); `--latest` asks GitHub instead
 RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases"
+# The TurboQuant+ fork of llama.cpp (turbo2/3/4 KV cache, adaptive expert cache, MTP) on Vulkan, Metal and CUDA. Third-party
+# code: the release is pinned and every archive must match the SHA-256 recorded here (taken from the release on 2026-10-01),
+# whatever the release page says later. `shura install --no-turbo` never uses it.
+TQP_REPO = "TheTom/llama-cpp-turboquant"
+TQP_TAG = "tqp-v0.4.0"
+TQP_SHA256 = {
+    "turboquant-plus-tqp-v0.4.0-linux-x64-cpu.tar.gz": "f9f55bcc7b7baa5eb7f0e8768d96e9e46bdb7df5705418d50ab2f6cb737a5920",
+    "turboquant-plus-tqp-v0.4.0-linux-x64-vulkan.tar.gz": "6b9c8929c9f509b843c401e8eb532ed8a28031bd6acf6c925458011db5d9d9d5",
+    "turboquant-plus-tqp-v0.4.0-macos-arm64-metal.tar.gz": "f38d0c68e2db29b705ec3944360296c1f8003e4f920d60e6740f9968f3f93769",
+    "turboquant-plus-tqp-v0.4.0-windows-x64-cuda12.4.zip": "033c0a2ce4d876bd1f4c840f1c6eef9a3a55f6af54e20f61bde59e7b2181e6d7",
+}
 SMOKE_MODEL = {                  # 19 MB story model used only to prove a build runs; never recommended to users
     "url": "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf",
     "sha256": "66967fbece6dbe97886593fdbb73589584927e29119ec31f08090732d1861739",
@@ -43,18 +54,21 @@ def _open(url, *, api=False, timeout=60):
     return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
 
 
-def fetch_release(tag=None):
-    """{tag, assets:[{name, url, digest}]} for `tag`, or for the newest release that has desktop builds."""
+def fetch_release(tag=None, repo=None):
+    """{tag, assets:[{name, url, digest}]} for `tag`, or for the newest release that has desktop builds.
+    `repo` is "owner/name" of another llama.cpp fork (the TurboQuant+ prebuilts); the default is upstream."""
+    base = f"https://api.github.com/repos/{repo}/releases" if repo else RELEASES
+    parse = backends.parse_tqp_asset if repo == TQP_REPO else backends.parse_asset
     if tag:
-        with _open(f"{RELEASES}/tags/{tag}", api=True) as r:
+        with _open(f"{base}/tags/{tag}", api=True) as r:
             releases = [json.load(r)]
     else:
-        with _open(f"{RELEASES}?per_page=10", api=True) as r:
+        with _open(f"{base}?per_page=10", api=True) as r:
             releases = json.load(r)
     for rel in releases:
         assets = [{"name": a["name"], "url": a["browser_download_url"], "digest": a.get("digest")}
                   for a in rel.get("assets", [])]
-        if any(backends.parse_asset(a["name"]) for a in assets):
+        if any(parse(a["name"]) for a in assets):
             return {"tag": rel["tag_name"], "assets": assets}
     raise EngineError("no llama.cpp release with desktop builds was found")
 
@@ -226,15 +240,16 @@ def smoke_model(dest_dir):
     return download(SMOKE_MODEL["url"], path, SMOKE_MODEL["sha256"])
 
 
-def install_build(release, asset, dest_root):
-    """Download, verify (release digest when present) and extract one build. Returns the path of llama-server."""
-    root = Path(dest_root) / f"{release['tag']}-{backends.parse_asset(asset['name'])['backend']}"
+def install_build(release, asset, dest_root, label=None, sha256=None):
+    """Download, verify and extract one build. Returns the path of llama-server. The hash is `sha256` when given (a pinned
+    value), else the release digest when present."""
+    label = label or backends.parse_asset(asset["name"])["backend"]
+    root = Path(dest_root) / f"{release['tag']}-{label}"
     try:
         return find_server(root)
     except EngineError:
         pass
     with tempfile.TemporaryDirectory(prefix="shura-dl-") as tmp:
-        archive = download(asset["url"], Path(tmp) / asset["name"], asset.get("digest"))
+        archive = download(asset["url"], Path(tmp) / asset["name"], sha256 or asset.get("digest"))
         extract(archive, root)
     return find_server(root)
-

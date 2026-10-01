@@ -23,7 +23,12 @@ DEFAULTS = {
     "mtp_draft_kv_per_token": 2048,   # the MTP draft keeps its own f16 KV cache (measured in the fork: 2 KiB per token)
     "mtp_compute": 236 * 1024 ** 2,   # and a compute buffer
     "default_bonus": 1.03,        # the catalog's tested quant is worth 2% more than an untested one of the same bits
-    "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "q4_0": 0.975},   # share of quality kept by each KV cache type
+    "attention_by_kv": {"turbo3": 0.16},   # KV read efficiency per type where it differs (turbo3 dequantises on the fly)
+    "tqp_enabled": True,          # may the installer use the third-party TurboQuant+ llama.cpp build (turbo KV, expert cache)?
+    "tqp_kv_factor": 0.3625,      # K stays q8_0 (auto-asymmetric on GQA 8:1) and V is turbo3: (0.53 + 0.195) / 2 of f16, seen in its log
+    "tqp_time_penalty": 1.42,     # its Vulkan kernels vs our CUDA fork's: measured 34.4 vs 54 tok/s on an RTX 4070 SUPER (empty window)
+    "tqp_trust": 1.0,             # measured end to end on one machine (NVIDIA over Vulkan); AMD is still unmeasured
+    "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "turbo3_tqp": 0.99, "q4_0": 0.975},   # share of quality kept by each KV cache type
     "kv_unavailable": (),         # KV types the engine on this machine cannot run
     "unverified_margin": 1.15,    # a window nobody has run (beyond the verified one) is taken only with 15% more speed than the target
     "target_tolerance": 0.95,     # within 5% of the target counts as reaching it (measured run-to-run spread is 5-8%)
@@ -43,7 +48,7 @@ DEFAULTS = {
     "host_base": int(1.5 * GiB),  # the server process itself
     "min_context": 16384,
     "contexts": (262144, 200000, 131072, 65536, 32768, 16384),
-    "kv_types": (("q8_0", 0.53), ("q4_0", 0.28)),   # (name, size relative to f16)
+    "kv_types": (("q8_0", 0.53), ("q4_0", 0.28), ("turbo3", 0.3625)),   # (name, size relative to f16); turbo3 needs a TurboQuant+ build, which keeps K at q8_0 on GQA 8:1 models (measured)
     "bandwidth_fallback_gbs": {"ram": 20.0, "gpu": 150.0},
     "uncertainty": (0.6, 1.35),   # prediction range relative to the mid estimate
     # The "fork" tier: NVIDIA + Linux with the Shura CUDA fork (turbo3 KV, MoE expert cache, MTP). It is fitted to ONE
@@ -102,7 +107,9 @@ def _resources(hw, cfg):
         "numa_nodes": hw["cpu"]["numa_nodes"],
         "total": total,
         "os": hw["os"]["family"],
+        "arch": hw["os"]["arch"],
         "fork": False,
+        "tqp": None,
     }
     gpus = sorted(hw["gpus"], key=lambda g: g["vram_total"], reverse=True)
     if gpus:
@@ -118,7 +125,22 @@ def _resources(hw, cfg):
             reserve = cfg["vram_reserve_display"] if display else cfg["vram_reserve_headless"]
             res["vram_budget"] = g["vram_total"] - g["vram_used"] - reserve
             res["fork"] = bool(cfg["fork"]["enabled"] and g["vendor"] == "nvidia" and res["os"] == "linux")
+    res["tqp"] = None if (res["fork"] or not cfg["tqp_enabled"]) else _tqp_backend(res, gpus[0] if gpus else None)
     return res
+
+
+def _tqp_backend(res, gpu):
+    """Backend of the prebuilt TurboQuant+ llama.cpp that fits this machine, or None: Vulkan on Linux x86_64 (any GPU), Metal on
+    Apple Silicon, CUDA on Windows with an NVIDIA card. CPU-only machines and other combinations use upstream llama.cpp."""
+    if not gpu:
+        return None
+    if res["os"] == "linux" and res["arch"] == "x86_64" and not gpu.get("unified"):
+        return "vulkan"
+    if res["os"] == "macos" and res["arch"] == "arm64" and gpu.get("unified"):
+        return "metal"
+    if res["os"] == "windows" and res["arch"] == "x86_64" and gpu["vendor"] == "nvidia":
+        return "cuda"
+    return None
 
 
 def backend_candidates(hw):
@@ -203,20 +225,29 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     return finish("cpu", active / res["ram_bw"], file + kv + cfg["host_base"], 0, 0, eff["cpu"])
 
 
-def _fit_fork(res, cfg, m, q, ctx):
-    """Fork tier (NVIDIA + Linux, our CUDA fork): turbo3 KV, expert layers on the CPU plus a cache of hot experts in VRAM.
+def _fit_fork(res, cfg, m, q, ctx, tier="fork"):
+    """Fork tier (NVIDIA + Linux, our CUDA fork) or `tier="tqp"` (the TurboQuant+ build on a discrete GPU): turbo3 KV, expert
+    layers on the CPU plus a cache of hot experts in VRAM. Both are the same idea; the TurboQuant+ numbers are the fork's with
+    a time penalty, because nobody has measured that build on other hardware yet.
 
     Searches the number of expert layers left in RAM (`--n-cpu-moe`) together with the cache slots that the rest of the VRAM
     pays for, because the two compete for the same bytes. A model needs a `fork` block in the catalog (the turbo3 size of
     its KV and the window it was verified at). Returns (fit, reason) like `_fit`."""
-    fk, f = m.get("fork"), cfg["fork"]
-    if not fk or m["kind"] != "moe" or not res["fork"]:
+    fk, f = m.get("fork"), dict(cfg["fork"])
+    if tier == "fork":
+        usable = res["fork"]
+    else:
+        usable = bool(res["tqp"]) and not (res["gpu"] or {}).get("unified") and "turbo3" not in cfg["kv_unavailable"]
+        f["byte_time_scale"] *= cfg["tqp_time_penalty"]
+        f["mtp_speedup"] = cfg["mtp_speedup"]
+    if not fk or m["kind"] != "moe" or not usable:
         return None, "not available"
     n = m["n_layers"]
-    budget, kv_main = res["vram_budget"], ctx * m["kv_bytes_per_token_f16"] * fk["kv_factor"]
+    kv_factor = fk["kv_factor"] if tier == "fork" else cfg["tqp_kv_factor"]
+    budget, kv_main = res["vram_budget"], ctx * m["kv_bytes_per_token_f16"] * kv_factor
     if ctx > fk.get("verified_context", m["context_max"]):
         budget *= f["unverified_headroom"]          # a window nobody has run: keep 25% of the VRAM budget free
-    mtp = "mtp" in m.get("features", ())
+    mtp = "mtp" in m.get("features", ()) and (tier == "fork" or cfg["mtp_standard"])
     kv_draft = ctx * f["draft_kv_bytes_per_token"] if mtp else 0
     expert_bytes = q["file_bytes"] - q["nonexpert_bytes"]
     e_layer, e_slot = expert_bytes / n, expert_bytes / m["n_experts"] / n          # bytes of one layer / of one slot per CPU layer
@@ -254,7 +285,10 @@ def _fit_fork(res, cfg, m, q, ctx):
     s = {"context": ctx, "kv_type": fk.get("kv_type", "turbo3"), "flash_attn": True, "parallel": 1,
          "n_cpu_moe": best["n_cpu"], "moe_cache_slots": best["slots"], "mtp": mtp, "ngl": "all",
          "threads": min(res["cores"], 8), "numa": None}
-    return {"mode": "hybrid" if best["n_cpu"] else "gpu", "tier": "fork",
+    if tier == "tqp":                       # the TurboQuant+ build takes a VRAM budget for the cache, not a slot count
+        s["moe_cache_mib"] = int(best["slots"] * e_slot * best["n_cpu"] / (1024 ** 2))
+    extra = {"engine": "turboquant-plus", "backend": res["tqp"]} if tier == "tqp" else {}
+    return {"mode": "hybrid" if best["n_cpu"] else "gpu", "tier": tier, **extra,
             "tok_s": speed[cfg["fill_fraction"]], "tok_empty": speed[0.0], "tok_full": speed[1.0],
             "fill_tokens": int(ctx * cfg["fill_fraction"]), "kv_bytes": kv_main + kv_draft,
             "kv_share": (kv_main + kv_draft) / pool, "ram_need": best["ram"], "vram_need": best["vram"], "settings": s,
@@ -263,20 +297,29 @@ def _fit_fork(res, cfg, m, q, ctx):
 
 
 def _options_at(res, cfg, m, q, ctx):
-    """Every placement worth scoring for one (quant, window): the fork tier when this machine has it, else the standard tier
-    with each KV cache type that fits. Returns (list of fits, reason when empty)."""
+    """Every placement worth scoring for one (quant, window): the fork tier when this machine has it; else the TurboQuant+ build
+    (if allowed and available) and upstream llama.cpp with each KV cache type that fits. Returns (list of fits, reason)."""
     fit, reason = _fit_fork(res, cfg, m, q, ctx)
     if fit:
         return [fit], ""
     if res["fork"] and m.get("fork"):             # the fork tier is the plan on this machine; upstream's would be slower
         return [], reason
     fits = []
+    discrete_moe = bool(m.get("fork")) and m["kind"] == "moe" and not (res["gpu"] or {}).get("unified")
+    if res["tqp"] and discrete_moe:
+        t, why = _fit_fork(res, cfg, m, q, ctx, tier="tqp")
+        if t:
+            fits.append(t)
+        else:
+            reason = why or reason
     for name, factor in cfg["kv_types"]:
-        if name in cfg["kv_unavailable"]:
+        if name in cfg["kv_unavailable"] or (name == "turbo3" and (not res["tqp"] or discrete_moe)):
             continue
         f, why = _fit(res, cfg, m, q, ctx, name, factor)
         if f:
-            f["tier"] = "standard"
+            f["tier"] = "tqp" if name == "turbo3" else "standard"
+            if name == "turbo3":
+                f["engine"], f["backend"] = "turboquant-plus", res["tqp"]
             fits.append(f)
         else:
             reason = why or reason
@@ -314,8 +357,10 @@ def score(m, q, fit, cfg):
     collapse in one of them cannot be bought back by the others. Weights are exponents (cfg['weights'])."""
     w = cfg["weights"]
     window = (fit["settings"]["context"] / m["context_max"]) ** w["window"]
-    kv = cfg["kv_quality"].get(fit["settings"]["kv_type"], 1.0)
-    return (quality_of(m, q, cfg) ** w["quality"]) * kv * window * speed_credit(fit["tok_s"], cfg)
+    kvt = fit["settings"]["kv_type"]
+    kv = cfg["kv_quality"].get("turbo3_tqp" if (fit.get("tier") == "tqp" and kvt == "turbo3") else kvt, 1.0)
+    trust = cfg["tqp_trust"] if fit.get("tier") == "tqp" else 1.0
+    return (quality_of(m, q, cfg) ** w["quality"]) * kv * window * speed_credit(fit["tok_s"], cfg) * trust
 
 
 def _select(res, cfg, m, forced=None):
@@ -444,7 +489,9 @@ def _plan(hw, catalog, config, model, quant):
     return {
         "ok": True,
         "model": best["model"]["id"], "model_name": best["model"]["name"], "quant": best["quant"]["id"],
-        "backend_candidates": backends, "needs_probe": probe,
+        "engine": fit.get("engine", "llama.cpp"),
+        "backend_candidates": [fit["backend"]] if fit.get("tier") == "tqp" else backends,
+        "needs_probe": False if fit.get("tier") == "tqp" else probe,
         "speed_rung": best["rung"], "score": best["score"],
         "settings": fit["settings"], "mode": fit["mode"], "tier": fit.get("tier", "standard"),
         "predicted_tok_s": {"low": round(mid * lo, 1), "mid": round(mid, 1), "high": round(mid * hi, 1)},

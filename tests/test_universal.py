@@ -75,7 +75,7 @@ class ReferenceMachine(unittest.TestCase):
 
     def test_standard_tier_stays_in_the_range_stock_llama_cpp_measured(self):
         # Stock llama.cpp with --n-cpu-moe on this machine measured about 26-30 tok/s at ~187k (docs/BENCHMARKS.md).
-        p = plan("ref_rtx4070s_12g_32g", config={"fork": {"enabled": False}})
+        p = plan("ref_rtx4070s_12g_32g", config={"fork": {"enabled": False}, "tqp_enabled": False})
         self.assertEqual(p["tier"], "standard")
         self.assertTrue(20 <= p["predicted_tok_s"]["mid"] <= 45, p["predicted_tok_s"])
 
@@ -282,9 +282,9 @@ class FitToMemory(unittest.TestCase):
 
     def test_the_kv_cache_is_as_precise_as_the_speed_target_allows(self):
         # a machine that reaches 35 tok/s with q8_0 keeps q8_0; one that only reaches it with q4_0 gets q4_0
-        roomy = plan("rx9070xt_16g_32g", config={"contexts": (65536,)})
+        roomy = plan("rx9070xt_16g_32g", config={"contexts": (65536,), "tqp_enabled": False})
         self.assertEqual((roomy["settings"]["kv_type"], roomy["speed_rung"]), ("q8_0", "target"))
-        tight = plan("rx9070_16g_48g_windows", config={"contexts": (262144,)})
+        tight = plan("rx9070_16g_48g_windows", config={"contexts": (262144,), "tqp_enabled": False})
         self.assertEqual(tight["settings"]["kv_type"], "q4_0")
 
     def test_never_below_the_catalog_quant_floor_unless_forced(self):

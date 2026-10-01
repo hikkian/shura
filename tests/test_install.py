@@ -203,13 +203,14 @@ class Store(unittest.TestCase):
             self.assertEqual(modelstore.listing("x/y", allow_local=True, base=hub.base), {"a.gguf": (3, sha(b"abc"))})
 
 
-def fake_server(tmp, *, oom_first=0, no_mtp=False):
+def fake_server(tmp, *, oom_first=0, no_mtp=False, no_turbo=False):
     """An executable that behaves like llama-server (POSIX). The first `oom_first` runs die with an out-of-memory message."""
     counter = Path(tmp) / "runs"
     script = Path(tmp) / "llama-server"
     script.write_text(f"""#!/bin/sh
 case "$*" in *--list-devices*) exit 0;; esac            # not a server start: does not count as a run
 {'case "$*" in *draft-mtp*) echo "error: unknown spec type draft-mtp" >&2; exit 2;; esac' if no_mtp else ''}
+{'case "$*" in *turbo3*) echo "error: unsupported cache type turbo3" >&2; exit 2;; esac' if no_turbo else ''}
 n=$(cat "{counter}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "{counter}"
 if [ "$n" -le {oom_first} ]; then echo "ggml_cuda: cudaMalloc failed: out of memory" >&2; exit 3; fi
 exec "{sys.executable}" "{FAKE}" "$@"
@@ -335,6 +336,41 @@ class EndToEnd(unittest.TestCase):
             self.assertLess(cal["ratio"], 0.7)
             self.assertEqual(len(list((Path(d) / "models").glob("*.gguf"))), 1)         # the same file, no second download
 
+    def test_the_turboquant_build_is_tried_first_and_wins_a_near_tie(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            code, out = self.run_install(d, hub, fake_server(bin_dir))              # both engines "measure" the same speed
+            self.assertEqual(code, 0, out.text)
+            self.assertIn("TurboQuant+", out.text)
+            m = launch.load_state(d)["measured"]
+            self.assertEqual(m["engine"], "turboquant-plus")
+            self.assertEqual(set(m["engine_comparison"]), {"TurboQuant+", "llama.cpp"})
+            argv = launch.load_state(d)["argv"]
+            self.assertEqual(argv[argv.index("-ctk") + 1], "turbo3")
+            self.assertIn("--moe-cache", argv)
+
+    def test_a_turboquant_build_that_does_not_start_falls_back_to_standard_llama_cpp(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            code, out = self.run_install(d, hub, fake_server(bin_dir, no_turbo=True))
+            self.assertEqual(code, 0, out.text)
+            self.assertIn("did not work here", out.text)
+            state = launch.load_state(d)
+            self.assertEqual(state["measured"]["engine"], "llama.cpp")
+            self.assertIn(state["argv"][state["argv"].index("-ctk") + 1], ("q8_0", "q4_0"))
+
+    def test_no_turbo_never_touches_the_third_party_build(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            cat, out = tiny_catalog(0), Out()
+            seen = []
+
+            def fake_choose(hw, plan, root, tag, out_, release=None):
+                seen.append(plan.get("engine"))
+                return "vulkan", fake_server(bin_dir), []
+            with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
+                code = install.run(args(d, hub, no_turbo=True), HW[self.HW], cat, out)
+            self.assertEqual(code, 0, out.text)
+            self.assertEqual(set(seen), {"llama.cpp"})
+            self.assertNotIn("TurboQuant+ build (third-party", out.text)
+
     def test_a_build_without_mtp_is_retried_without_it(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
             code, out = self.run_install(d, hub, fake_server(bin_dir, no_mtp=True))
@@ -439,6 +475,61 @@ class Reconcile(unittest.TestCase):
         self.assertIs(install.reconcile(hw, "server", "cpu", Out()), hw)
         with mock.patch.object(install.engine, "list_devices", return_value=[]):
             self.assertIs(install.reconcile(hw, "server", "vulkan", Out()), hw)
+
+
+class TurboBuild(unittest.TestCase):
+    RELEASE = {"tag": "tqp-v0.4.0", "assets": [
+        {"name": "turboquant-plus-tqp-v0.4.0-linux-x64-vulkan.tar.gz", "url": "https://x/v", "digest": "sha256:" + "0" * 64},
+        {"name": "turboquant-plus-tqp-v0.4.0-linux-x64-cpu.tar.gz", "url": "https://x/c", "digest": None}]}
+
+    def plan(self):
+        return planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"kv_unavailable": ("q8_0", "q4_0")}, menu=False)
+
+    def test_the_plan_names_the_engine_and_the_only_backend_it_has(self):
+        p = self.plan()
+        self.assertEqual((p["tier"], p["engine"], p["backend_candidates"], p["needs_probe"]),
+                         ("tqp", "turboquant-plus", ["vulkan"], False))
+        self.assertEqual(p["settings"]["kv_type"], "turbo3")
+        self.assertGreater(p["settings"]["moe_cache_mib"], 0)
+
+    def test_it_can_be_switched_off(self):
+        p = planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"tqp_enabled": False}, menu=False)
+        self.assertNotEqual(p["tier"], "tqp")
+
+    def test_the_archive_must_match_the_pinned_hash_not_the_release_page(self):
+        seen = {}
+
+        def fake_install(release, asset, root, label=None, sha256=None):
+            seen["sha"], seen["label"] = sha256, label
+            return Path("llama-server")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(install.engine, "fetch_release", return_value=self.RELEASE), \
+                mock.patch.object(install.engine, "install_build", side_effect=fake_install), \
+                mock.patch.object(install.engine, "smoke_model", return_value=Path("m")), \
+                mock.patch.object(install.engine, "selftest", return_value={"ok": True, "tok_s": 9}):
+            backend, _, _ = install.choose_engine(HW["rx9070xt_16g_32g"], self.plan(), Path(d), None, Out())
+        self.assertEqual(backend, "vulkan")
+        self.assertEqual(seen["sha"], install.engine.TQP_SHA256["turboquant-plus-tqp-v0.4.0-linux-x64-vulkan.tar.gz"])
+
+    def test_an_unpinned_build_is_refused(self):
+        release = {"tag": "tqp-v9", "assets": [{"name": "turboquant-plus-tqp-v9-linux-x64-vulkan.tar.gz", "url": "https://x", "digest": None}]}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(install.engine, "fetch_release", return_value=release):
+            with self.assertRaises(install.engine.EngineError) as cm:
+                install.choose_engine(HW["rx9070xt_16g_32g"], self.plan(), Path(d), None, Out())
+        self.assertIn("pinned", str(cm.exception))
+
+    def test_a_failing_selftest_raises_so_the_installer_can_fall_back(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(install.engine, "fetch_release", return_value=self.RELEASE), \
+                mock.patch.object(install.engine, "install_build", return_value=Path("llama-server")), \
+                mock.patch.object(install.engine, "smoke_model", return_value=Path("m")), \
+                mock.patch.object(install.engine, "selftest", return_value={"ok": False, "error": "no device"}):
+            with self.assertRaises(install.engine.EngineError):
+                install.choose_engine(HW["rx9070xt_16g_32g"], self.plan(), Path(d), None, Out())
+
+    def test_launch_flags_give_the_cache_exactly_the_planned_budget(self):
+        p = self.plan()
+        argv = launch.server_args(p, "s", "m")
+        self.assertEqual(argv[argv.index("--moe-cache") + 1], str(p["settings"]["moe_cache_mib"]))
+        self.assertEqual(argv[argv.index("-ctk") + 1], "turbo3")
 
 
 class Relax(unittest.TestCase):

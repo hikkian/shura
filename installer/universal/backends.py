@@ -39,6 +39,28 @@ def parse_asset(name):
             "tag": m["tag"], "name": name}
 
 
+_TQP = re.compile(r"^turboquant-plus-(?P<tag>tqp-v[\d.]+)-(?P<os>linux|macos|windows)-(?P<arch>x64|arm64)-"
+                  r"(?P<backend>cpu|vulkan|metal|cuda)(?P<version>[\d.]*)\.(?:tar\.gz|zip)$")
+
+
+def parse_tqp_asset(name):
+    """`turboquant-plus-tqp-v0.4.0-linux-x64-vulkan.tar.gz` (prebuilts of the TurboQuant+ llama.cpp fork: turbo KV cache,
+    expert cache, MTP) -> {os, arch, backend, version, tag, name} or None."""
+    m = _TQP.match(name)
+    if not m:
+        return None
+    return {"os": m["os"], "arch": _ARCH[m["arch"]], "backend": m["backend"], "version": m["version"] or None,
+            "tag": m["tag"], "name": name}
+
+
+def pick_tqp_asset(assets, os_family, arch, backend):
+    for a in assets:
+        p = parse_tqp_asset(a["name"])
+        if p and (p["os"], p["arch"], p["backend"]) == (os_family, arch, backend):
+            return a
+    return None
+
+
 def _vkey(version):
     return tuple(int(x) for x in version.split(".")) if version else ()
 

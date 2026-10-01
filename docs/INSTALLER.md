@@ -163,6 +163,7 @@ llama.cpp, so nothing is compiled:
 | `--context N` | never use a window larger than N tokens |
 | `--dir DIR` | Shura home (default `$SHURA_HOME`, else `~/.local/share/shura`, `~/Library/Application Support/shura`, `%LOCALAPPDATA%\shura`) |
 | `--port N` | server port (default 8080; the server listens on 127.0.0.1 only) |
+| `--no-turbo` | never use the third-party TurboQuant+ llama.cpp build (by default it is tried first and compared with upstream on your machine) |
 | `--ram-gbs N` | RAM read speed in GB/s when it cannot be measured (no C compiler, as on most Windows PCs): dual-channel DDR4-3200 is about 40, DDR5-6000 about 80 |
 
 What it does, in order, and what protects you at each step:

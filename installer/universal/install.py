@@ -49,16 +49,43 @@ def relaxed_config(base, attempt, hw):
     return cfg
 
 
-def preview(plan, model, quant, dirs, server_bytes=120 * 1024 ** 2):
+def preview(plan, model, quant, dirs, server_bytes=120 * 1024 ** 2, turbo=None):
     q = next(x for x in model["quants"] if x["id"] == quant)
-    return [f"model file : {modelstore.file_name(model, quant)}  ({q['file_bytes'] / GiB:.1f} GiB)",
-            f"engine     : llama.cpp {engine.PINNED_TAG}, backend {', '.join(plan['backend_candidates'])}  (~{server_bytes // 1024 ** 2} MB each)",
-            f"folder     : {dirs}",
-            f"disk needed: about {(q['file_bytes'] + server_bytes * len(plan['backend_candidates'])) / GiB + 2:.0f} GiB"]
+    lines = [f"model file : {modelstore.file_name(model, quant)}  ({q['file_bytes'] / GiB:.1f} GiB)"]
+    if turbo:
+        lines.append(f"engine     : TurboQuant+ llama.cpp {engine.TQP_TAG} (third-party fork, {turbo['backend_candidates'][0]}, "
+                     f"pinned SHA-256; skip with --no-turbo), then llama.cpp {engine.PINNED_TAG} to compare; the faster is kept")
+    else:
+        lines.append(f"engine     : llama.cpp {engine.PINNED_TAG}, backend {', '.join(plan['backend_candidates'])}  "
+                     f"(~{server_bytes // 1024 ** 2} MB each)")
+    lines += [f"folder     : {dirs}",
+              f"disk needed: about {(q['file_bytes'] + server_bytes * (len(plan['backend_candidates']) + (1 if turbo else 0))) / GiB + 2:.0f} GiB"]
+    return lines
+
+
+def _choose_tqp(hw, plan, root, out):
+    """The pinned TurboQuant+ build for this machine: its archive must match the SHA-256 recorded in `engine.TQP_SHA256`."""
+    release = engine.fetch_release(engine.TQP_TAG, repo=engine.TQP_REPO)
+    backend = plan["backend_candidates"][0]
+    asset = backends.pick_tqp_asset(release["assets"], hw["os"]["family"], hw["os"]["arch"], backend)
+    if not asset:
+        raise engine.EngineError(f"the TurboQuant+ release {release['tag']} has no {backend} build for this machine")
+    pinned = engine.TQP_SHA256.get(asset["name"])
+    if not pinned:
+        raise engine.EngineError(f"{asset['name']} is not one of the builds this installer has pinned")
+    out.say(f"  using {asset['name']}")
+    server = engine.install_build(release, asset, root / "engines", label=f"tqp-{backend}", sha256=pinned)
+    res = engine.selftest(server, engine.smoke_model(root / "models"), backend=backend)
+    if not res["ok"]:
+        raise engine.EngineError(f"the TurboQuant+ build did not pass the self-test: {res.get('error', '?')}")
+    out.say(f"  {backend}: works ({res['tok_s']} tok/s on the test model)")
+    return backend, server, [res]
 
 
 def choose_engine(hw, plan, root, tag, out, release=None):
     """Download the candidate builds and keep the fastest one that passes the self-test. Returns (backend, server, results)."""
+    if plan.get("engine") == "turboquant-plus":
+        return _choose_tqp(hw, plan, root, out)
     release = release or engine.fetch_release(tag)
     builds = backends.builds_for(hw, plan["backend_candidates"], release["assets"])
     if not builds:
@@ -137,6 +164,14 @@ def refine(hw, catalog, plan, argv, verdict, server, model_path, args, base_cfg,
     return plan, argv, verdict, info
 
 
+def _complete(port, prompt, n_predict):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", method="POST",
+                                 data=json.dumps({"prompt": prompt, "n_predict": n_predict, "temperature": 0, "seed": 1}).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=600) as r:
+        return json.load(r)
+
+
 def verify(argv, port, *, home, wait_s=900, n_predict=64):
     """Start the planned server, generate some tokens, stop it. Returns {ok, load_s, tok_s, prompt_tok_s, error, oom}."""
     res = {"ok": False}
@@ -149,6 +184,7 @@ def verify(argv, port, *, home, wait_s=900, n_predict=64):
         return res
     try:
         res["load_s"] = round(time.monotonic() - t0, 1)
+        _complete(port, "Hello", 16)                      # warm-up: shader compilation and first-use costs would read as slowness
         prompt = "Write a short Python function that returns the n-th Fibonacci number, with a docstring.\n"
         req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", method="POST",
                                      data=json.dumps({"prompt": prompt, "n_predict": n_predict, "temperature": 0,
@@ -169,79 +205,63 @@ def verify(argv, port, *, home, wait_s=900, n_predict=64):
     return res
 
 
-def run(args, hw, catalog, out=None, *, release=None):
-    """The whole installation. Returns the process exit code: 0 ready, 1 nothing fits / failed, 2 bad input."""
-    out = out or Out()
-    home = Path(args.dir) if args.dir else launch.home_dir()
-    base_cfg = {"contexts": tuple(c for c in planner.DEFAULTS["contexts"] if c <= args.context)} if args.context else {}
-    plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg, 0, hw), model=args.model_id, quant=args.quant,
-                        profile=getattr(args, "profile_name", "balanced"))
-    out.say(report.card(hw, plan))
-    if not plan["ok"]:
-        return 1
+def _ensure_model(args, catalog, plan, home, out, cache):
+    """The model file for the plan's quant, downloaded and verified once per install (`cache` remembers it)."""
     model = next(m for m in catalog["models"] if m["id"] == plan["model"])
-    if plan.get("tier") == "fork":
-        setup = Path(__file__).resolve().parent.parent.parent / "setup.sh"
-        out.say("\nThis machine gets the fast tier (Shura's CUDA fork: turbo3 KV cache, expert cache, MTP).")
-        out.say(f"Run:  bash {setup} --quant {plan['quant']}" + ("  --yes" if args.yes else ""))
-        if args.dry_run or not setup.exists() or not out.ask("Run it now?", default=False):
-            return 0
-        return subprocess.call(["bash", str(setup), "--quant", plan["quant"]] + (["--yes"] if args.yes else []))
-    out.say("\nWhat will be downloaded")
-    for line in preview(plan, model, plan["quant"], home):
-        out.say("  " + line)
-    if args.dry_run:
-        out.say("\nDry run: nothing was downloaded or changed.")
-        return 0
-    if not args.yes and not out.ask("Continue?"):
-        out.say("Cancelled. Nothing was changed.")
-        return 0
+    name = modelstore.file_name(model, plan["quant"])
+    if name in cache:
+        return cache[name]
+    out.say("\n  Model")
+    files = modelstore.listing(model["source"]["hf_repo"], **({"base": args.hf_base, "allow_local": True} if args.hf_base else {}))
+    if name not in files:
+        raise modelstore.StoreError(f"{name} is not in the {model['source']['hf_repo']} repository")
+    size, sha = files[name]
+    url = f"{args.hf_base or 'https://huggingface.co'}/{model['source']['hf_repo']}/resolve/main/{name}"
+    last = [0.0]
+
+    def progress(done, total):
+        if time.monotonic() - last[0] > 5:
+            out.say(f"  {done / GiB:.1f} / {total / GiB:.1f} GiB ({done * 100 // total}%)")
+            last[0] = time.monotonic()
+    path = modelstore.fetch(url, home / "models" / name, size, sha, progress=progress, allow_local=bool(args.hf_base))
+    out.say(f"  {name}: OK (size and SHA-256 verified)")
+    cache[name] = path
+    return path
+
+
+def _attempt(args, hw, catalog, out, release, base_cfg, home, cache, label):
+    """One complete try with one engine: plan, engine, model, test launch (with the out-of-memory and no-MTP fallbacks),
+    calibration. Returns a result dict ({ok: True, plan, argv, verdict, ...}) or {ok: False, errors, plan}. Never raises for
+    the problems it knows (a failed download, a build that does not work)."""
     first_hw = hw
+    plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg, 0, hw), model=args.model_id, quant=args.quant,
+                        profile=getattr(args, "profile_name", "balanced"), menu=False)
+    if not plan["ok"]:
+        return {"ok": False, "errors": plan["reasons"], "plan": plan}
+    errors = []
     try:
-        out.say("\n1/4  Engine (llama.cpp)")
-        backend, server, tested = choose_engine(hw, plan, home, None if args.latest else args.tag, out, release)
+        out.say(f"\n  Engine ({label})")
+        backend, server, _ = choose_engine(hw, plan, home, None if args.latest else args.tag, out, release)
         hw = reconcile(hw, server, backend, out)
         if backend == "cpu" and hw["gpus"]:
             out.say("  No GPU build works here: planning for the CPU instead.")
-            cpu_hw = {**hw, "gpus": []}
-            plan = planner.plan(cpu_hw, catalog, model=plan["model"], quant=args.quant,
-                                config=relaxed_config(base_cfg, 0, cpu_hw))
-            out.say(report.card(cpu_hw, plan))
+            hw = {**hw, "gpus": []}
+        if hw is not first_hw:
+            plan = planner.plan(hw, catalog, model=plan["model"], quant=args.quant, config=relaxed_config(base_cfg, 0, hw),
+                                menu=False)
             if not plan["ok"]:
-                return 1
-        if hw is not first_hw and backend != "cpu":
-            plan = planner.plan(hw, catalog, model=plan["model"], quant=args.quant, config=relaxed_config(base_cfg, 0, hw))
-            out.say(report.card(hw, plan))
-            if not plan["ok"]:
-                return 1
-            model = next(m for m in catalog["models"] if m["id"] == plan["model"])
-        out.say("\n2/4  Model")
-        files = modelstore.listing(model["source"]["hf_repo"], **({"base": args.hf_base, "allow_local": True} if args.hf_base else {}))
-        name = modelstore.file_name(model, plan["quant"])
-        if name not in files:
-            raise modelstore.StoreError(f"{name} is not in the {model['source']['hf_repo']} repository")
-        size, sha = files[name]
-        url = f"{args.hf_base or 'https://huggingface.co'}/{model['source']['hf_repo']}/resolve/main/{name}"
-        last = [0.0]
-
-        def progress(done, total):
-            if time.monotonic() - last[0] > 5:
-                out.say(f"  {done / GiB:.1f} / {total / GiB:.1f} GiB ({done * 100 // total}%)")
-                last[0] = time.monotonic()
-        path = modelstore.fetch(url, home / "models" / name, size, sha, progress=progress, allow_local=bool(args.hf_base))
-        out.say(f"  {name}: OK (size and SHA-256 verified)")
+                return {"ok": False, "errors": plan["reasons"], "plan": plan}
+        path = _ensure_model(args, catalog, plan, home, out, cache)
     except (engine.EngineError, modelstore.StoreError, OSError) as e:
-        out.say(f"\nInstall stopped: {e}")
-        out.say("Nothing is broken: run the same command again, downloads resume and finished files are kept.")
-        return 1
+        return {"ok": False, "errors": [str(e)], "plan": plan, "stopped": True}
 
-    out.say("\n3/4  Test launch with the planned settings")
-    measured, errors, final, verdict = {}, [], None, None
+    out.say(f"\n  Test launch with the planned settings ({label})")
+    verdict, final = None, None
     attempt, replan = 0, False
     while attempt < MAX_ATTEMPTS:
         if attempt or replan:
-            plan = planner.plan(hw if backend != "cpu" else {**hw, "gpus": []}, catalog, model=plan["model"],
-                                quant=plan["quant"], config=relaxed_config(base_cfg, attempt, hw))
+            plan = planner.plan(hw, catalog, model=plan["model"], quant=plan["quant"], menu=False,
+                                config=relaxed_config(base_cfg, attempt, hw))
             if not plan["ok"]:
                 break
             if attempt:
@@ -253,7 +273,7 @@ def run(args, hw, catalog, out=None, *, release=None):
         if verdict["ok"]:
             final = (plan, argv)
             break
-        errors.append(f"attempt {attempt + 1}: {verdict.get('error', '?')[:300]}")
+        errors.append(f"{label}, attempt {attempt + 1}: {verdict.get('error', '?')[:300]}")
         out.say("  did not work" + (" (out of memory)" if verdict.get("oom") else "") + ": "
                 + str(verdict.get("error", ""))[:200].replace("\n", " "))
         if plan["settings"].get("mtp") and not verdict.get("oom") and base_cfg.get("mtp_standard", True):
@@ -265,27 +285,102 @@ def run(args, hw, catalog, out=None, *, release=None):
             break
         attempt += 1
     if not final:
-        out.say("\nNo configuration passed the test launch. The model and engine are downloaded and kept.")
+        return {"ok": False, "errors": errors, "plan": plan}
+    plan, argv = final
+    first_predicted, first_measured = plan["speed_by_fill"]["empty"], verdict["tok_s"]
+    plan, argv, verdict, calibration = refine(hw, catalog, plan, argv, verdict, server, path, args, base_cfg, out, home)
+    return {"ok": True, "plan": plan, "argv": argv, "verdict": verdict, "calibration": calibration, "backend": backend,
+            "server": str(server), "path": str(path), "hw": hw, "label": label, "first_predicted": round(first_predicted, 1),
+            "first_measured": first_measured, "errors": errors}
+
+
+def run(args, hw, catalog, out=None, *, release=None):
+    """The whole installation. Returns the process exit code: 0 ready, 1 nothing fits / failed, 2 bad input.
+
+    Where the TurboQuant+ build can run (Vulkan, Metal, CUDA on Windows) it is tried first, and then upstream llama.cpp is
+    tried too; the faster of the two, measured on this machine, is kept (the TurboQuant+ build wins a near tie, it is the
+    main engine). `--no-turbo` skips it. A build that does not start never stops the install: the other one is used."""
+    out = out or Out()
+    home = Path(args.dir) if args.dir else launch.home_dir()
+    base_cfg = {"contexts": tuple(c for c in planner.DEFAULTS["contexts"] if c <= args.context)} if args.context else {}
+    no_turbo = bool(getattr(args, "no_turbo", False))
+    profile = getattr(args, "profile_name", "balanced")
+    up_cfg = {**base_cfg, "tqp_enabled": False}
+    tq_cfg = {**base_cfg, "kv_unavailable": ("q8_0", "q4_0")}               # only TurboQuant+ candidates
+    plan = planner.plan(hw, catalog, config=relaxed_config(base_cfg if not no_turbo else up_cfg, 0, hw),
+                        model=args.model_id, quant=args.quant, profile=profile)
+    out.say(report.card(hw, plan))
+    if not plan["ok"]:
+        return 1
+    model = next(m for m in catalog["models"] if m["id"] == plan["model"])
+    if plan.get("tier") == "fork":
+        setup = Path(__file__).resolve().parent.parent.parent / "setup.sh"
+        out.say("\nThis machine gets the fast tier (Shura's CUDA fork: turbo3 KV cache, expert cache, MTP).")
+        out.say(f"Run:  bash {setup} --quant {plan['quant']}" + ("  --yes" if args.yes else ""))
+        if args.dry_run or not setup.exists() or not out.ask("Run it now?", default=False):
+            return 0
+        return subprocess.call(["bash", str(setup), "--quant", plan["quant"]] + (["--yes"] if args.yes else []))
+    turbo_plan = None
+    if not no_turbo:
+        t = planner.plan(hw, catalog, config=relaxed_config(tq_cfg, 0, hw), model=args.model_id, quant=args.quant,
+                         profile=profile, menu=False)
+        turbo_plan = t if t["ok"] and t.get("tier") == "tqp" else None
+    out.say("\nWhat will be downloaded")
+    for line in preview(plan, model, plan["quant"], home, turbo=turbo_plan):
+        out.say("  " + line)
+    if args.dry_run:
+        out.say("\nDry run: nothing was downloaded or changed.")
+        return 0
+    if not args.yes and not out.ask("Continue?"):
+        out.say("Cancelled. Nothing was changed.")
+        return 0
+
+    cache, results = {}, []
+    if turbo_plan:
+        out.say("\n1/3  TurboQuant+ build (third-party llama.cpp fork: turbo KV cache, expert cache, MTP)")
+        r = _attempt(args, hw, catalog, out, release, tq_cfg, home, cache, "TurboQuant+")
+        if r["ok"]:
+            results.append(r)
+        else:
+            out.say("  The TurboQuant+ build did not work here (" + "; ".join(r["errors"])[:200] + "). Using standard llama.cpp.")
+    out.say(f"\n{'2/3' if turbo_plan else '1/2'}  Standard llama.cpp")
+    r = _attempt(args, hw, catalog, out, release, up_cfg, home, cache, "llama.cpp")
+    if r["ok"]:
+        results.append(r)
+    if not results and r.get("stopped"):                                    # a download or engine problem, not a failed launch
+        out.say(f"\nInstall stopped: {'; '.join(r['errors'])}")
+        out.say("Nothing is broken: run the same command again, downloads resume and finished files are kept.")
+        return 1
+    if not results:
+        out.say("\nNo configuration passed the test launch. Downloaded files are kept, so a rerun does not start over.")
+        errors = [e for rr in ([r] if not r["ok"] else []) for e in rr.get("errors", [])]
         _, md = report.make_report(hw, plan, measured={"verified": False}, errors=errors, scrub_args=_scrub())
         (home / "shura-hardware-report.md").write_text(md + "\n")
         out.say(f"A report without personal data is in {home / 'shura-hardware-report.md'}. Posting it as a "
                 f"'Hardware report' issue helps everyone with this hardware.")
         return 1
-    plan, argv = final
-    first_predicted = plan["speed_by_fill"]["empty"]
-    first_measured = verdict["tok_s"]
-    plan, argv, verdict, calibration = refine(hw if backend != "cpu" else {**hw, "gpus": []}, catalog, plan, argv, verdict,
-                                              server, path, args, base_cfg, out, home)
+    tq = next((x for x in results if x["label"] == "TurboQuant+"), None)
+    up = next((x for x in results if x["label"] == "llama.cpp"), None)
+    if tq and up:
+        keep_tq = tq["verdict"]["tok_s"] >= 0.95 * up["verdict"]["tok_s"]
+        out.say(f"\n  Measured here: TurboQuant+ {tq['verdict']['tok_s']} tok/s, standard llama.cpp {up['verdict']['tok_s']} tok/s: "
+                f"keeping {'TurboQuant+' if keep_tq else 'standard llama.cpp'}.")
+        best = tq if keep_tq else up
+    else:
+        best = tq or up
+    plan, verdict, hw = best["plan"], best["verdict"], best["hw"]
     predicted = plan["speed_by_fill"]["empty"]
     measured = {"verified": True, "tok_s_short_prompt": verdict["tok_s"], "predicted_tok_s_empty": predicted,
-                "first_plan_predicted": round(first_predicted, 1), "first_plan_measured": first_measured,
-                "calibration": calibration, "load_s": verdict["load_s"], "backend": backend, "llama_cpp": args.tag}
-    launch.save_state(home, {"schema": 1, "plan": plan, "model_path": str(path), "server": str(server), "backend": backend,
-                             "argv": argv, "port": args.port, "measured": measured})
+                "first_plan_predicted": best["first_predicted"], "first_plan_measured": best["first_measured"],
+                "calibration": best["calibration"], "load_s": verdict["load_s"], "backend": best["backend"],
+                "engine": plan.get("engine", "llama.cpp"), "llama_cpp": args.tag,
+                "engine_comparison": {x["label"]: x["verdict"]["tok_s"] for x in results}}
+    launch.save_state(home, {"schema": 1, "plan": plan, "model_path": best["path"], "server": best["server"],
+                             "backend": best["backend"], "argv": best["argv"], "port": args.port, "measured": measured})
     _, md = report.make_report(hw, plan, measured=measured, scrub_args=_scrub())
     (home / "shura-hardware-report.md").write_text(md + "\n")
-    out.say(f"\n4/4  Ready. Measured {verdict['tok_s']} tok/s (plan predicted about {predicted:.0f} for a short prompt), "
-            f"loaded in {verdict['load_s']} s.")
+    out.say(f"\nReady. Measured {verdict['tok_s']} tok/s (plan predicted about {predicted:.0f} for a short prompt), "
+            f"loaded in {verdict['load_s']} s, engine: {plan.get('engine', 'llama.cpp')}.")
     out.say(f"\n  shura start     start the server ({plan['settings']['context']} tokens of context)")
     out.say("  shura status    is it running?      shura stop    stop it and free the memory")
     out.say(f"  API: http://127.0.0.1:{args.port}/v1  (OpenAI-compatible; any client works, model name \"{plan['model']}\")")
