@@ -136,6 +136,35 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
   trade) and `q4_0` (0.28, the smallest the flash-attention kernels everywhere support). The CUDA and ROCm prebuilts only
   run flash attention with `q8_0` or `q4_0` pairs, so `q5_0` may not start there: the installer then retries with `q8_0` /
   `q4_0` by itself. The quality figures are priors from general experience, not our measurements.
+- **MTP** (the model's own multi-token-prediction head, speculative decoding without a second model) is used with upstream
+  llama.cpp when there is a GPU: its draft cache is paid for in VRAM (2 KiB per token and 236 MiB), its speed-up is assumed to be
+  only x1.15 (the CUDA fork measured x1.32; nothing measured elsewhere), and if a build cannot start it the installer retries
+  without it.
+- **TurboQuant+ build (third-party).** Where it can run (Vulkan on Linux, Metal on Apple Silicon, CUDA on Windows with NVIDIA)
+  the installer tries the pinned release of [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant): a
+  llama.cpp fork with a turbo KV cache, an adaptive cache of hot experts in spare VRAM (`--moe-cache`) and MTP. It then tries
+  upstream llama.cpp with **every** backend that can drive the GPU (ROCm and Vulkan on AMD, SYCL and Vulkan on Intel, ...),
+  **measures each on the real model on your machine** (the tiny test model does not predict a big MoE's speed) and keeps the
+  fastest. Each vendor's own stack (CUDA, **ROCm**, SYCL, Metal) is the main engine on its GPU: anything else, including
+  TurboQuant+ over Vulkan on an AMD card, must be 10% faster to replace it. A build that does not start never stops the install.
+  The archive must match the SHA-256 pinned in `engine.TQP_SHA256`, whatever the release page says later; `shura install
+  --no-turbo` never touches it.
+  Measured by us: RTX 4070 SUPER over Vulkan, the real model, 200k window, turbo3 + cache + MTP: loads in 16 s (warm), 34 tok/s
+  at an empty window and 29 tok/s with 28k filled, MTP accepts 46 of 48 drafted tokens, VRAM peak within the limit. That is about
+  35% slower than our CUDA fork on the same card, which is why NVIDIA on Linux keeps the fork. In its log: on GQA 8:1 models it keeps
+  K at `q8_0` and compresses only V, so its KV cache is about 0.36 of f16, not the 0.195 of pure turbo3. AMD is unmeasured.
+  **Its expert cache works, but it is a small gain at the budget a 12 GB card leaves (971 MiB):** the same settings with
+  `--moe-cache off` against `971`, alternating, 4 runs: about 33 tok/s without it and about 35.5 with it (+5 to +9%, inside the
+  5-8% run-to-run spread; 8k-filled runs 33.5-34.2 against 35.1). It is adaptive: the first requests after loading ran at about
+  half speed (it was filling), so the installer measures the median of 3 runs after 2 warm-up runs.
+- **TurboQuant+ on ROCm: do it yourself.** There is no prebuilt for it. The fork's source builds for HIP (RDNA4 included), which
+  gives its turbo KV cache and MTP but **not** the expert cache (its release notes list that for CUDA, Metal and Vulkan only). The
+  installer does not build it: it needs the ROCm SDK and takes tens of minutes. If you want to try, the fork's own `docs/build.md`
+  is the reference; in short, with ROCm installed: `git clone https://github.com/TheTom/llama-cpp-turboquant && cd
+  llama-cpp-turboquant && git checkout tqp-v0.4.0`, then `HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" cmake -S . -B
+  build -DGGML_HIP=ON -DGPU_TARGETS=gfx1201 -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release -- -j 8` (`gfx1201`
+  is the RX 9070; `rocminfo | grep gfx` shows yours), and run `build/bin/llama-server` with `-ctk q8_0 -ctv turbo3 -fa on` next to
+  the flags `shura` used (they are in `state.json`). Unmeasured by us; tell us how it went in a hardware report.
 - **Model**: among the models whose best candidate reaches the comfortable speed (20 tok/s) the most capable wins; if none
   does, among those that reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is
   a refusal with the reason.
