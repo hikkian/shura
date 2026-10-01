@@ -240,8 +240,8 @@ if nothing works it leaves a report without personal data and keeps the download
 > Where it can run (Vulkan on Linux, Metal on Apple Silicon, CUDA on Windows with NVIDIA), `shura install` also tries a
 > **third-party** llama.cpp fork with a turbo KV cache, an expert cache and MTP
 > ([TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant), pinned release, archive checked against a
-> SHA-256 recorded in this repository). It measures it against upstream llama.cpp on your machine and keeps the faster one.
-> `shura install --no-turbo` never uses it.
+> SHA-256 recorded in this repository). It measures it against upstream llama.cpp on your machine and keeps the fastest. Each vendor's own stack (ROCm on AMD, CUDA on NVIDIA, SYCL on Intel, Metal on Apple) stays the main
+> engine unless another is 10% faster on your machine. `shura install --no-turbo` never uses the third-party build.
 
 - **Classes by resources, not by device type:** a GPU with system RAM, unified memory (Apple), or a CPU-only machine.
   CPU-only does not mean small models: a many-channel server can run models no 12 GB card can hold.

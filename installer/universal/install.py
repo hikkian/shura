@@ -20,6 +20,8 @@ GiB = 1024 ** 3
 OOM = re.compile(r"out of memory|failed to allocate|cudaMalloc|cannot allocate|ErrorOutOfDeviceMemory|bad_alloc|"
                  r"unable to allocate|insufficient memory", re.I)
 MAX_ATTEMPTS = 3
+NATIVE = {"nvidia": "cuda", "amd": "rocm", "intel": "sycl", "apple": "metal"}   # each vendor's own stack: the main engine there
+NATIVE_BONUS = 1.10                  # anything else must be 10% faster, measured on this machine, to replace it
 
 
 class Out:
@@ -82,12 +84,15 @@ def _choose_tqp(hw, plan, root, out):
     return backend, server, [res]
 
 
-def choose_engine(hw, plan, root, tag, out, release=None):
-    """Download the candidate builds and keep the fastest one that passes the self-test. Returns (backend, server, results)."""
+def choose_engine(hw, plan, root, tag, out, release=None, only_backend=None):
+    """Download the candidate builds and keep the fastest one that passes the self-test (or just `only_backend`).
+    Returns (backend, server, results)."""
     if plan.get("engine") == "turboquant-plus":
         return _choose_tqp(hw, plan, root, out)
     release = release or engine.fetch_release(tag)
     builds = backends.builds_for(hw, plan["backend_candidates"], release["assets"])
+    if only_backend:
+        builds = [b for b in builds if b[0] == only_backend]
     if not builds:
         raise engine.EngineError(f"llama.cpp {release['tag']} has no build for this machine "
                                  f"({', '.join(plan['backend_candidates'])})")
@@ -106,7 +111,7 @@ def choose_engine(hw, plan, root, tag, out, release=None):
         servers[backend] = server if res["ok"] else None
         out.say(f"    {backend}: " + (f"works ({res['tok_s']} tok/s on the test model)" if res["ok"]
                                      else "does not work here (" + str(res.get("error", "?"))[:100] + ")"))
-        if res["ok"] and not plan["needs_probe"]:
+        if res["ok"] and (only_backend or not plan["needs_probe"]):
             break
     order = [b for b, _ in builds]
     best, why = engine.choose_backend(tested, order)
@@ -229,7 +234,7 @@ def _ensure_model(args, catalog, plan, home, out, cache):
     return path
 
 
-def _attempt(args, hw, catalog, out, release, base_cfg, home, cache, label):
+def _attempt(args, hw, catalog, out, release, base_cfg, home, cache, label, only_backend=None):
     """One complete try with one engine: plan, engine, model, test launch (with the out-of-memory and no-MTP fallbacks),
     calibration. Returns a result dict ({ok: True, plan, argv, verdict, ...}) or {ok: False, errors, plan}. Never raises for
     the problems it knows (a failed download, a build that does not work)."""
@@ -241,14 +246,15 @@ def _attempt(args, hw, catalog, out, release, base_cfg, home, cache, label):
     errors = []
     try:
         out.say(f"\n  Engine ({label})")
-        backend, server, _ = choose_engine(hw, plan, home, None if args.latest else args.tag, out, release)
+        backend, server, _ = choose_engine(hw, plan, home, None if args.latest else args.tag, out, release,
+                                           only_backend=only_backend)
         hw = reconcile(hw, server, backend, out)
         if backend == "cpu" and hw["gpus"]:
             out.say("  No GPU build works here: planning for the CPU instead.")
             hw = {**hw, "gpus": []}
         if hw is not first_hw:
-            plan = planner.plan(hw, catalog, model=plan["model"], quant=args.quant, config=relaxed_config(base_cfg, 0, hw),
-                                menu=False)
+            plan = planner.plan(hw, catalog, model=plan["model"], quant=plan["quant"],       # same file: never a surprise download
+                                config=relaxed_config(base_cfg, 0, hw), menu=False)
             if not plan["ok"]:
                 return {"ok": False, "errors": plan["reasons"], "plan": plan}
         path = _ensure_model(args, catalog, plan, home, out, cache)
@@ -337,16 +343,30 @@ def run(args, hw, catalog, out=None, *, release=None):
 
     cache, results = {}, []
     if turbo_plan:
-        out.say("\n1/3  TurboQuant+ build (third-party llama.cpp fork: turbo KV cache, expert cache, MTP)")
+        out.say("\nTrying the TurboQuant+ build (third-party llama.cpp fork: turbo KV cache, expert cache, MTP)")
         r = _attempt(args, hw, catalog, out, release, tq_cfg, home, cache, "TurboQuant+")
         if r["ok"]:
             results.append(r)
         else:
-            out.say("  The TurboQuant+ build did not work here (" + "; ".join(r["errors"])[:200] + "). Using standard llama.cpp.")
-    out.say(f"\n{'2/3' if turbo_plan else '1/2'}  Standard llama.cpp")
-    r = _attempt(args, hw, catalog, out, release, up_cfg, home, cache, "llama.cpp")
-    if r["ok"]:
-        results.append(r)
+            out.say("  The TurboQuant+ build did not work here (" + "; ".join(r["errors"])[:200] + ").")
+    up_plan = planner.plan(hw, catalog, config=relaxed_config(up_cfg, 0, hw), model=args.model_id, quant=args.quant,
+                           profile=profile, menu=False)
+    vendor = max(hw["gpus"], key=lambda g: g["vram_total"])["vendor"] if hw["gpus"] else None
+    gpu_backends = sorted((b for b in up_plan["backend_candidates"] if b != "cpu"),
+                          key=lambda b: b != NATIVE.get(vendor)) if up_plan["ok"] else []   # the vendor's own stack first
+    r = {"ok": False, "errors": []}
+    for backend in gpu_backends or ["cpu"]:                       # every build that can drive the GPU, on the real model:
+        out.say(f"\nTrying standard llama.cpp, {backend} build")  # the tiny test model does not predict a big MoE's speed
+        r = _attempt(args, hw, catalog, out, release, up_cfg, home, cache, f"llama.cpp ({backend})", only_backend=backend)
+        if r["ok"]:
+            results.append(r)
+        else:
+            out.say(f"  {backend} did not work here (" + "; ".join(r["errors"])[:160] + ").")
+    if not results and gpu_backends:                              # no GPU build worked: the CPU is the last resort
+        out.say("\nNo GPU build worked: trying the CPU.")
+        r = _attempt(args, hw, catalog, out, release, up_cfg, home, cache, "llama.cpp (cpu)", only_backend="cpu")
+        if r["ok"]:
+            results.append(r)
     if not results and r.get("stopped"):                                    # a download or engine problem, not a failed launch
         out.say(f"\nInstall stopped: {'; '.join(r['errors'])}")
         out.say("Nothing is broken: run the same command again, downloads resume and finished files are kept.")
@@ -359,22 +379,21 @@ def run(args, hw, catalog, out=None, *, release=None):
         out.say(f"A report without personal data is in {home / 'shura-hardware-report.md'}. Posting it as a "
                 f"'Hardware report' issue helps everyone with this hardware.")
         return 1
-    tq = next((x for x in results if x["label"] == "TurboQuant+"), None)
-    up = next((x for x in results if x["label"] == "llama.cpp"), None)
-    if tq and up:
-        keep_tq = tq["verdict"]["tok_s"] >= 0.95 * up["verdict"]["tok_s"]
-        out.say(f"\n  Measured here: TurboQuant+ {tq['verdict']['tok_s']} tok/s, standard llama.cpp {up['verdict']['tok_s']} tok/s: "
-                f"keeping {'TurboQuant+' if keep_tq else 'standard llama.cpp'}.")
-        best = tq if keep_tq else up
-    else:
-        best = tq or up
+    def rank(x):                                                  # measured speed, with the vendor's own stack favoured
+        return x["verdict"]["tok_s"] * (NATIVE_BONUS if x["backend"] == NATIVE.get(vendor) else 1.0)
+    best = max(results, key=rank)
+    if len(results) > 1:
+        shown = ", ".join(f"{x['label']} {x['verdict']['tok_s']} tok/s" for x in results)
+        out.say(f"\n  Measured here: {shown}. Keeping {best['label']}"
+                + (f" ({NATIVE.get(vendor)} is this GPU's own stack: another build must be {int((NATIVE_BONUS - 1) * 100)}% faster "
+                   f"to replace it)." if vendor else "."))
     plan, verdict, hw = best["plan"], best["verdict"], best["hw"]
     predicted = plan["speed_by_fill"]["empty"]
     measured = {"verified": True, "tok_s_short_prompt": verdict["tok_s"], "predicted_tok_s_empty": predicted,
                 "first_plan_predicted": best["first_predicted"], "first_plan_measured": best["first_measured"],
                 "calibration": best["calibration"], "load_s": verdict["load_s"], "backend": best["backend"],
                 "engine": plan.get("engine", "llama.cpp"), "llama_cpp": args.tag,
-                "engine_comparison": {x["label"]: x["verdict"]["tok_s"] for x in results}}
+                "engine_comparison": {x["label"]: x["verdict"]["tok_s"] for x in results}, "chosen": best["label"]}
     launch.save_state(home, {"schema": 1, "plan": plan, "model_path": best["path"], "server": best["server"],
                              "backend": best["backend"], "argv": best["argv"], "port": args.port, "measured": measured})
     _, md = report.make_report(hw, plan, measured=measured, scrub_args=_scrub())

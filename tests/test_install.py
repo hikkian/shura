@@ -276,7 +276,9 @@ class EndToEnd(unittest.TestCase):
 
     def run_install(self, d, hub, server, **kw):
         cat, out = tiny_catalog(0), Out()
-        with mock.patch.object(install, "choose_engine", return_value=("vulkan", server, [])):
+        def fake_choose(hw, plan, root, tag, out_, release=None, only_backend=None):      # the backend asked for, like the real one
+            return only_backend or plan["backend_candidates"][0], server, []
+        with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
             code = install.run(args(d, hub, **kw), HW[self.HW], cat, out)
         return code, out
 
@@ -336,17 +338,32 @@ class EndToEnd(unittest.TestCase):
             self.assertLess(cal["ratio"], 0.7)
             self.assertEqual(len(list((Path(d) / "models").glob("*.gguf"))), 1)         # the same file, no second download
 
-    def test_the_turboquant_build_is_tried_first_and_wins_a_near_tie(self):
+    def test_every_build_is_measured_on_the_real_model_and_the_vendors_own_stack_is_favoured(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
-            code, out = self.run_install(d, hub, fake_server(bin_dir))              # both engines "measure" the same speed
+            code, out = self.run_install(d, hub, fake_server(bin_dir))              # all builds "measure" the same speed
             self.assertEqual(code, 0, out.text)
-            self.assertIn("TurboQuant+", out.text)
             m = launch.load_state(d)["measured"]
-            self.assertEqual(m["engine"], "turboquant-plus")
-            self.assertEqual(set(m["engine_comparison"]), {"TurboQuant+", "llama.cpp"})
-            argv = launch.load_state(d)["argv"]
-            self.assertEqual(argv[argv.index("-ctk") + 1], "turbo3")
-            self.assertIn("--moe-cache", argv)
+            self.assertEqual(set(m["engine_comparison"]), {"TurboQuant+", "llama.cpp (rocm)", "llama.cpp (vulkan)"})
+            self.assertEqual(m["chosen"], "llama.cpp (rocm)")                       # AMD: ROCm wins a tie, Vulkan needs +10%
+            self.assertIn("rocm is this GPU's own stack", out.text)
+
+    def test_a_faster_non_native_build_wins_only_by_enough(self):
+        speeds = {"turbo3": "70", "rocm": "50"}                                      # +40%: clearly worth leaving ROCm
+
+        def run(tq_speed):
+            with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+                server = Path(bin_dir) / "llama-server"
+                server.write_text(f"""#!/bin/sh
+case "$*" in *--list-devices*) exit 0;; esac
+case "$*" in *turbo3*) export FAKE_TOK_S={tq_speed};; *) export FAKE_TOK_S=50;; esac
+exec "{sys.executable}" "{FAKE}" "$@"
+""")
+                server.chmod(server.stat().st_mode | stat.S_IEXEC)
+                self.run_install(d, hub, server)
+                return launch.load_state(d)["measured"]["chosen"]
+        self.assertEqual(run(54), "llama.cpp (rocm)")                                # +8%: not enough to replace ROCm
+        self.assertEqual(run(70), "TurboQuant+")                                     # +40%: enough
+        self.assertEqual(speeds["turbo3"], "70")
 
     def test_a_turboquant_build_that_does_not_start_falls_back_to_standard_llama_cpp(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
@@ -362,7 +379,7 @@ class EndToEnd(unittest.TestCase):
             cat, out = tiny_catalog(0), Out()
             seen = []
 
-            def fake_choose(hw, plan, root, tag, out_, release=None):
+            def fake_choose(hw, plan, root, tag, out_, release=None, only_backend=None):
                 seen.append(plan.get("engine"))
                 return "vulkan", fake_server(bin_dir), []
             with mock.patch.object(install, "choose_engine", side_effect=fake_choose):

@@ -136,7 +136,10 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
 - **TurboQuant+ build (third-party).** Where it can run (Vulkan on Linux, Metal on Apple Silicon, CUDA on Windows with NVIDIA) the
   installer tries the pinned release of [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) first: a
   llama.cpp fork with a turbo KV cache, an adaptive cache of hot experts in spare VRAM (`--moe-cache`) and MTP. It then tries
-  upstream llama.cpp too, **measures both on your machine** and keeps the faster; a near tie (within 5%) goes to TurboQuant+.
+  upstream llama.cpp with **every** backend that can drive the GPU (ROCm and Vulkan on AMD, SYCL and Vulkan on Intel, ...),
+  **measures each on the real model on your machine** (the tiny test model does not predict a big MoE's speed) and keeps the
+  fastest. Each vendor's own stack (CUDA, **ROCm**, SYCL, Metal) is the main engine on its GPU: anything else, including
+  TurboQuant+ over Vulkan on an AMD card, must be 10% faster to replace it.
   A build that does not start never stops the install. The archive must match the SHA-256 pinned in `engine.TQP_SHA256`,
   whatever the release page says later; `shura install --no-turbo` never touches it. Measured by us once: RTX 4070 SUPER over
   Vulkan, the real model, 200k window, turbo3 + cache + MTP: loads in 16 s (warm), 34 tok/s at an empty window and 29 tok/s
