@@ -178,6 +178,8 @@ Caveat: an *identical* repeated prompt cannot reuse a restored slot on this hybr
 (the last token must be re-evaluated and the recurrent state cannot step back). A real continuation
 of the conversation works as expected.
 
+Native checkpoint mutations (`POST`, `PUT`, `DELETE`, or `PATCH` on `/slots`) are private to the gateway lifecycle. The public gateway rejects them with HTTP 403 before loading a model, in both gateway implementations. Internal A2 save/restore calls still go directly to the owned backend and enforce model/mode ownership. Controlled native slot benchmarks must address their isolated llama-server directly. Read-only slot inspection remains available.
+
 ## MCP tool trimming
 
 [`mcp/mcp-tool-filter.js`](../mcp/mcp-tool-filter.js) is a transparent stdio proxy that filters an MCP

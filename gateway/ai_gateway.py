@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
+from checkpoint_access import private_checkpoint_handler
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
 
 CFG_DIR = Path(os.environ.get("AI_GATEWAY_CONFIG", Path(__file__).resolve().parent.parent / "config"))
@@ -206,6 +207,7 @@ def legacy_main():
     spec = importlib.util.spec_from_file_location("shura_legacy_gateway", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.Handler = private_checkpoint_handler(module.Handler)
     module.main()
 
 
@@ -1281,7 +1283,7 @@ def main():
     st.monitor_thread.start()
     if GAME.enabled:
         threading.Thread(target=game_monitor, daemon=True, name="shura-game-mode").start()
-    server = ThreadingHTTPServer((G["gatewayHost"], G["gatewayPort"]), Handler)
+    server = ThreadingHTTPServer((G["gatewayHost"], G["gatewayPort"]), private_checkpoint_handler(Handler))
     server.daemon_threads = True
     log(f"Gateway listening on http://{G['gatewayHost']}:{G['gatewayPort']} -> llama-server :{G['llamaPort']} "
         f"(config {CFG_DIR}, override={st.override}, idle unload {G['idleUnloadSeconds']}s)")
