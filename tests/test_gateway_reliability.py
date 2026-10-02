@@ -342,6 +342,27 @@ class GuardReliability(fixtures.GatewayGuard):
         self.assertEqual(argv[argv.index('--min-p') + 1], '0.0')
         self.assertEqual(argv[argv.index('--temp') + 1], '1.0')
 
+    def test_a_model_switch_counts_the_running_models_memory_as_available(self):
+        gw = self.gw
+        mc = dict(gw.M['models'][gw.M['defaultModel']])
+        gw.G['ramFreeMinGBToLoad'] = 14.0
+        gw.mem_available_gb.return_value = 7.7                  # the loaded model holds ~11 GB, the desktop the rest
+        gw.st.vram_sample_at = time.time()
+        gw.st.vram_free_mib = 325
+        gw.st.monitor_error = ''
+        gw.st.override = 'AUTO'
+        gw.st.multimedia_lock = False
+        mc['vramFreeMinGBToLoad'] = 10.0
+        self.assertIn('Not enough free RAM', gw.preload_check(mc))                         # without the credit a switch is refused
+        self.assertEqual(gw.preload_check(mc, reclaim=(11.3, 10.3)), '')                   # with it, the switch is admitted
+        self.assertIn('Not enough free', gw.preload_check(mc, reclaim=(11.3, 1.0)))        # but not when the card really lacks memory
+        class Dead:
+            def poll(self):
+                return 1
+        gw.st.proc = Dead()
+        self.assertEqual(gw.running_footprint(), (0.0, 0.0))                              # a stopped server frees nothing
+        gw.st.proc = None
+
     def test_image_cap_and_extra_args_reach_the_server_and_vision_overrides_apply(self):
         base = dict(self.gw.M['models'][self.gw.M['defaultModel']])
         for key in ('imageMaxTokens', 'extraArgs'):

@@ -291,12 +291,28 @@ def server_slot_dir():
     return SLOT_DIR
 
 
-def preload_check(mc):
+def running_footprint():
+    """(RAM GB, VRAM GB) held by the llama-server that is running now. A model switch unloads it before the new load, so the admission
+    check for the new model has to count this memory as available (otherwise no switch is possible while a model is loaded)."""
+    proc = st.proc
+    if not (proc and proc.poll() is None):
+        return 0.0, 0.0
+    rss = 0.0
+    try:
+        for line in Path(f"/proc/{proc.pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                rss = int(line.split()[1]) / 1048576
+    except (OSError, ValueError):
+        pass
+    return rss, (st.proc_vram_mib or 0) / 1024
+
+
+def preload_check(mc, reclaim=(0.0, 0.0)):
     if st.override == "OFF":
         return "AI is manually disabled (ai-off)"
     if st.multimedia_lock:
         return "GPU is busy with an audio/video job"
-    ram = mem_available_gb()
+    ram = mem_available_gb() + reclaim[0]
     if ram < G["ramFreeMinGBToLoad"]:
         return f"Not enough free RAM to load the model ({ram:.1f} GB available, need {G['ramFreeMinGBToLoad']} GB)"
     sample_age = time.time() - st.vram_sample_at if st.vram_sample_at is not None else math.inf
@@ -307,7 +323,7 @@ def preload_check(mc):
         event("telemetry_failed", st.monitor_error, fallback=True)
         reset_pressure()
         return ""
-    vram = (st.vram_free_mib or 0) / 1024
+    vram = (st.vram_free_mib or 0) / 1024 + reclaim[1]
     required = max(mc["vramFreeMinGBToLoad"], st.vram_resume_min_gb)
     if vram < required:
         return f"Not enough free VRAM ({vram:.1f} GB free, need {required:.2f} GB)"
@@ -870,7 +886,7 @@ def acquire_model(model_id, vision):
                 st.busy += 1
                 st.last_request = time.time()
                 return ""
-            error = preload_check(model_config(model_id, vision))
+            error = preload_check(model_config(model_id, vision), reclaim=running_footprint())
             if not error:
                 st.busy += 1
                 try:
