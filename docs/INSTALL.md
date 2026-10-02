@@ -95,3 +95,18 @@ python3 bench/deep_context_bench.py --context /tmp/ctx_187k.txt
 - **`chatTemplateKwargs`** (optional, e.g. `{"terse": false}`): extra variables for the model's chat template, passed as `--chat-template-kwargs`. Tiel-Coder's template adds a "be concise" system prompt by default (`terse`); on 44 short agentic tasks it made no measurable difference to quality or tokens, so switching it off is a matter of taste.
 - **`specDraftNMax`**: 1-3 perform about the same. 1 has the highest acceptance and uses the least VRAM.
 - To build a routing profile for a different model or your own workload: `scripts/capture-moe-trace.sh <model.gguf> [prompt-dir]`. Put a few realistic chat-formatted prompts in `prompt-dir`; only generated tokens are kept.
+
+## A second model: Occamy 1.0 with MTP
+
+Accio-Lab ships Occamy 1.0 GGUFs without a multi-token-prediction head, and the official head (`Accio-Lab/occamy-1.0-MTP`) only as BF16
+safetensors for SGLang. `scripts/graft_mtp_head.py` puts that head into the GGUF, so `--spec-type draft-mtp` works from one file the way
+it does for Tiel-Coder (a separate draft model would cost another gigabyte of VRAM):
+
+1. `graft_mtp_head.py head  occamy-1.0-IQ4_XS.gguf mtp-trained.safetensors head-bf16.gguf`
+2. `llama-quantize --tensor-type 'ffn_.*_exps\.weight=q3_k' head-bf16.gguf head-q.gguf q8_0 6` (1612 MiB -> 371 MiB, the size of Tiel-Coder's head)
+3. `graft_mtp_head.py merge occamy-1.0-IQ4_XS.gguf head-q.gguf occamy-1.0-IQ4_XS-MTP.gguf`
+
+Checked on a CPU run with temperature 0: the model loads, `common_speculative_init_result` creates the MTP context, 57 of 57 drafted tokens
+were accepted on a short coding prompt (an easy prompt: expect less on real work). MTP never changes the answer, only the speed. Not yet
+measured on the GPU: speed against Tiel-Coder, how many expert-cache slots fit, and a routing profile of its own (the config borrows
+Tiel-Coder's until one is captured with `scripts/capture-moe-trace.sh`).
