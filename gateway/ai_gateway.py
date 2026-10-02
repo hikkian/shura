@@ -246,6 +246,10 @@ def build_args(mc, vision):
          "--temp", str(mc["temperature"]), "--top-k", str(mc["topK"]), "--top-p", str(mc["topP"]),
          "--jinja", "--reasoning", mc["reasoning"],
          "--cache-ram", str(M["cacheRamMB"]), "--slot-save-path", str(server_slot_dir())]
+    # Sampling the model's authors recommend, beyond temperature/top-k/top-p (optional per model, e.g. Occamy: presence_penalty 1.5).
+    for key, flag in (("minP", "--min-p"), ("presencePenalty", "--presence-penalty"), ("repeatPenalty", "--repeat-penalty")):
+        if mc.get(key) is not None:
+            a += [flag, str(mc[key])]
     if mc.get("chatTemplateKwargs"):
         # Extra variables for the model's chat template, e.g. {"terse": false} for Tiel-Coder (see docs/INSTALL.md).
         a += ["--chat-template-kwargs", json.dumps(mc["chatTemplateKwargs"], separators=(",", ":"))]

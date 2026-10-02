@@ -328,6 +328,20 @@ class GuardReliability(fixtures.GatewayGuard):
             argv = self.gw.build_args(mc, False)
         self.assertEqual(json.loads(argv[argv.index('--chat-template-kwargs') + 1]), {'terse': False})
 
+    def test_authors_sampling_options_reach_the_server_only_when_configured(self):
+        mc = dict(self.gw.M['models'][self.gw.M['defaultModel']])
+        with patch.object(self.gw, 'server_slot_dir', return_value=self.disk):
+            for key in ('minP', 'presencePenalty', 'repeatPenalty'):
+                mc.pop(key, None)
+            argv = self.gw.build_args(mc, False)
+            for flag in ('--min-p', '--presence-penalty', '--repeat-penalty'):
+                self.assertNotIn(flag, argv)
+            mc.update({'temperature': 1.0, 'presencePenalty': 1.5, 'minP': 0.0})
+            argv = self.gw.build_args(mc, False)
+        self.assertEqual(argv[argv.index('--presence-penalty') + 1], '1.5')
+        self.assertEqual(argv[argv.index('--min-p') + 1], '0.0')
+        self.assertEqual(argv[argv.index('--temp') + 1], '1.0')
+
     def test_terse_switch_is_put_into_chat_requests_and_wins_over_the_config(self):
         gw = self.gw
         body = json.dumps({'model': 'x', 'messages': [], 'chat_template_kwargs': {'other': 1}}).encode()
