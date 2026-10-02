@@ -342,6 +342,21 @@ class GuardReliability(fixtures.GatewayGuard):
         self.assertEqual(argv[argv.index('--min-p') + 1], '0.0')
         self.assertEqual(argv[argv.index('--temp') + 1], '1.0')
 
+    def test_image_cap_and_extra_args_reach_the_server_and_vision_overrides_apply(self):
+        base = dict(self.gw.M['models'][self.gw.M['defaultModel']])
+        for key in ('imageMaxTokens', 'extraArgs'):
+            base.pop(key, None)
+        with patch.object(self.gw, 'server_slot_dir', return_value=self.disk):
+            plain = self.gw.build_args(base, False)
+            self.assertNotIn('--image-max-tokens', plain)
+            self.assertNotIn('-ot', plain)
+            mc = {**base, 'imageMaxTokens': 2048, 'extraArgs': ['-ot', r'blk\.40\.ffn_(up|down|gate)_exps\.weight=CPU']}
+            argv = self.gw.build_args(mc, False)
+            self.assertEqual(argv[argv.index('--image-max-tokens') + 1], '2048')
+            self.assertEqual(argv[argv.index('-ot') + 1], r'blk\.40\.ffn_(up|down|gate)_exps\.weight=CPU')
+            with self.assertRaises(ValueError):
+                self.gw.build_args({**base, 'extraArgs': 'not a list'}, False)
+
     def test_terse_switch_is_put_into_chat_requests_and_wins_over_the_config(self):
         gw = self.gw
         body = json.dumps({'model': 'x', 'messages': [], 'chat_template_kwargs': {'other': 1}}).encode()

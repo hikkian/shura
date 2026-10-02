@@ -250,6 +250,13 @@ def build_args(mc, vision):
     for key, flag in (("minP", "--min-p"), ("presencePenalty", "--presence-penalty"), ("repeatPenalty", "--repeat-penalty")):
         if mc.get(key) is not None:
             a += [flag, str(mc[key])]
+    if mc.get("imageMaxTokens"):
+        # Caps the tokens one image may take: the vision encoder's scratch memory grows with the picture (2560x1600 added ~450 MiB).
+        a += ["--image-max-tokens", str(int(mc["imageMaxTokens"]))]
+    extra = mc.get("extraArgs") or []
+    if not isinstance(extra, list) or not all(isinstance(x, str) for x in extra):
+        raise ValueError("extraArgs must be a list of strings")
+    a += list(extra)             # e.g. ["-ot", "blk\\.40\\.ffn_(up|down|gate)_exps\\.weight=CPU"]: the MTP layer's experts on the CPU
     if mc.get("chatTemplateKwargs"):
         # Extra variables for the model's chat template, e.g. {"terse": false} for Tiel-Coder (see docs/INSTALL.md).
         a += ["--chat-template-kwargs", json.dumps(mc["chatTemplateKwargs"], separators=(",", ":"))]
