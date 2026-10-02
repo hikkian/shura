@@ -365,6 +365,28 @@ class GuardReliability(fixtures.GatewayGuard):
             if old is not None:
                 mc['chatTemplateKwargs'] = old
 
+    def test_terse_switch_is_only_for_models_whose_template_has_it(self):
+        gw = self.gw
+        body = json.dumps({'model': 'occamy', 'messages': []}).encode()
+        models = gw.M['models']
+        base = dict(models[gw.M['defaultModel']])
+        models['tiel-x'] = {**base, 'chatTemplateKwargs': {'terse': False}}
+        models['occamy-x'] = {k: v for k, v in base.items() if k != 'chatTemplateKwargs'}
+        try:
+            self.assertTrue(gw.supports_terse('tiel-x'))
+            self.assertFalse(gw.supports_terse('occamy-x'))
+            gw.st.terse = True
+            self.assertEqual(json.loads(gw.apply_terse(body, '/v1/chat/completions', 'tiel-x'))['chat_template_kwargs'], {'terse': True})
+            self.assertEqual(gw.apply_terse(body, '/v1/chat/completions', 'occamy-x'), body)
+            models['occamy-x']['terseSwitch'] = True                      # an explicit config entry wins
+            self.assertTrue(gw.supports_terse('occamy-x'))
+            snap = gw.status_snapshot()
+            self.assertIn('tiel-x', snap['terse_models'])
+        finally:
+            gw.st.terse = None
+            models.pop('tiel-x', None)
+            models.pop('occamy-x', None)
+
     def test_terse_flag_survives_a_restart(self):
         flag = Path(self.disk) / 'terse.flag'
         with patch.object(self.gw, 'TERSE_FLAG', flag):

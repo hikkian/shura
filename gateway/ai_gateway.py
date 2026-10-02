@@ -951,17 +951,27 @@ def game_monitor(stop=None):
         stop.wait(G["gamePollSeconds"])
 
 
-def terse_effective():
+def terse_effective(model_id=None):
     """Is the model's 'be concise' system prompt on? The runtime switch wins; else the model config; else the template default (on)."""
     if st.terse is not None:
         return st.terse
-    kw = (M["models"].get(M["defaultModel"], {}).get("chatTemplateKwargs") or {})
+    kw = (M["models"].get(model_id or M["defaultModel"], {}).get("chatTemplateKwargs") or {})
     return bool(kw.get("terse", True))
 
 
-def apply_terse(body, path):
-    """With a runtime terse switch set, put it into the request's chat_template_kwargs (the request wins over the server flag)."""
+def supports_terse(model_id):
+    """A model has the terse switch when its config says so, or declares the `terse` template variable (Tiel-Coder's template has it, Occamy's does not)."""
+    mc = M["models"].get(model_id) or {}
+    if "terseSwitch" in mc:
+        return bool(mc["terseSwitch"])
+    return "terse" in (mc.get("chatTemplateKwargs") or {})
+
+
+def apply_terse(body, path, model_id=None):
+    """With a runtime terse switch set, put it into the request's chat_template_kwargs (the request wins over the server flag), for models that have it."""
     if st.terse is None or not path.endswith("/chat/completions"):
+        return body
+    if model_id is not None and not supports_terse(model_id):
         return body
     try:
         obj = json.loads(body)
@@ -975,7 +985,9 @@ def apply_terse(body, path):
 def status_snapshot():
     proc = st.proc
     return {
-        "terse": terse_effective(), "terse_override": st.terse,
+        "terse": terse_effective(st.model_id or None), "terse_override": st.terse,
+        "terse_supported": supports_terse(st.model_id or M["defaultModel"]),
+        "terse_models": [m for m in M["models"] if supports_terse(m)],
         "game_mode": GAME.snapshot(),
         "status": st.status, "model": st.model_id, "vision": st.vision, "override": st.override,
         "memory_pressure": st.memory_pressure, "multimedia_lock": st.multimedia_lock,
@@ -1116,7 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
             # The agent's AI-SDK client (ShuraCode / OpenCode) sends camelCase "reasoningEffort"; llama-server only reads "reasoning_effort".
             if '"reasoningEffort"' in text:
                 body = re.sub(r'"reasoningEffort"\s*:', '"reasoning_effort":', text).encode()
-            body = apply_terse(body, path)
+            body = apply_terse(body, path, model_id)
 
         err = acquire_model(model_id, vision)
         if err:
