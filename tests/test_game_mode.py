@@ -293,7 +293,7 @@ class ProxyCancellation(unittest.TestCase):
                 gw.game_tick(time.monotonic(), [])
                 t.join(5)
                 self.assertFalse(t.is_alive())
-                self.assertEqual(out["status"], 200)
+                self.assertEqual(out["status"], 200, out.get("body"))
                 self.assertIn(b"game_pause_timeout", out["body"])
                 self.assertIn(b"[DONE]", out["body"])
                 self.assertEqual(state.busy, 0)
