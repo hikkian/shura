@@ -682,13 +682,14 @@ def start_llama(model_id, vision, fresh=False):
             return "Another response is in progress; retry before switching model or vision mode"
         if st.status == "ERROR":
             return st.last_error
+        freed = running_footprint()          # the monitor's VRAM sample still shows the old server; credit what its stop frees
         if st.proc and st.proc.poll() is None and not stop_llama_locked(
                 f"switching to model={model_id} vision={vision}", save=True):
             return st.last_error
         mc = model_config(model_id, vision)
         if vision and not mc.get("mmprojPath"):
             vision = False
-        reason = preload_check(mc)
+        reason = preload_check(mc, reclaim=(0.0, freed[1]))
         if reason:
             log(f"Load blocked: {reason}")
             st.last_error = reason

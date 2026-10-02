@@ -363,6 +363,14 @@ class GuardReliability(fixtures.GatewayGuard):
         self.assertEqual(gw.running_footprint(), (0.0, 0.0))                              # a stopped server frees nothing
         gw.st.proc = None
 
+    def test_start_after_a_switch_does_not_trust_the_stale_vram_sample(self):
+        # start_llama stops the running server and then checks admission with the VRAM sample the monitor took while it was still running
+        src = Path(self.gw.__file__).read_text()
+        i = src.index('def start_llama(')
+        body = src[i:i + 1800]
+        self.assertIn('freed = running_footprint()', body)
+        self.assertIn('preload_check(mc, reclaim=(0.0, freed[1]))', body)
+
     def test_image_cap_and_extra_args_reach_the_server_and_vision_overrides_apply(self):
         base = dict(self.gw.M['models'][self.gw.M['defaultModel']])
         for key in ('imageMaxTokens', 'extraArgs'):
