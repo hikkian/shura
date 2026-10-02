@@ -54,7 +54,10 @@ def status(out_dir, **kw):
 
 
 def server_cfg(slots):
-    live = json.loads((REPO / "config/model-launch.json").read_text())
+    cfg = REPO / "config/model-launch.json"
+    if not cfg.exists():                        # a fresh clone (or CI) has only the example; the real one is machine-local
+        cfg = REPO / "config/model-launch.example.json"
+    live = json.loads(cfg.read_text())
     exe = live["exePath"]
     trace = REPO / "config/moe-trace/tiel-coder-agentic.csv"
     args = ["-t", "6", "-tb", "6", "-b", "2048", "-ub", "512", "-ngl", "99", "-ncmoe", "26", "-ctk", "turbo3", "-ctv", "turbo3",

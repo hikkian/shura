@@ -328,6 +328,7 @@ class Plumbing(unittest.TestCase):
 class Rehearsal(unittest.TestCase):
     """The whole night, with a stand-in for the agent and for the server: every step runs, nothing touches the GPU or the system."""
 
+    @unittest.skipUnless(Path("/usr/bin/bwrap").exists(), "the night refuses to run an agent without the bubblewrap sandbox")
     def test_the_night_end_to_end(self):
         import random
         import shutil
