@@ -319,6 +319,47 @@ class GuardReliability(fixtures.GatewayGuard):
             enabled = self.gw.build_args(self.gw.M['models'][self.gw.M['defaultModel']], False)
         self.assertEqual(enabled[enabled.index('--slot-save-checkpoints') + 1], '1')
 
+    def test_chat_template_kwargs_reach_the_server_only_when_configured(self):
+        mc = dict(self.gw.M['models'][self.gw.M['defaultModel']])
+        with patch.object(self.gw, 'server_slot_dir', return_value=self.disk):
+            mc.pop('chatTemplateKwargs', None)
+            self.assertNotIn('--chat-template-kwargs', self.gw.build_args(mc, False))
+            mc['chatTemplateKwargs'] = {'terse': False}
+            argv = self.gw.build_args(mc, False)
+        self.assertEqual(json.loads(argv[argv.index('--chat-template-kwargs') + 1]), {'terse': False})
+
+    def test_terse_switch_is_put_into_chat_requests_and_wins_over_the_config(self):
+        gw = self.gw
+        body = json.dumps({'model': 'x', 'messages': [], 'chat_template_kwargs': {'other': 1}}).encode()
+        gw.st.terse = None
+        self.assertEqual(gw.apply_terse(body, '/v1/chat/completions'), body)          # no switch: the request is untouched
+        gw.st.terse = False
+        sent = json.loads(gw.apply_terse(body, '/v1/chat/completions'))
+        self.assertEqual(sent['chat_template_kwargs'], {'other': 1, 'terse': False})
+        self.assertEqual(gw.apply_terse(body, '/v1/models'), body)                    # only chat requests
+        self.assertEqual(gw.apply_terse(b'not json', '/v1/chat/completions'), b'not json')
+        self.assertIs(gw.terse_effective(), False)
+        gw.st.terse = None
+        mc = gw.M['models'][gw.M['defaultModel']]
+        old = mc.get('chatTemplateKwargs')
+        try:
+            mc['chatTemplateKwargs'] = {'terse': False}
+            self.assertIs(gw.terse_effective(), False)
+            mc.pop('chatTemplateKwargs')
+            self.assertIs(gw.terse_effective(), True)                                 # the template's own default
+        finally:
+            if old is not None:
+                mc['chatTemplateKwargs'] = old
+
+    def test_terse_flag_survives_a_restart(self):
+        flag = Path(self.disk) / 'terse.flag'
+        with patch.object(self.gw, 'TERSE_FLAG', flag):
+            self.assertIsNone(self.gw.read_terse_flag())
+            flag.write_text('OFF')
+            self.assertIs(self.gw.read_terse_flag(), False)
+            flag.write_text('ON')
+            self.assertIs(self.gw.read_terse_flag(), True)
+
     def test_preserved_gateway_matches_repository_baseline(self):
         # _gateway_legacy.py is the gateway as it was before the VRAM guard (commit d1f967e), kept for rollback.
         # Pinned by digest: it must never change by accident (comparing with HEAD would only hold before the guard commit).

@@ -63,6 +63,7 @@ G = {**GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
 SLOT_DIR = Path(G["slotSaveDir"])
 RAM_SLOT_DIR = None
 OVERRIDE_FLAG = STATE_DIR / "override.flag"
+TERSE_FLAG = STATE_DIR / "terse.flag"      # "ON" / "OFF"; absent = whatever the model config says
 
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
               "te", "trailers", "transfer-encoding", "upgrade", "content-length", "host"}
@@ -118,6 +119,13 @@ def process_vram_mib(pid):
     return value if isinstance(value, int) and value >= 0 else -1
 
 
+def read_terse_flag():
+    try:
+        return {"ON": True, "OFF": False}.get(TERSE_FLAG.read_text().strip())
+    except OSError:
+        return None
+
+
 class State:
     def __init__(self):
         self.lock = threading.RLock()
@@ -127,6 +135,7 @@ class State:
         self.proc = None
         self.expected_exit = False
         self.override = "OFF" if OVERRIDE_FLAG.exists() and OVERRIDE_FLAG.read_text().strip() == "OFF" else "AUTO"
+        self.terse = read_terse_flag()
         self.memory_pressure = False
         self.pressure_sustain = 0
         self.multimedia_lock = False
@@ -237,6 +246,9 @@ def build_args(mc, vision):
          "--temp", str(mc["temperature"]), "--top-k", str(mc["topK"]), "--top-p", str(mc["topP"]),
          "--jinja", "--reasoning", mc["reasoning"],
          "--cache-ram", str(M["cacheRamMB"]), "--slot-save-path", str(server_slot_dir())]
+    if mc.get("chatTemplateKwargs"):
+        # Extra variables for the model's chat template, e.g. {"terse": false} for Tiel-Coder (see docs/INSTALL.md).
+        a += ["--chat-template-kwargs", json.dumps(mc["chatTemplateKwargs"], separators=(",", ":"))]
     if mc.get("moeCacheProfile") and mc.get("moeCacheSlots", 0) > 0:
         a += ["--moe-cache-profile", mc["moeCacheProfile"], "--moe-cache-slots", str(mc["moeCacheSlots"])]
     if mc.get("specType") and mc["specType"] != "none":
@@ -935,9 +947,31 @@ def game_monitor(stop=None):
         stop.wait(G["gamePollSeconds"])
 
 
+def terse_effective():
+    """Is the model's 'be concise' system prompt on? The runtime switch wins; else the model config; else the template default (on)."""
+    if st.terse is not None:
+        return st.terse
+    kw = (M["models"].get(M["defaultModel"], {}).get("chatTemplateKwargs") or {})
+    return bool(kw.get("terse", True))
+
+
+def apply_terse(body, path):
+    """With a runtime terse switch set, put it into the request's chat_template_kwargs (the request wins over the server flag)."""
+    if st.terse is None or not path.endswith("/chat/completions"):
+        return body
+    try:
+        obj = json.loads(body)
+        kwargs = obj.get("chat_template_kwargs")
+        obj["chat_template_kwargs"] = {**(kwargs if isinstance(kwargs, dict) else {}), "terse": st.terse}
+        return json.dumps(obj).encode()
+    except (ValueError, AttributeError):
+        return body
+
+
 def status_snapshot():
     proc = st.proc
     return {
+        "terse": terse_effective(), "terse_override": st.terse,
         "game_mode": GAME.snapshot(),
         "status": st.status, "model": st.model_id, "vision": st.vision, "override": st.override,
         "memory_pressure": st.memory_pressure, "multimedia_lock": st.multimedia_lock,
@@ -1022,6 +1056,18 @@ class Handler(BaseHTTPRequestHandler):
                 st.override = "OFF"
                 stop_llama_locked("manual ai-off", save=True)
             self.send_json(200, {"ok": True, "override": "OFF"})
+        elif path in ("/guardian/terse", "/guardian/terse-on", "/guardian/terse-off", "/guardian/terse-default"):
+            if path != "/guardian/terse":
+                value = {"on": True, "off": False, "default": None}[path.rsplit("-", 1)[1]]
+                try:
+                    if value is None:
+                        TERSE_FLAG.unlink(missing_ok=True)
+                    else:
+                        TERSE_FLAG.write_text("ON" if value else "OFF")
+                except OSError as e:
+                    return self.send_json(503, {"error": f"Cannot persist the terse switch: {e}"})
+                st.terse = value
+            self.send_json(200, {"ok": True, "terse": terse_effective(), "override": st.terse})
         elif path == "/guardian/unload":
             with st.lock:
                 stop_llama_locked("manual unload", save=True)
@@ -1066,6 +1112,7 @@ class Handler(BaseHTTPRequestHandler):
             # The agent's AI-SDK client (ShuraCode / OpenCode) sends camelCase "reasoningEffort"; llama-server only reads "reasoning_effort".
             if '"reasoningEffort"' in text:
                 body = re.sub(r'"reasoningEffort"\s*:', '"reasoning_effort":', text).encode()
+            body = apply_terse(body, path)
 
         err = acquire_model(model_id, vision)
         if err:
