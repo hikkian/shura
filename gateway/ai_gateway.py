@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
+from response_recovery import forward as forward_recovery
 from checkpoint_access import private_checkpoint_handler
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
 from polite_model import DEFAULTS as POLITE_DEFAULTS, Controller as PoliteController
@@ -59,7 +60,7 @@ def load_config(name):
 G = load_config("guardian.json")
 M = load_config("model-launch.json")
 M["models"] = {mid: {k: expand(k, v) for k, v in mc.items()} for mid, mc in M["models"].items()}
-G = {**POLITE_DEFAULTS, **GEAR_DEFAULTS, **GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
+G = {"crashRecovery": False, **POLITE_DEFAULTS, **GEAR_DEFAULTS, **GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
      "vramEmergencyMiB": 60, "vramEmergencySeconds": 10,
      "vramFreeCriticalMiB": 120, "vramPressureSeconds": 5,
      "vramReloadWaitSeconds": 30, "vramPressureSlotReserveMiB": 512,
@@ -218,7 +219,7 @@ RUNTIME_SLOTS = {}
 GEARS = {}
 GEAR_BUDGET = Budget()
 GEAR_BUDGET_LOADED = False
-POLITE = PoliteController(G)
+POLITE = PoliteController({**G, "politeStateKey": str(STATE_DIR)})
 WAKEUP = {"proc": None, "sample_at": None, "p99_ms": None, "started_at": None}
 
 
@@ -291,16 +292,12 @@ def build_args(mc, vision):
     if mc.get("niceLevel"):
         # Lower CPU priority: desktop apps win any contention; no speed is lost while the desktop is idle.
         a = ["nice", "-n", str(mc["niceLevel"])] + a
-    if POLITE.enabled and POLITE.available:
-        # Replace the nice wrapper, rather than adding nice10 twice.
-        command = a[3:] if a[:1] == ["nice"] else a
-        a = [sys.executable, str(Path(__file__).with_name("cpu_launch.py")), str(POLITE.policy.level), *command]
     return a
 
 
 def server_slot_dir():
     st.ram_backend = False
-    if G["vramGuard"] or GAME.enabled or G["slotGears"]:
+    if G["vramGuard"] or GAME.enabled or G["slotGears"] or G["crashRecovery"]:
         try:
             path = prepare_ram_slot_dir()
             st.ram_backend = True
@@ -737,6 +734,7 @@ def start_llama(model_id, vision, fresh=False, health_timeout=None, restore_time
         st.expected_exit = False
         try:
             st.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL)
+            POLITE.attach(st.proc.pid)
             write_server_lease()
         except OSError as e:
             stop_llama_locked("spawn or lease failed", save=False)
@@ -883,6 +881,17 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
 def stop_wakeup_probe():
     proc = WAKEUP["proc"]
     if proc is not None:
+        unit = WAKEUP.get("unit")
+        if unit:
+            try:
+                pid = int(subprocess.check_output(["systemctl", "--user", "show", unit, "-p", "MainPID", "--value"], text=True, timeout=2).strip())
+                if pid > 1:
+                    expected = subprocess.check_output(["systemctl", "--user", "show", unit, "-p", "ControlGroup", "--value"], text=True, timeout=2).strip()
+                    group = Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
+                    if expected and group == expected:
+                        os.kill(pid, signal.SIGTERM)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
         if proc.poll() is None:
             proc.terminate()
             try:
@@ -895,11 +904,13 @@ def stop_wakeup_probe():
 
 
 def start_wakeup_probe():
-    if not POLITE.enabled or not POLITE.available:
+    if not POLITE.enabled or not POLITE.available or G["politeMode"] != "dynamic":
         return
-    proc = subprocess.Popen([sys.executable, "-u", str(Path(__file__).with_name("wakeup_probe.py"))],
+    unit = f"shura-wakeup-{os.getpid()}.service"
+    proc = subprocess.Popen(["systemd-run", "--user", "--quiet", "--collect", "--pipe", "--wait", "--unit="+unit,
+                             "--property=CPUWeight=100", sys.executable, "-u", str(Path(__file__).with_name("wakeup_probe.py"))],
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
-    WAKEUP["proc"], WAKEUP["started_at"] = proc, time.monotonic()
+    WAKEUP["proc"], WAKEUP["started_at"], WAKEUP["unit"] = proc, time.monotonic(), unit
 
     def read_probe():
         for line in proc.stdout:
@@ -914,6 +925,14 @@ def start_wakeup_probe():
 
 
 atexit.register(stop_wakeup_probe)
+
+def close_cpu_policy():
+    try:
+        POLITE.scheduler.close()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        event("cpu_restore_failed", str(error), fallback=True)
+
+atexit.register(close_cpu_policy)
 
 
 class GearBackend:
@@ -1107,12 +1126,18 @@ def persist_gear_budget():
 def reliability_tick(now):
     with st.lock:
         proc = st.proc
-        if POLITE.enabled and POLITE.available:
+        if POLITE.enabled and POLITE.available and G["politeMode"] == "static":
+            POLITE.tick(now, proc.pid if proc and proc.poll() is None else None, 0.0, (os.getpid(),))
+        if POLITE.enabled and POLITE.available and G["politeMode"] == "dynamic":
             age = now - WAKEUP["sample_at"] if WAKEUP["sample_at"] is not None else math.inf
             if age <= 5:
                 helper = WAKEUP["proc"]
+                before = POLITE.snapshot()
                 POLITE.tick(now, proc.pid if proc and proc.poll() is None else None,
                             WAKEUP["p99_ms"], (os.getpid(), helper.pid if helper else None))
+                after = POLITE.snapshot()
+                if (before["level"], before["weight"], before["available"]) != (after["level"], after["weight"], after["available"]):
+                    event("cpu_policy_changed", f"mode={after['mode']} level={after['level']} weight={after['weight']} ms={after['change_ms']} error={after['error']}")
             elif (WAKEUP["sample_at"] is not None or
                   (WAKEUP["started_at"] is not None and now - WAKEUP["started_at"] > 5)):
                 POLITE.stale(proc.pid if proc and proc.poll() is None else None)
@@ -1210,7 +1235,7 @@ def acquire_model(model_id, vision):
         with st.lock:
             if GAME.enabled and (GAME.active or not GAME.ready):
                 return "Model paused because of a game: " + (GAME.reason or "detector initializing")
-            if (G["vramGuard"] or GAME.enabled or G["slotGears"]) and RAM_SLOT_DIR is None:
+            if (G["vramGuard"] or GAME.enabled or G["slotGears"] or G["crashRecovery"]) and RAM_SLOT_DIR is None:
                 try:
                     prepare_ram_slot_dir()
                 except (OSError, RuntimeError) as e:
@@ -1347,6 +1372,7 @@ def status_snapshot():
         "terse_supported": supports_terse(st.model_id or M["defaultModel"]),
         "terse_models": [m for m in M["models"] if supports_terse(m)],
         "game_mode": GAME.snapshot(),
+        "crash_recovery_enabled": G["crashRecovery"],
         "polite_model": POLITE.snapshot(),
         "slot_gears": {"enabled": G["slotGears"], "models": {mid: gear.snapshot() for mid, gear in GEARS.items()}},
         "status": st.status, "model": st.model_id, "vision": st.vision, "override": st.override,
@@ -1494,8 +1520,14 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self.send_json(503, {"error": f"Could not start model '{model_id}'", "reason": err}, G["gameRetrySeconds"] if GAME.enabled and GAME.active else None)
 
+        recovery_request = G["crashRecovery"] and self.command == "POST" and path in ("/v1/chat/completions", "/chat/completions", "/completion")
         try:
-            if GAME.enabled:
+            if recovery_request:
+                with st.lock:
+                    if st.busy != 1 or not save_slot_locked(ram_only=True):
+                        return self.send_json(503, {"error": "Cannot protect the session before generation", "code": "SHURA_CHECKPOINT_NOT_READY"}, 5)
+                self.proxy_recoverable(body, model_id, vision)
+            elif GAME.enabled:
                 self.proxy_game(body)
             else:
                 self.proxy(body)
@@ -1503,6 +1535,55 @@ class Handler(BaseHTTPRequestHandler):
             with st.lock:
                 st.busy -= 1
                 st.last_request = time.time()
+
+    hop_by_hop = HOP_BY_HOP
+
+    def recovery_event(self, reason, detail):
+        event(reason, detail, fallback=True)
+
+    def proxy_recoverable(self, body, model_id, vision):
+        proc = st.proc
+        lease = {"cancel": threading.Event(), "conn": None}
+        key = id(self)
+        if GAME.enabled:
+            with st.lock:
+                GAME_REQUESTS[key] = lease
+        def register(conn):
+            lease["conn"] = conn
+        def recover():
+            if proc is None or proc.poll() is None or lease["cancel"].is_set():
+                return False
+            with st.lock:
+                if st.busy != 1 or st.override == "OFF" or GAME.active or st.status == "ERROR":
+                    return False
+                if st.proc is not None and st.proc is not proc:
+                    return False
+                if st.proc is proc:
+                    st.crash_count += 1
+                if st.crash_count >= G["crashRestartMaxAttempts"]:
+                    st.status = "ERROR"
+                    st.last_error = "Backend crash restart limit reached"
+                    return False
+                st.proc = None
+                st.status = "UNLOADED"
+            # Release lifecycle lock so the monitor can publish post-crash admission data.
+            if not wait_fresh_vram(time.time()):
+                return False
+            with st.lock:
+                if st.busy != 1 or st.override == "OFF" or GAME.active:
+                    return False
+                error = start_llama(model_id, vision)
+                if not error:
+                    event("response_restarted", "Owned backend restored through A2; replay before first byte")
+                return not error
+        try:
+            forward_recovery(self, body,
+                             lambda: http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=3600),
+                             recover, lease["cancel"], register)
+        finally:
+            if GAME.enabled:
+                with st.lock:
+                    GAME_REQUESTS.pop(key, None)
 
     def proxy_game(self, body):
         conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=3600)
@@ -1619,11 +1700,25 @@ def disable_core_dumps():
 
 def main():
     disable_core_dumps()
+    try:
+        POLITE.scheduler.recover()
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        POLITE.available = False
+        POLITE.error = str(error)
+        event("cpu_recovery_failed", str(error), fallback=True)
     if (G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0
-            and not GAME.enabled and not G["politeModel"] and not G["slotGears"]):
+            and not GAME.enabled and not G["politeModel"] and not G["slotGears"] and not G["crashRecovery"]):
         return legacy_main()
-    if G["slotGears"] and int(G.get("slotSaveCheckpoints", 0)) < 1:
+    if (G["slotGears"] or G["crashRecovery"]) and int(G.get("slotSaveCheckpoints", 0)) < 1:
         raise RuntimeError("slotGears requires slotSaveCheckpoints >= 1")
+    if POLITE.enabled and POLITE.available:
+        try:
+            POLITE.scheduler.change(G["politeStaticWeight"] if G["politeMode"] == "static" else G["politeWeights"][0])
+            event("cpu_policy_started", f"mode={G['politeMode']} weight={POLITE.scheduler.weight} ms={POLITE.scheduler.last_ms}")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            POLITE.available = False
+            POLITE.error = str(error)
+            event("cpu_policy_failed", str(error), fallback=True)
     start_wakeup_probe()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)

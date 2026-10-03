@@ -198,15 +198,21 @@ Isolated reduced4 tests:187k A2 cache_n186999/prompt_n33,6GiB CUDA hog after par
 
 ### Offline reliability prototypes (default off)
 
-`politeModel` enables CPU PSI, independent wakeup-latency and non-model CPU-load sensors.
-The AIMD controller selects nice 10 / nice 19 / SCHED_IDLE / SCHED_IDLE with half the inherited CPU set.
-It reduces priority at most once per five seconds and recovers one level after 30 seconds of calm.
-The launch wrapper sets the current level before exec so new server threads inherit it.
-All server TIDs are synchronized afterwards. PID start time is checked before scheduling.
-Hosts unable to restore nice 10 and SCHED_OTHER without privilege are refused **before** any scheduling
-change; this requires RLIMIT_NICE >= 10 or CAP_SYS_NICE. No system setting is changed automatically.
-Sensor or syscall failures disable the controller and attempt L0 restoration.
-`/guardian/status` exposes `polite_model`; `shura status` displays the level and refusal reason.
+`politeModel` uses the owning user-systemd service's cgroup v2 CPUWeight, not irreversible
+nice/SCHED_IDLE changes. The default-off feature offers `politeMode=static` (candidate weight20)
+and `politeMode=dynamic` (existing PSI/wakeup/non-model CPU AIMD, weights100/50/20/5, five-second
+minimum interval and30-second calm recovery). Static mode has no PSI/wakeup observer or AIMD dependency. CPUWeight is work-conserving; GPU proof must decide
+whether constant weight alone is enough. No CPUQuota is applied. L3 optionally reserves one physical
+core using reversible affinity; static mode leaves native thread affinity unchanged.
+
+The executor verifies that the gateway and model belong to its configured `politeUnit` before changes.
+Only user `systemctl --no-ask-password set-property --runtime` is used. An independent weight100
+service hosts the wakeup probe so model throttling does not falsify desktop latency. Original weight
+and pending changes are leased atomically in private RAM. Normal shutdown restores the original;
+startup can restore after SIGKILL, including death before the property write. External property changes
+are respected rather than overwritten. Runtime properties themselves persist across service stops;
+explicit cleanup is essential. Status and CLI show mode, level, weight, errors and command duration.
+Syscall/property failures disable the controller and attempt restoration; RAM/VRAM/game policies remain.
 
 `slotGears` requires A2 (`slotSaveCheckpoints >= 1`). Its independent per-model ratchet defaults to
 26/24/20/16, never grows beyond the configured baseline, waits 60 seconds below 250 MiB to reduce slots,
@@ -229,8 +235,17 @@ profiles are excluded pending their own quality gates. Status reports each model
 These features have offline fault coverage, **not GPU or quality acceptance**. Keep them off until
 both model benchmarks and the slot-count PPL/KL gates pass. No footer integration is claimed here.
 
-L2 automatic replay after emitted tool calls is intentionally not implemented. In installed OpenCode
-1.18.32, a retryable SSE error can replay the original request after a tool has executed. A mock test
-with a repeated tool call writes two bytes instead of one. A safe integration must either preserve
-and reconcile completed tool results in the engine, or forbid automatic replay after tool emission;
-it cannot merely append a 503 error to every interrupted stream.
+`crashRecovery` is default-off and requires A2. Before each inference it protects the previous
+context in RAM. Requests are serialized for recovery; failed protection returns503 before any response.
+Upstream headers and the first body read are buffered. If the owned backend died and zero response
+bytes (including HTTP headers) reached the client, one gateway replay is allowed after fresh admission,
+restart and A2 restore. No replay is allowed after end_headers, even if no text token has arrived.
+
+Interrupted streams receive `SHURA_RESPONSE_INTERRUPTED` with a non-retryable message and no fake
+DONE marker. Installed OpenCode1.18.32 shows an UnknownError and exits1 without another provider
+request; a completed tool remains executed once. Before-byte503/Retry-After is retried and succeeds.
+A departing downstream client is never grounds for backend restart. Game cancellation takes precedence
+and never invokes recovery; its in-stream error is likewise non-retryable. GPU/server-kill/187k timing,
+RAM overhead and final9/9 remain hardware acceptance tasks. If the gateway itself is killed or the
+client connection is already lost, it cannot deliver a terminal error: that transport failure is outside
+the tested no-replay guarantee.

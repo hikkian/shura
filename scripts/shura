@@ -71,7 +71,7 @@ if d.get("game_mode", {}).get("enabled"):
     if g.get("errors"): print("game errors: " + "; ".join(g["errors"]))
 p = d.get("polite_model", {})
 if p.get("enabled"):
-    print(f"polite CPU : L{p['level']}, available={p['available']}" + (" - " + p['error'] if p.get('error') else ""))
+    print(f"polite CPU : {p.get('mode', 'dynamic')} L{p['level']}, weight={p.get('weight')}, available={p['available']}" + (" - " + p['error'] if p.get('error') else ""))
 g = d.get("slot_gears", {})
 if g.get("enabled"):
     for model, gear in g.get("models", {}).items():

@@ -68,5 +68,16 @@
   "slotGearUpSeconds": 1800,
   "slotGearChangesPerHour": 2,
   "slotGearChangesPerDay": 6,
-  "slotGearRestartSeconds": 20
+  "slotGearRestartSeconds": 20,
+  "politeMode": "static",
+  "politeStaticWeight": 20,
+  "politeWeights": [
+    100,
+    50,
+    20,
+    5
+  ],
+  "politeUnit": "ai-gateway.service",
+  "politeReserveCores": 1,
+  "crashRecovery": false
 }

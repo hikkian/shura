@@ -4,12 +4,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
-from polite_model import Controller, Policy, Sample, Scheduler, Sensors
+from polite_model import Controller, Policy, Sample, Sensors
 from slot_gears import Budget, Ratchet, apply_slots
-import cpu_launch
 
 
 class PoliteTests(unittest.TestCase):
@@ -48,7 +47,7 @@ class PoliteTests(unittest.TestCase):
         c.tick(0, 123, 100)
         scheduler.apply.assert_not_called()
         self.assertFalse(c.snapshot()["available"])
-        self.assertIn("RLIMIT_NICE", c.snapshot()["error"])
+        self.assertIn("cgroup", c.snapshot()["error"])
 
     def test_default_off_does_not_even_check_capabilities(self):
         scheduler = Mock()
@@ -96,65 +95,10 @@ class PoliteTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 Sensors(tmp).sample(None, 0)
 
-    def test_scheduler_refuses_pid_reuse(self):
-        scheduler = Scheduler(system=Mock())
-        with patch.object(scheduler, "reversible", return_value=True), patch("polite_model.proc_ticks", return_value=(0, 2)):
-            with self.assertRaises(ProcessLookupError):
-                scheduler.apply(123, 1, 3, {0, 1})
-        scheduler.system.sched_setscheduler.assert_not_called()
-
-    def test_launch_sets_policy_before_exec(self):
-        with patch.object(cpu_launch.os, "setpriority") as nice, patch.object(cpu_launch.os, "sched_setscheduler") as sched, \
-                patch.object(cpu_launch.os, "sched_getaffinity", return_value={0, 1, 2, 3}), \
-                patch.object(cpu_launch.os, "sched_setaffinity") as affinity, patch.object(cpu_launch.os, "execvp") as execute:
-            cpu_launch.launch(3, ["llama-server", "--port", "8091"])
-        nice.assert_called_once_with(os.PRIO_PROCESS, 0, 19)
-        self.assertEqual(sched.call_args.args[1], os.SCHED_IDLE)
-        affinity.assert_called_once_with(0, {0, 1})
-        execute.assert_called_once_with("llama-server", ["llama-server", "--port", "8091"])
-
-    def test_scheduler_synchronizes_new_threads_and_restores_all_cores(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            tasks = root / "42/task"
-            tasks.mkdir(parents=True)
-            for tid in (42, 43):
-                (tasks / str(tid)).mkdir()
-            system = Mock()
-            system.sched_getscheduler.return_value = os.SCHED_OTHER
-            system.getpriority.return_value = 10
-            system.sched_getaffinity.return_value = {0, 1, 2, 3}
-            scheduler = Scheduler(root, system)
-            with patch.object(scheduler, "reversible", return_value=True), patch("polite_model.proc_ticks", return_value=(0, 7)):
-                scheduler.apply(42, 7, 3, {0, 1, 2, 3})
-                self.assertEqual(system.sched_setaffinity.call_count, 2)
-                (tasks / "44").mkdir()
-                system.reset_mock()
-                scheduler.apply(42, 7, 0, {0, 1, 2, 3})
-                self.assertEqual(system.sched_setaffinity.call_count, 3)
-                for call in system.sched_setaffinity.call_args_list:
-                    self.assertEqual(call.args[1], {0, 1, 2, 3})
-
-    def test_partial_scheduler_failure_restores_previous_policy(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            tasks = root / "42/task"
-            tasks.mkdir(parents=True)
-            (tasks / "42").mkdir()
-            system = Mock()
-            system.sched_getscheduler.return_value = os.SCHED_OTHER
-            system.getpriority.return_value = 10
-            system.sched_getaffinity.return_value = {0, 1}
-            system.sched_setaffinity.side_effect = [PermissionError("injected"), None]
-            scheduler = Scheduler(root, system)
-            with patch.object(scheduler, "reversible", return_value=True), patch("polite_model.proc_ticks", return_value=(0, 7)):
-                with self.assertRaises(PermissionError):
-                    scheduler.apply(42, 7, 3, {0, 1})
-            self.assertEqual(system.sched_setscheduler.call_args.args[1], os.SCHED_OTHER)
-            self.assertEqual(system.setpriority.call_args.args[2], 10)
 
 
-class GearTests(unittest.TestCase):
+
+
     def test_default_levels_and_floor(self):
         gear = Ratchet({}, 26)
         self.assertEqual(gear.levels, [26, 24, 20, 16])
