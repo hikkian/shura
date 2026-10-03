@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
-from response_recovery import forward as forward_recovery
+from response_recovery import forward as forward_recovery, wait_for_process_exit
 from checkpoint_access import private_checkpoint_handler
 from crash_report import write_crash_report
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
@@ -552,10 +552,22 @@ def save_slot_locked(ram_only=False):
         if code != 200 or not isinstance(slots, list) or not slots:
             raise RuntimeError("unable to inspect active slot")
         n = slots[0].get("n_prompt_tokens", 0)
-        if n == 0 or (not ram_only and n < G["slotSaveMinTokens"]):
+        if n == 0:
             if ram_only:
-                clear_ram_checkpoint()
-                st.skip_disk_restore = True
+                # A restored backend may report no newly prompted tokens before the
+                # first continuation. Keep its verified disk A2 available for crash
+                # recovery instead of marking the next process as empty.
+                if st.ram_checkpoint is not None:
+                    st.skip_disk_restore = False
+                else:
+                    disk = SLOT_DIR / slot_filename(st.model_id, st.vision)
+                    if disk.is_file() and not disk.is_symlink():
+                        st.skip_disk_restore = False
+                    else:
+                        clear_ram_checkpoint()
+                        st.skip_disk_restore = True
+            return True
+        if not ram_only and n < G["slotSaveMinTokens"]:
             return True
         if not st.ram_backend:
             if ram_only:
@@ -1655,12 +1667,22 @@ class Handler(BaseHTTPRequestHandler):
         def register(conn):
             lease["conn"] = conn
         def recover():
-            if proc is None or proc.poll() is None or lease["cancel"].is_set():
+            # The socket can close just before waitpid publishes SIGKILL/exit status.
+            # A short bounded wait avoids returning a false 503 in that race.
+            if lease["cancel"].is_set():
+                event("response_recovery_refused", "Request was cancelled before replay", fallback=True)
+                return False
+            if not wait_for_process_exit(proc):
+                event("response_recovery_refused", "Backend process did not exit after the upstream disconnect", fallback=True)
                 return False
             with st.lock:
                 if st.busy != 1 or st.override == "OFF" or GAME.active or st.status == "ERROR":
+                    event("response_recovery_refused",
+                          f"Lifecycle changed before replay (busy={st.busy}, mode={st.override}, game={GAME.active}, status={st.status})",
+                          fallback=True)
                     return False
                 if st.proc is not None and st.proc is not proc:
+                    event("response_recovery_refused", "A different backend process replaced the failed child", fallback=True)
                     return False
                 if st.proc is proc:
                     record_server_crash(proc, "request interrupted before first client byte")
@@ -1668,18 +1690,25 @@ class Handler(BaseHTTPRequestHandler):
                 if st.crash_count >= G["crashRestartMaxAttempts"]:
                     st.status = "ERROR"
                     st.last_error = "Backend crash restart limit reached"
+                    event("response_recovery_refused", st.last_error, fallback=True)
                     return False
                 st.proc = None
                 st.status = "UNLOADED"
             # Release lifecycle lock so the monitor can publish post-crash admission data.
             if not wait_fresh_vram(time.time()):
+                event("response_recovery_refused", "No fresh VRAM sample after backend exit", fallback=True)
                 return False
             with st.lock:
                 if st.busy != 1 or st.override == "OFF" or GAME.active:
+                    event("response_recovery_refused",
+                          f"Lifecycle changed while waiting for VRAM (busy={st.busy}, mode={st.override}, game={GAME.active})",
+                          fallback=True)
                     return False
                 error = start_llama(model_id, vision)
                 if not error:
                     event("response_restarted", "Owned backend restored through A2; replay before first byte")
+                else:
+                    event("response_recovery_refused", f"Backend restart failed: {error}", fallback=True)
                 return not error
         try:
             forward_recovery(self, body,

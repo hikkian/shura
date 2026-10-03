@@ -12,6 +12,7 @@ class RequestRecovery(unittest.TestCase):
     setUp = fixture.GatewayGuard.setUp
     patch_attr = fixture.GatewayGuard.patch_attr
     fake_llama = fixture.GatewayGuard.fake_llama
+    make_disk_checkpoint = fixture.GatewayGuard.make_disk_checkpoint
 
     def handler(self):
         h = object.__new__(self.gw.Handler)
@@ -66,6 +67,26 @@ class RequestRecovery(unittest.TestCase):
         self.assertEqual(gw.st.event_counters["checkpoint_restored"], 1)
         self.assertIsNone(gw.st.ram_checkpoint)
         h.send_json.assert_not_called()
+
+    def test_no_new_prompt_tokens_keeps_disk_a2_available_for_crash_restore(self):
+        gw = self.gw
+        model = gw.M["defaultModel"]
+        disk = self.make_disk_checkpoint()
+        gw.st.model_id = model
+        gw.st.ram_checkpoint = None
+        gw.st.skip_disk_restore = False
+        self.api.side_effect = lambda method, path, *a, **k: (
+            (200, [{"n_prompt_tokens": 0}]) if path == "/slots"
+            else (200, {"n_restored": 187000})
+        )
+
+        self.assertTrue(gw.save_slot_locked(ram_only=True))
+        self.assertFalse(gw.st.skip_disk_restore)
+        self.assertTrue(disk.exists())
+        self.assertEqual(gw.restore_slot_locked(), "")
+        self.assertIn(("POST", "/slots/0?action=restore"), [
+            (call.args[0], call.args[1]) for call in self.api.call_args_list
+        ])
 
     def test_emitted_tool_delta_prevents_restart(self):
         gw = self.gw

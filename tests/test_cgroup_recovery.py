@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
 from cpu_cgroup import Scheduler
-from response_recovery import forward, interrupted_event
+from response_recovery import forward, interrupted_event, wait_for_process_exit
 
 
 class CgroupTests(unittest.TestCase):
@@ -101,6 +101,26 @@ class CgroupTests(unittest.TestCase):
 
 
 class ResponseTests(unittest.TestCase):
+    def test_waits_for_exit_status_after_socket_closes(self):
+        class DelayedExit:
+            def __init__(self):
+                self.polls = 0
+
+            def poll(self):
+                self.polls += 1
+                return -9 if self.polls >= 3 else None
+
+        process = DelayedExit()
+        self.assertTrue(wait_for_process_exit(process, timeout=0.1, interval=0.001))
+        self.assertGreaterEqual(process.polls, 3)
+
+    def test_does_not_retry_while_backend_process_is_alive(self):
+        class StillRunning:
+            def poll(self):
+                return None
+
+        self.assertFalse(wait_for_process_exit(StillRunning(), timeout=0.01, interval=0.001))
+
     def handler(self):
         h = Mock(
             command="POST", path="/v1/chat/completions", headers={}, hop_by_hop=set()

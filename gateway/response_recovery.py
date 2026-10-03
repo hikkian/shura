@@ -2,6 +2,21 @@
 
 import http.client
 import json
+import time
+
+
+def wait_for_process_exit(proc, timeout=6.0, interval=0.02):
+    """Confirm child exit after a disconnected socket before deciding whether to replay."""
+    if proc is None:
+        return False
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if proc.poll() is not None:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(interval, remaining))
 
 
 class StreamState:
