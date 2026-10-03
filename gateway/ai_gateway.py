@@ -460,7 +460,13 @@ def prepare_ram_slot_dir():
 
 
 def checkpoint_signature(model_id, vision):
-    value = {"model": model_config(model_id, vision), "exe": M["exePath"]}
+    model = model_config(model_id, vision)
+    # CPU execution scheduling cannot change serialized KV/draft state. Keeping these
+    # out of A2 identity lets a cold restart switch poll/thread tuning and restore the
+    # exact same session without weakening checks on model geometry or sampling layout.
+    for key in ("poll", "threads", "threadsBatch"):
+        model.pop(key, None)
+    value = {"model": model, "exe": M["exePath"]}
     for key, path in (("exe_stat", M["exePath"]), ("model_stat", value["model"]["modelPath"])):
         try:
             info = Path(path).stat()

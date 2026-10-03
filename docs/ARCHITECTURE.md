@@ -259,4 +259,7 @@ unit journal; it is not piped through the gateway, avoiding SIGPIPE if the gatew
 Gateway-owned saved slots have an atomic JSON sidecar with byte count, SHA-256, model/mode signature
 and token count. Both disk and RAM checkpoints are checked before the native restore endpoint is
 called. Legacy disk slots without that sidecar are refused and the next prompt is read normally; a
-truncated, changed or mismatched checkpoint never reaches llama.cpp.
+truncated, changed or mismatched checkpoint never reaches llama.cpp. CPU `poll`, `threads` and
+`threadsBatch` changes are excluded from the model-state signature because they do not change the
+serialized KV/draft tensors; benchmarks can therefore restore the same verified session across those
+settings.

@@ -251,6 +251,23 @@ class GatewayGuard(unittest.TestCase):
         self.api.assert_not_called()
         self.assertTrue(path.exists())
 
+    def test_a2_signature_allows_cpu_poll_and_thread_tuning_only(self):
+        model = self.gw.M["defaultModel"]
+        mc = self.gw.M["models"][model]
+        original = {key: mc.get(key) for key in ("threads", "threadsBatch", "poll", "nGpuLayers")}
+        try:
+            baseline = self.gw.checkpoint_signature(model, False)
+            mc.update(threads=5, threadsBatch=4, poll=0)
+            self.assertEqual(self.gw.checkpoint_signature(model, False), baseline)
+            mc["nGpuLayers"] = int(mc.get("nGpuLayers", 99)) - 1
+            self.assertNotEqual(self.gw.checkpoint_signature(model, False), baseline)
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    mc.pop(key, None)
+                else:
+                    mc[key] = value
+
     def test_ready_request_reserves_busy_before_monitor_can_unload(self):
         self.assertEqual(self.gw.acquire_model(self.gw.st.model_id, False), "")
         self.assertEqual(self.gw.st.busy, 1)
