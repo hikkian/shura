@@ -195,3 +195,71 @@ in the system prompt of every request, so trimming Playwright from 25 to 14 tool
 Paused/draining admission returns503 with Retry-After. Active responses get up to gameDrainSeconds (default60); timeout produces an explicit game_pause_timeout SSE error or503. Stop follows a successful atomic A2 save; save failure keeps the server loaded and retries after30s. Ordinary idle save policy is unchanged. Snapshots are removed after restore.
 
 Isolated reduced4 tests:187k A2 cache_n186999/prompt_n33,6GiB CUDA hog after parking,3s false signal,20s flaps,manual control,final9/9. Real timeout used reduced4/mmap after load-mode none hit the PSI guard. Three short-context matched pairs gave medianON/OFF0.9814,identical output/MTP;CPU<=2.5 and pair delta<=0.8. GameMode registration was mocked to avoid its system-tuning hooks; installed ClientCount query inspected. Real games and instant VRAM allocation surges were not tested: delayed detection cannot guarantee game-start headroom. Local evidence:ignored bench/results/game-mode-a2-20261001.
+
+### Offline reliability prototypes (default off)
+
+`politeModel` uses the owning user-systemd service's cgroup v2 CPUWeight, not irreversible
+nice/SCHED_IDLE changes. The default-off feature offers `politeMode=static` (candidate weight20)
+and `politeMode=dynamic` (existing PSI/wakeup/non-model CPU AIMD, weights100/50/20/5, five-second
+minimum interval and30-second calm recovery). Static mode has no PSI/wakeup observer or AIMD dependency. CPUWeight is work-conserving; GPU proof must decide
+whether constant weight alone is enough. No CPUQuota is applied. L3 optionally reserves one physical
+core using reversible affinity; static mode leaves native thread affinity unchanged.
+
+The executor verifies that the gateway and model belong to its configured `politeUnit` before changes.
+Only user `systemctl --no-ask-password set-property --runtime` is used. An independent weight100
+service hosts the wakeup probe so model throttling does not falsify desktop latency. Original weight
+and pending changes are leased atomically in private RAM. Normal shutdown restores the original;
+startup can restore after SIGKILL, including death before the property write. External property changes
+are respected rather than overwritten. Runtime properties themselves persist across service stops;
+explicit cleanup is essential. Status and CLI show mode, level, weight, errors and command duration.
+Syscall/property failures disable the controller and attempt restoration; RAM/VRAM/game policies remain.
+
+`slotGears` requires A2 (`slotSaveCheckpoints >= 1`). Its independent per-model ratchet defaults to
+26/24/20/16, never grows beyond the configured baseline, waits 60 seconds below 250 MiB to reduce slots,
+and 30 minutes above the corridor plus the next step's estimated memory to grow them.
+Only idle gaps permit a change. A global budget shared by both models allows two attempts per hour
+and six per day, including failed attempts. The small budget ledger survives gateway restarts in
+private tmpfs; malformed or unwritable ledgers disable gears. Runtime slot overrides never edit the
+model configuration files. `apply_slots(n)` is separate from the policy, allowing future live resize.
+
+The restart mechanism saves and validates A2 before stopping, retains one hardlink in tmpfs throughout
+the transaction, and accepts the new gear only after checkpoint restoration. Failure restores the
+old gear and snapshot. A failed rollback disables gears, blocks admission and retains the recovery
+file instead of discarding it. A private tmpfs journal rolls an interrupted gateway transaction
+back to the original gear and verified A2 file on startup; a changed model/binary or corrupt snapshot
+blocks admission for manual inspection. When gears are disabled the configured static baseline is
+used. Each restart/rollback has its own 20-second deadline (including stop, post-stop telemetry,
+spawn/health and restore); a failed attempt plus rollback can take twice that, rather than a
+180-second health wait per attempt. Changes other than slot count invalidate the transaction. Vision
+profiles are excluded pending their own quality gates. Status reports each model's slots and reason.
+These features have offline fault coverage, **not GPU or quality acceptance**. Keep them off until
+both model benchmarks and the slot-count PPL/KL gates pass. No footer integration is claimed here.
+
+`crashRecovery` is default-off and requires A2. Before each inference it protects the previous
+context in RAM. Requests are serialized for recovery; failed protection returns503 before any response.
+Upstream headers and the first body read are buffered. If the owned backend died and zero response
+bytes (including HTTP headers) reached the client, one gateway replay is allowed after fresh admission,
+restart and A2 restore. No replay is allowed after end_headers, even if no text token has arrived.
+
+Interrupted streams receive `SHURA_RESPONSE_INTERRUPTED` with a non-retryable message and no fake
+DONE marker. Installed OpenCode1.18.32 shows an UnknownError and exits1 without another provider
+request; a completed tool remains executed once. Before-byte503/Retry-After is retried and succeeds.
+A departing downstream client is never grounds for backend restart. Game cancellation takes precedence
+and never invokes recovery; its in-stream error is likewise non-retryable. GPU/server-kill/187k timing,
+RAM overhead and final9/9 remain hardware acceptance tasks. If the gateway itself is killed or the
+client connection is already lost, it cannot deliver a terminal error: that transport failure is outside
+the tested no-replay guarantee.
+
+Unexpected llama-server exits write a bounded `~/.local/state/ai-gateway/crashes/crash-*.json`
+record from the gateway monitor. It includes the exit signal/code, recent gateway journal lines,
+state and sanitized launch arguments; records are capped at 64 KiB and the ring retains ten. Journal
+lookup failure is recorded without stopping the gateway. Server stdout/stderr stays attached to the
+unit journal; it is not piped through the gateway, avoiding SIGPIPE if the gateway exits.
+
+Gateway-owned saved slots have an atomic JSON sidecar with byte count, SHA-256, model/mode signature
+and token count. Both disk and RAM checkpoints are checked before the native restore endpoint is
+called. Legacy disk slots without that sidecar are refused and the next prompt is read normally; a
+truncated, changed or mismatched checkpoint never reaches llama.cpp. CPU `poll`, `threads` and
+`threadsBatch` changes are excluded from the model-state signature because they do not change the
+serialized KV/draft tensors; benchmarks can therefore restore the same verified session across those
+settings.

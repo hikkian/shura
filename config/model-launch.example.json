@@ -33,7 +33,8 @@
         "moeCacheSlots": 0,
         "vramFreeMinGBToLoad": 10.0
       },
-      "niceLevel": 10
+      "niceLevel": 10,
+      "poll": null
     }
   }
 }

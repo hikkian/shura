@@ -31,8 +31,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
+from response_recovery import forward as forward_recovery, wait_for_process_exit
 from checkpoint_access import private_checkpoint_handler
+from crash_report import write_crash_report
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
+from polite_model import DEFAULTS as POLITE_DEFAULTS, Controller as PoliteController
+from slot_gears import DEFAULTS as GEAR_DEFAULTS, Budget, Ratchet, RollbackFailed, apply_slots as apply_slot_transaction
 
 CFG_DIR = Path(os.environ.get("AI_GATEWAY_CONFIG", Path(__file__).resolve().parent.parent / "config"))
 STATE_DIR = Path(os.path.expanduser(os.environ.get("AI_GATEWAY_STATE", "~/.local/state/ai-gateway")))
@@ -57,7 +61,7 @@ def load_config(name):
 G = load_config("guardian.json")
 M = load_config("model-launch.json")
 M["models"] = {mid: {k: expand(k, v) for k, v in mc.items()} for mid, mc in M["models"].items()}
-G = {**GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
+G = {"crashRecovery": False, **POLITE_DEFAULTS, **GEAR_DEFAULTS, **GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
      "vramEmergencyMiB": 60, "vramEmergencySeconds": 10,
      "vramFreeCriticalMiB": 120, "vramPressureSeconds": 5,
      "vramReloadWaitSeconds": 30, "vramPressureSlotReserveMiB": 512,
@@ -142,6 +146,7 @@ class State:
         self.pressure_sustain = 0
         self.multimedia_lock = False
         self.crash_count = 0
+        self.crash_reported = set()
         self.last_error = ""
         self.last_request = time.time()
         self.busy = 0
@@ -197,6 +202,46 @@ def event(reason, detail, fallback=False):
         pass  # A closed journal pipe must not kill the guardian thread.
 
 
+def crash_snapshot(operation):
+    model = st.model_id
+    mc = model_config(model, st.vision) if model in M["models"] else {}
+    try:
+        with open("/proc/pressure/memory") as stream:
+            pressure = next((line.strip() for line in stream if line.startswith("full ")), "")
+    except OSError:
+        pressure = "unavailable"
+    return {
+        "vram_free_mib": st.vram_free_mib,
+        "ram_available_gb": round(mem_available_gb(), 3),
+        "memory_psi_full": pressure,
+        "gateway_status": st.status,
+        "model": model or None,
+        "vision": st.vision,
+        "mode": "OFF" if st.override == "OFF" else "AUTO",
+        "game_mode": GAME.reason if GAME.enabled and GAME.active else None,
+        "slots": mc.get("moeCacheSlots"),
+        "busy_requests": st.busy,
+        "operation": operation,
+        "last_gateway_event": st.last_event,
+        "checkpoint_saved": st.ram_checkpoint is not None,
+    }
+
+
+def record_server_crash(proc, operation):
+    """Persist bounded diagnostics once per child PID; failure must not affect recovery."""
+    if proc is None or proc.pid in st.crash_reported:
+        return None
+    st.crash_reported.add(proc.pid)
+    if len(st.crash_reported) > 32:
+        st.crash_reported.pop()
+    try:
+        return write_crash_report(STATE_DIR, proc.args, proc.poll(), operation,
+                                  lambda: crash_snapshot(operation))
+    except Exception as error:  # noqa: BLE001 - crash reporting is best effort.
+        log(f"Crash report failed: {type(error).__name__}")
+        return None
+
+
 def reset_pressure():
     st.vram_pressure_since = st.vram_emergency_since = None
     st.vram_pressure = st.vram_emergency = st.pressure_notified = False
@@ -212,8 +257,18 @@ def legacy_main():
     module.main()
 
 
+RUNTIME_SLOTS = {}
+GEARS = {}
+GEAR_BUDGET = Budget()
+GEAR_BUDGET_LOADED = False
+POLITE = PoliteController({**G, "politeStateKey": str(STATE_DIR)})
+WAKEUP = {"proc": None, "sample_at": None, "p99_ms": None, "started_at": None}
+
+
 def model_config(model_id, vision):
     mc = dict(M["models"][model_id])
+    if model_id in RUNTIME_SLOTS and not vision:
+        mc["moeCacheSlots"] = RUNTIME_SLOTS[model_id]
     if vision:
         mc.update(mc.get("visionOverrides", {}))
     return mc
@@ -249,6 +304,13 @@ def build_args(mc, vision):
          "--temp", str(mc["temperature"]), "--top-k", str(mc["topK"]), "--top-p", str(mc["topP"]),
          "--jinja", "--reasoning", mc["reasoning"],
          "--cache-ram", str(M["cacheRamMB"]), "--slot-save-path", str(server_slot_dir())]
+    # Optional CPU wait policy: absent preserves llama.cpp's default --poll 50.
+    poll = mc.get("poll")
+    if poll is not None:
+        poll = int(poll)
+        if not 0 <= poll <= 100:
+            raise ValueError("poll must be between 0 and 100")
+        a += ["--poll", str(poll)]
     # Sampling the model's authors recommend, beyond temperature/top-k/top-p (optional per model, e.g. Occamy: presence_penalty 1.5).
     for key, flag in (("minP", "--min-p"), ("presencePenalty", "--presence-penalty"), ("repeatPenalty", "--repeat-penalty")):
         if mc.get(key) is not None:
@@ -284,7 +346,7 @@ def build_args(mc, vision):
 
 def server_slot_dir():
     st.ram_backend = False
-    if G["vramGuard"] or GAME.enabled:
+    if G["vramGuard"] or GAME.enabled or G["slotGears"] or G["crashRecovery"]:
         try:
             path = prepare_ram_slot_dir()
             st.ram_backend = True
@@ -320,12 +382,12 @@ def preload_check(mc, reclaim=(0.0, 0.0)):
         return f"Not enough free RAM to load the model ({ram:.1f} GB available, need {G['ramFreeMinGBToLoad']} GB)"
     sample_age = time.time() - st.vram_sample_at if st.vram_sample_at is not None else math.inf
     if sample_age > G.get("vramTelemetryStaleSeconds", 5) or st.monitor_error:
-        if GAME.enabled:
-            return "Fresh VRAM admission data unavailable; retry shortly"
-        st.monitor_error = "Fresh NVML data unavailable; skipping VRAM admission check"
-        event("telemetry_failed", st.monitor_error, fallback=True)
+        message = "Fresh NVML admission data unavailable; wait for a fresh VRAM sample"
+        if st.monitor_error != message:
+            st.monitor_error = message
+            event("telemetry_failed", message, fallback=True)
         reset_pressure()
-        return ""
+        return message
     vram = (st.vram_free_mib or 0) / 1024 + reclaim[1]
     required = max(mc["vramFreeMinGBToLoad"], st.vram_resume_min_gb)
     if vram < required:
@@ -364,6 +426,12 @@ def prepare_ram_slot_dir():
         st.backend_blocked = str(e)
         raise RuntimeError(str(e)) from e
     st.backend_blocked = ""
+    try:
+        recover_gear_transaction(root)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        st.backend_blocked = f"Gear recovery refused: {error}"
+        RAM_SLOT_DIR = None
+        raise RuntimeError(st.backend_blocked) from error
     metadata = root / "checkpoint.json"
     if metadata.exists():
         try:
@@ -392,7 +460,13 @@ def prepare_ram_slot_dir():
 
 
 def checkpoint_signature(model_id, vision):
-    value = {"model": model_config(model_id, vision), "exe": M["exePath"]}
+    model = model_config(model_id, vision)
+    # CPU execution scheduling cannot change serialized KV/draft state. Keeping these
+    # out of A2 identity lets a cold restart switch poll/thread tuning and restore the
+    # exact same session without weakening checks on model geometry or sampling layout.
+    for key in ("poll", "threads", "threadsBatch"):
+        model.pop(key, None)
+    value = {"model": model, "exe": M["exePath"]}
     for key, path in (("exe_stat", M["exePath"]), ("model_stat", value["model"]["modelPath"])):
         try:
             info = Path(path).stat()
@@ -419,6 +493,30 @@ def validate_checkpoint(path, saved):
             or saved["tokens"] < 1 or path.stat().st_size != saved["bytes"]
             or file_hash(path) != saved["sha256"]):
         raise ValueError("checkpoint hash, size or token count is invalid")
+
+
+def checkpoint_metadata_path(path):
+    path = Path(path)
+    return path.with_name(path.name + ".json")
+
+
+def validate_saved_slot(path, expected_model, expected_vision):
+    metadata = checkpoint_metadata_path(path)
+    if metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size > 16384:
+        raise ValueError("slot metadata is missing or unsafe")
+    saved = json.loads(metadata.read_text())
+    if (saved.get("model") != expected_model or saved.get("vision") is not expected_vision
+            or saved.get("signature") != checkpoint_signature(expected_model, expected_vision)):
+        raise ValueError("slot metadata does not match the requested model and mode")
+    validate_checkpoint(path, saved)
+    return saved
+
+
+def write_saved_slot_metadata(path, saved):
+    metadata = checkpoint_metadata_path(path)
+    temporary = metadata.with_name(metadata.name + ".tmp")
+    temporary.write_text(json.dumps(saved, separators=(",", ":")))
+    os.replace(temporary, metadata)
 
 
 def clear_ram_checkpoint():
@@ -454,10 +552,22 @@ def save_slot_locked(ram_only=False):
         if code != 200 or not isinstance(slots, list) or not slots:
             raise RuntimeError("unable to inspect active slot")
         n = slots[0].get("n_prompt_tokens", 0)
-        if n == 0 or (not ram_only and n < G["slotSaveMinTokens"]):
+        if n == 0:
             if ram_only:
-                clear_ram_checkpoint()
-                st.skip_disk_restore = True
+                # A restored backend may report no newly prompted tokens before the
+                # first continuation. Keep its verified disk A2 available for crash
+                # recovery instead of marking the next process as empty.
+                if st.ram_checkpoint is not None:
+                    st.skip_disk_restore = False
+                else:
+                    disk = SLOT_DIR / slot_filename(st.model_id, st.vision)
+                    if disk.is_file() and not disk.is_symlink():
+                        st.skip_disk_restore = False
+                    else:
+                        clear_ram_checkpoint()
+                        st.skip_disk_restore = True
+            return True
+        if not ram_only and n < G["slotSaveMinTokens"]:
             return True
         if not st.ram_backend:
             if ram_only:
@@ -469,6 +579,11 @@ def save_slot_locked(ram_only=False):
             if code != 200 or not res or res.get("n_saved") != n or not target.is_file():
                 raise RuntimeError(f"slot save failed: HTTP {code}")
             os.replace(target, SLOT_DIR / name)
+            saved = {"model": st.model_id, "vision": st.vision, "tokens": n,
+                     "bytes": (SLOT_DIR / name).stat().st_size,
+                     "sha256": file_hash(SLOT_DIR / name), "reload_min_gb": st.vram_resume_min_gb,
+                     "signature": checkpoint_signature(st.model_id, st.vision), "saved_at": time.time()}
+            write_saved_slot_metadata(SLOT_DIR / name, saved)
             log(f"Saved slot ({n} prompt tokens) atomically -> {name}")
             return True
         root = prepare_ram_slot_dir()
@@ -503,6 +618,11 @@ def save_slot_locked(ram_only=False):
             try:
                 shutil.copyfile(target, tmp)
                 os.replace(tmp, SLOT_DIR / name)
+                saved = {"model": st.model_id, "vision": st.vision, "tokens": n,
+                         "bytes": (SLOT_DIR / name).stat().st_size,
+                         "sha256": file_hash(SLOT_DIR / name), "reload_min_gb": st.vram_resume_min_gb,
+                         "signature": checkpoint_signature(st.model_id, st.vision), "saved_at": time.time()}
+                write_saved_slot_metadata(SLOT_DIR / name, saved)
             finally:
                 Path(tmp).unlink(missing_ok=True)
             target.unlink(missing_ok=True)
@@ -518,7 +638,7 @@ def save_slot_locked(ram_only=False):
         return False
 
 
-def restore_slot_locked():
+def restore_slot_locked(timeout=120):
     checkpoint = st.ram_checkpoint
     from_ram = bool(checkpoint and checkpoint["model"] == st.model_id and checkpoint["vision"] == st.vision)
     if st.skip_disk_restore and not from_ram:
@@ -534,11 +654,14 @@ def restore_slot_locked():
             if checkpoint["signature"] != checkpoint_signature(st.model_id, st.vision):
                 raise ValueError("RAM session configuration changed")
             validate_checkpoint(target, checkpoint)
-        elif st.ram_backend:
-            if not ram_slot_space_ok(disk.stat().st_size):
-                raise RuntimeError("not enough RAM for disk checkpoint staging")
-            shutil.copyfile(disk, target)
-        code, res = llama_call("POST", "/slots/0?action=restore", {"filename": target.name}, timeout=120)
+        else:
+            saved = validate_saved_slot(disk, st.model_id, st.vision)
+            if st.ram_backend:
+                if not ram_slot_space_ok(disk.stat().st_size):
+                    raise RuntimeError("not enough RAM for disk checkpoint staging")
+                shutil.copyfile(disk, target)
+                validate_checkpoint(target, saved)
+        code, res = llama_call("POST", "/slots/0?action=restore", {"filename": target.name}, timeout=timeout)
         if (code != 200 or not res or res.get("n_restored", 0) <= 0
                 or (from_ram and res["n_restored"] != checkpoint["tokens"])):
             raise RuntimeError(f"slot restore failed or token count differs: HTTP {code}")
@@ -552,7 +675,8 @@ def restore_slot_locked():
     except Exception as e:  # noqa: BLE001 - partially restored backends must be discarded safely.
         event("checkpoint_restore_failed", f"RAM/disk session unusable; prompt will be re-read: {e}", fallback=True)
         # A backend may have partially restored corrupt state. Force a fresh process before proxying.
-        clear_ram_checkpoint()
+        if from_ram:
+            clear_ram_checkpoint()
         st.skip_disk_restore = True
         return "restart_empty"
     finally:
@@ -675,8 +799,16 @@ def backend_port_in_use():
         return False
 
 
-def start_llama(model_id, vision, fresh=False):
+def start_llama(model_id, vision, fresh=False, health_timeout=None, restore_timeout=120):
+    load_deadline = None if health_timeout is None else time.monotonic() + health_timeout
     with st.lock:
+        if st.proc and st.proc.poll() is not None and not st.expected_exit:
+            failed = st.proc
+            record_server_crash(failed, "request arrived after unexpected server exit")
+            st.crash_count += 1
+            st.last_error = f"llama-server crashed (exit {failed.returncode})"
+            st.proc = None
+            st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
         if (st.proc and st.proc.poll() is None and st.status == "READY"
                 and st.model_id == model_id and st.vision == vision):
             return ""
@@ -714,17 +846,20 @@ def start_llama(model_id, vision, fresh=False):
         st.expected_exit = False
         try:
             st.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL)
+            POLITE.attach(st.proc.pid)
             write_server_lease()
         except OSError as e:
             stop_llama_locked("spawn or lease failed", save=False)
             st.last_error = f"Could not spawn llama-server: {e}"
             return st.last_error
-        deadline = time.time() + G["healthCheckTimeoutSeconds"]
+        deadline = time.time() + (G["healthCheckTimeoutSeconds"] if load_deadline is None else max(0, load_deadline - time.monotonic()))
         while time.time() < deadline:
             time.sleep(1)
             if st.proc.poll() is not None:
+                failed = st.proc
+                record_server_crash(failed, "loading llama-server")
                 st.crash_count += 1
-                st.last_error = f"llama-server exited during load (code {st.proc.returncode})"
+                st.last_error = f"llama-server exited during load (code {failed.returncode})"
                 st.proc = None
                 st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
                 log(st.last_error)
@@ -734,13 +869,17 @@ def start_llama(model_id, vision, fresh=False):
                 if code == 200:
                     st.status, st.crash_count, st.last_error = "READY", 0, ""
                     log(f"llama-server READY (pid {st.proc.pid}, vision={vision})")
-                    error = "" if fresh else restore_slot_locked()
+                    if load_deadline is not None and time.monotonic() >= load_deadline:
+                        st.last_error = "Gear restart deadline exceeded before restore"
+                        return st.last_error
+                    error = "" if fresh else (restore_slot_locked() if load_deadline is None else
+                            restore_slot_locked(timeout=min(restore_timeout, max(0.1, load_deadline - time.monotonic()))))
                     if error == "restart_empty":
                         if not stop_llama_locked("checkpoint restore failed; starting empty", save=False):
                             return st.last_error
                         st.skip_disk_restore = False
                         st.vram_resume_min_gb = 0.0
-                        return start_llama(model_id, vision, fresh=True)
+                        return start_llama(model_id, vision, fresh=True, health_timeout=None if load_deadline is None else max(0.1, load_deadline-time.monotonic()), restore_timeout=restore_timeout)
                     if not error:
                         st.vram_resume_min_gb = 0.0
                     return error
@@ -763,15 +902,19 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
             st.proc_vram_pid = st.proc.pid if st.proc else None
             st.proc_vram_sample_at = st.monitor_last_tick
         if st.proc and st.proc.poll() is not None and not st.expected_exit:
+            failed = st.proc
+            record_server_crash(failed, "monitor observed unexpected server exit")
             st.crash_count += 1
-            st.last_error = f"llama-server crashed (exit {st.proc.returncode})"
+            st.last_error = f"llama-server crashed (exit {failed.returncode})"
             event("server_crashed", st.last_error, fallback=True)
             st.proc = None
             st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
 
         valid = math.isfinite(free_mib) and 0 <= free_mib <= 2097152
-        if GAME.enabled and valid:
+        if valid and st.monitor_error:
+            event("telemetry_recovered", "VRAM readings available again")
             st.monitor_error = ""
+            st.guard_fallback = ""
         idle = (time.time() if wall_now is None else wall_now) - st.last_request
         if G["vramGuard"]:
             if not valid:
@@ -851,6 +994,325 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
         st.monitor_healthy = True
 
 
+def stop_wakeup_probe():
+    proc = WAKEUP["proc"]
+    if proc is not None:
+        unit = WAKEUP.get("unit")
+        if unit:
+            try:
+                pid = int(subprocess.check_output(["systemctl", "--user", "show", unit, "-p", "MainPID", "--value"], text=True, timeout=2).strip())
+                if pid > 1:
+                    expected = subprocess.check_output(["systemctl", "--user", "show", unit, "-p", "ControlGroup", "--value"], text=True, timeout=2).strip()
+                    group = Path(f"/proc/{pid}/cgroup").read_text().strip().split("::", 1)[1]
+                    if expected and group == expected:
+                        os.kill(pid, signal.SIGTERM)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+        proc.stdout.close()
+        WAKEUP["proc"] = None
+
+
+def start_wakeup_probe():
+    if not POLITE.enabled or not POLITE.available or G["politeMode"] != "dynamic":
+        return
+    unit = f"shura-wakeup-{os.getpid()}.service"
+    proc = subprocess.Popen(["systemd-run", "--user", "--quiet", "--collect", "--pipe", "--wait", "--unit="+unit,
+                             "--property=CPUWeight=100", sys.executable, "-u", str(Path(__file__).with_name("wakeup_probe.py"))],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+    WAKEUP["proc"], WAKEUP["started_at"], WAKEUP["unit"] = proc, time.monotonic(), unit
+
+    def read_probe():
+        for line in proc.stdout:
+            try:
+                data = json.loads(line)
+                value = float(data["p99_ms"])
+                if math.isfinite(value) and value >= 0:
+                    WAKEUP["p99_ms"], WAKEUP["sample_at"] = value, time.monotonic()
+            except (ValueError, KeyError, TypeError):
+                continue
+    threading.Thread(target=read_probe, daemon=True, name="shura-wakeup-reader").start()
+
+
+atexit.register(stop_wakeup_probe)
+
+def close_cpu_policy():
+    try:
+        POLITE.scheduler.close()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        event("cpu_restore_failed", str(error), fallback=True)
+
+atexit.register(close_cpu_policy)
+
+
+class GearBackend:
+    """Only called under st.lock, between requests. Snapshot is a tmpfs hardlink, not a second copy."""
+    def __init__(self):
+        self.model, self.vision = st.model_id, st.vision
+        self.original_signature = checkpoint_signature(self.model, self.vision)
+        self.original_slots = self.current_slots()
+
+    def current_slots(self):
+        return model_config(self.model, self.vision)["moeCacheSlots"]
+
+    def save(self):
+        if st.busy or self.vision or int(G.get("slotSaveCheckpoints", 0)) < 1:
+            return None
+        if not save_slot_locked(ram_only=True):
+            return None
+        saved = st.ram_checkpoint
+        if saved is None:
+            self.journal({"empty": True})
+            return {"empty": True}
+        validate_checkpoint(saved["path"], saved)
+        if saved["signature"] != checkpoint_signature(self.model, self.vision):
+            raise ValueError("gear snapshot configuration mismatch")
+        # Private root is verified by prepare_ram_slot_dir. Refuse stale transaction files.
+        backup = prepare_ram_slot_dir() / "gear-rollback.bin"
+        if backup.exists() or backup.is_symlink():
+            raise RuntimeError("unfinished gear transaction; refusing another restart")
+        self.journal(saved)
+        os.link(saved["path"], backup)
+        return {**saved, "path": backup}
+
+    def journal(self, snapshot):
+        root = prepare_ram_slot_dir()
+        record = {"version": 1, "model": self.model, "slots": self.original_slots,
+                  "signature": self.original_signature,
+                  "snapshot": {key: value for key, value in snapshot.items() if key != "path"}}
+        temporary = root / "gear-transaction.json.tmp"
+        temporary.write_text(json.dumps(record))
+        os.replace(temporary, root / "gear-transaction.json")
+
+    def restart(self, slots, snapshot):
+        deadline = time.monotonic() + G["slotGearRestartSeconds"]
+        # Recompute the original signature to prove that only slot count changed.
+        present = RUNTIME_SLOTS.get(self.model)
+        try:
+            RUNTIME_SLOTS[self.model] = self.original_slots
+            if checkpoint_signature(self.model, self.vision) != self.original_signature:
+                raise RuntimeError("model/binary/config changed during gear transaction")
+        finally:
+            if present is None:
+                RUNTIME_SLOTS.pop(self.model, None)
+            else:
+                RUNTIME_SLOTS[self.model] = present
+        if not stop_llama_locked("slot gear change", save=False):
+            return False
+        stopped_at = time.time()
+        RUNTIME_SLOTS[self.model] = slots
+        root = prepare_ram_slot_dir()
+        if not snapshot.get("empty"):
+            # Model, vision, binary and all other settings remain fixed within this locked transaction.
+            active = root / "active.bin"
+            active.unlink(missing_ok=True)
+            os.link(snapshot["path"], active)
+            saved = {**snapshot, "path": active, "signature": checkpoint_signature(self.model, self.vision)}
+            st.ram_checkpoint = saved
+            metadata = {key: value for key, value in saved.items() if key != "path"}
+            temporary = root / "checkpoint.json.tmp"
+            temporary.write_text(json.dumps(metadata))
+            os.replace(temporary, root / "checkpoint.json")
+        before = st.event_counters.get("checkpoint_restored", 0)
+        st.status = "UNLOADED"
+        if not wait_fresh_vram(stopped_at, timeout=min(5, max(0, deadline-time.monotonic()))):
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        error = start_llama(self.model, self.vision, fresh=snapshot.get("empty", False),
+                            health_timeout=remaining, restore_timeout=min(5, remaining))
+        return not error and (snapshot.get("empty") or st.event_counters.get("checkpoint_restored", 0) > before)
+
+    def release(self, snapshot):
+        root = prepare_ram_slot_dir()
+        # Mark the completed transaction first; an orphaned backup alone never authorizes recovery.
+        (root / "gear-transaction.json").unlink(missing_ok=True)
+        if not snapshot.get("empty"):
+            snapshot["path"].unlink(missing_ok=True)
+
+
+def apply_slots(n):
+    with st.lock:
+        if st.busy or st.status != "READY" or st.vision or not st.ram_backend:
+            return False
+        if type(n) is not int or n < 16 or n > M["models"][st.model_id]["moeCacheSlots"]:
+            return False
+        return apply_slot_transaction(n, GearBackend())
+
+
+def recover_gear_transaction(root):
+    journal = root / "gear-transaction.json"
+    if not journal.exists():
+        return
+    if journal.is_symlink() or journal.stat().st_size > 16384:
+        raise ValueError("unsafe gear journal")
+    record = json.loads(journal.read_text())
+    mid, slots = record["model"], record["slots"]
+    if (record.get("version") != 1 or mid not in M["models"] or type(slots) is not int
+            or not 16 <= slots <= M["models"][mid]["moeCacheSlots"]):
+        raise ValueError("invalid gear journal model/version/slots")
+    prior = RUNTIME_SLOTS.get(mid)
+    RUNTIME_SLOTS[mid] = slots
+    try:
+        if checkpoint_signature(mid, False) != record["signature"]:
+            raise ValueError("gear journal binary/model/config changed")
+        saved = record["snapshot"]
+        if not isinstance(saved, dict):
+            raise ValueError("invalid gear snapshot")
+        if saved.get("empty") is not True:
+            if saved["model"] != mid or saved["vision"] is not False or saved["signature"] != record["signature"]:
+                raise ValueError("gear snapshot ownership mismatch")
+            candidate = root / "gear-rollback.bin"
+            if not candidate.exists():
+                candidate = root / "active.bin"  # journal written before the hardlink / shutdown
+            validate_checkpoint(candidate, saved)
+            active = root / "active.bin"
+            if candidate != active:
+                active.unlink(missing_ok=True)
+                os.link(candidate, active)
+            if not G["slotGears"]:
+                RUNTIME_SLOTS.pop(mid, None)  # disabled means the configured static baseline
+            saved = {**saved, "signature": checkpoint_signature(mid, False)}
+            temporary = root / "checkpoint.json.tmp"
+            temporary.write_text(json.dumps(saved))
+            os.replace(temporary, root / "checkpoint.json")
+        else:
+            st.skip_disk_restore = True
+            if not G["slotGears"]:
+                RUNTIME_SLOTS.pop(mid, None)
+        journal.unlink()
+        (root / "gear-rollback.bin").unlink(missing_ok=True)
+        event("gear_recovered", f"Incomplete gear transaction rolled back for {mid}; A2 available")
+    except BaseException:
+        if prior is None:
+            RUNTIME_SLOTS.pop(mid, None)
+        else:
+            RUNTIME_SLOTS[mid] = prior
+        raise
+
+
+def wait_fresh_vram(after, timeout=5):
+    """A gear restart needs a post-stop sample, not a potentially double-counted memory credit."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if st.vram_sample_at is not None and st.vram_sample_at > after and st.vram_free_mib is not None:
+            if st.monitor_error:
+                if st.guard_fallback == st.monitor_error:
+                    st.guard_fallback = ""
+                st.monitor_error = ""
+                event("telemetry_recovered", "Fresh post-stop VRAM sample available")
+            return True
+        time.sleep(0.05)
+    event("gear_telemetry_timeout", "No fresh post-stop VRAM sample; refusing load", fallback=True)
+    return False
+
+
+def gear_budget_root():
+    global GEAR_BUDGET_LOADED
+    root = prepare_ram_slot_dir()
+    if not GEAR_BUDGET_LOADED:
+        ledger = root / "gear-budget.json"
+        if ledger.exists():
+            if ledger.is_symlink() or ledger.stat().st_size > 16384:
+                raise RuntimeError("invalid gear budget ledger")
+            history = json.loads(ledger.read_text())
+            if (not isinstance(history, list) or len(history) > G["slotGearChangesPerDay"]
+                    or any(type(t) not in (int, float) or not math.isfinite(t) or t < 0
+                           or t > time.monotonic() for t in history)):
+                raise RuntimeError("invalid gear budget timestamps")
+            GEAR_BUDGET.history = history
+        GEAR_BUDGET_LOADED = True
+    return root
+
+
+def persist_gear_budget():
+    root = gear_budget_root()
+    temporary = root / "gear-budget.json.tmp"
+    temporary.write_text(json.dumps(GEAR_BUDGET.history))
+    os.replace(temporary, root / "gear-budget.json")
+
+
+def reliability_tick(now):
+    with st.lock:
+        proc = st.proc
+        if POLITE.enabled and POLITE.available and G["politeMode"] == "static":
+            POLITE.tick(now, proc.pid if proc and proc.poll() is None else None, 0.0, (os.getpid(),))
+        if POLITE.enabled and POLITE.available and G["politeMode"] == "dynamic":
+            age = now - WAKEUP["sample_at"] if WAKEUP["sample_at"] is not None else math.inf
+            if age <= 5:
+                helper = WAKEUP["proc"]
+                before = POLITE.snapshot()
+                POLITE.tick(now, proc.pid if proc and proc.poll() is None else None,
+                            WAKEUP["p99_ms"], (os.getpid(), helper.pid if helper else None))
+                after = POLITE.snapshot()
+                if (before["level"], before["weight"], before["available"]) != (after["level"], after["weight"], after["available"]):
+                    event("cpu_policy_changed", f"mode={after['mode']} level={after['level']} weight={after['weight']} ms={after['change_ms']} error={after['error']}")
+            elif (WAKEUP["sample_at"] is not None or
+                  (WAKEUP["started_at"] is not None and now - WAKEUP["started_at"] > 5)):
+                POLITE.stale(proc.pid if proc and proc.poll() is None else None)
+        if not G["slotGears"] or not st.model_id:
+            return
+        try:
+            gear_budget_root()
+        except (OSError, ValueError, RuntimeError) as error:
+            G["slotGears"] = False
+            event("gears_disabled", f"Budget cannot be verified: {error}", fallback=True)
+            return
+        mid = st.model_id
+        if mid not in GEARS:
+            GEARS[mid] = Ratchet(G, M["models"][mid]["moeCacheSlots"], GEAR_BUDGET)
+            GEARS[mid].current = model_config(mid, False)["moeCacheSlots"]
+        gear = GEARS[mid]
+        age = time.time() - st.vram_sample_at if st.vram_sample_at is not None else math.inf
+        free = st.vram_free_mib if age <= G.get("vramTelemetryStaleSeconds", 5) and not st.monitor_error else None
+        target = gear.target(now, free, busy=st.busy > 0,
+                             ready=st.status == "READY" and not st.vision and not GAME.active)
+        if target is not None:
+            fatal = False
+            try:
+                ok = apply_slots(target)
+            except RollbackFailed as error:
+                ok, fatal = False, True
+                G["slotGears"] = False
+                st.status, st.last_error = "ERROR", str(error)
+                event("gears_disabled", str(error), fallback=True)
+            except (OSError, RuntimeError, ValueError) as error:
+                ok = False
+                event("gear_failed", str(error), fallback=True)
+            gear.completed(time.monotonic(), target, ok)
+            if fatal:
+                gear.reason = "rollback failed; A2 snapshot retained; controller disabled"
+            try:
+                persist_gear_budget()
+            except OSError as error:
+                G["slotGears"] = False
+                event("gears_disabled", f"Cannot persist change budget: {error}", fallback=True)
+            event("gear_changed" if ok else "gear_rolled_back", f"model={mid} slots={gear.current}: {gear.reason}")
+
+
+def publish_vram_sample(free_mib, proc, process_mib):
+    """Sensor publication cannot wait behind a 15-second lifecycle transaction.
+
+    These are observational fields only; pressure decisions still require st.lock.
+    Publish the timestamp last, after the value it certifies.
+    """
+    wall = time.time()
+    if math.isfinite(free_mib) and 0 <= free_mib <= 2097152:
+        st.vram_free_mib = int(free_mib)
+        st.vram_sample_at = wall
+    if proc is not None and st.proc is proc and isinstance(process_mib, int) and process_mib >= 0:
+        st.proc_vram_mib = process_mib
+        st.proc_vram_pid = proc.pid
+        st.proc_vram_sample_at = wall
+
+
 def monitor(stop=None):
     stop = stop or threading.Event()
     while not stop.wait(1):
@@ -863,7 +1325,17 @@ def monitor(stop=None):
                     proc_mib = nvml_device().proc_mib(proc.pid)
                 except (OSError, RuntimeError, ValueError, OverflowError):
                     proc_mib = None
-            monitor_tick(time.monotonic(), free_mib, mem_available_gb(), process_mib=proc_mib)
+            if G["slotGears"]:
+                publish_vram_sample(free_mib, proc, proc_mib)
+                if st.lock.acquire(blocking=False):
+                    try:
+                        monitor_tick(time.monotonic(), free_mib, mem_available_gb(), process_mib=proc_mib)
+                        reliability_tick(time.monotonic())
+                    finally:
+                        st.lock.release()
+            else:
+                monitor_tick(time.monotonic(), free_mib, mem_available_gb(), process_mib=proc_mib)
+                reliability_tick(time.monotonic())
         except Exception as e:  # noqa: BLE001 - a failed sensor tick must be recorded, not kill the monitor.
             with st.lock:
                 st.monitor_healthy = False
@@ -879,7 +1351,7 @@ def acquire_model(model_id, vision):
         with st.lock:
             if GAME.enabled and (GAME.active or not GAME.ready):
                 return "Model paused because of a game: " + (GAME.reason or "detector initializing")
-            if (G["vramGuard"] or GAME.enabled) and RAM_SLOT_DIR is None:
+            if (G["vramGuard"] or GAME.enabled or G["slotGears"] or G["crashRecovery"]) and RAM_SLOT_DIR is None:
                 try:
                     prepare_ram_slot_dir()
                 except (OSError, RuntimeError) as e:
@@ -1016,6 +1488,9 @@ def status_snapshot():
         "terse_supported": supports_terse(st.model_id or M["defaultModel"]),
         "terse_models": [m for m in M["models"] if supports_terse(m)],
         "game_mode": GAME.snapshot(),
+        "crash_recovery_enabled": G["crashRecovery"],
+        "polite_model": POLITE.snapshot(),
+        "slot_gears": {"enabled": G["slotGears"], "models": {mid: gear.snapshot() for mid, gear in GEARS.items()}},
         "status": st.status, "model": st.model_id, "vision": st.vision, "override": st.override,
         "memory_pressure": st.memory_pressure, "multimedia_lock": st.multimedia_lock,
         "vram_pressure": st.vram_pressure, "last_yield_reason": st.last_yield_reason,
@@ -1161,8 +1636,14 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self.send_json(503, {"error": f"Could not start model '{model_id}'", "reason": err}, G["gameRetrySeconds"] if GAME.enabled and GAME.active else None)
 
+        recovery_request = G["crashRecovery"] and self.command == "POST" and path in ("/v1/chat/completions", "/chat/completions", "/completion")
         try:
-            if GAME.enabled:
+            if recovery_request:
+                with st.lock:
+                    if st.busy != 1 or not save_slot_locked(ram_only=True):
+                        return self.send_json(503, {"error": "Cannot protect the session before generation", "code": "SHURA_CHECKPOINT_NOT_READY"}, 5)
+                self.proxy_recoverable(body, model_id, vision)
+            elif GAME.enabled:
                 self.proxy_game(body)
             else:
                 self.proxy(body)
@@ -1170,6 +1651,73 @@ class Handler(BaseHTTPRequestHandler):
             with st.lock:
                 st.busy -= 1
                 st.last_request = time.time()
+
+    hop_by_hop = HOP_BY_HOP
+
+    def recovery_event(self, reason, detail):
+        event(reason, detail, fallback=True)
+
+    def proxy_recoverable(self, body, model_id, vision):
+        proc = st.proc
+        lease = {"cancel": threading.Event(), "conn": None}
+        key = id(self)
+        if GAME.enabled:
+            with st.lock:
+                GAME_REQUESTS[key] = lease
+        def register(conn):
+            lease["conn"] = conn
+        def recover():
+            # The socket can close just before waitpid publishes SIGKILL/exit status.
+            # A short bounded wait avoids returning a false 503 in that race.
+            if lease["cancel"].is_set():
+                event("response_recovery_refused", "Request was cancelled before replay", fallback=True)
+                return False
+            if not wait_for_process_exit(proc):
+                event("response_recovery_refused", "Backend process did not exit after the upstream disconnect", fallback=True)
+                return False
+            with st.lock:
+                if st.busy != 1 or st.override == "OFF" or GAME.active or st.status == "ERROR":
+                    event("response_recovery_refused",
+                          f"Lifecycle changed before replay (busy={st.busy}, mode={st.override}, game={GAME.active}, status={st.status})",
+                          fallback=True)
+                    return False
+                if st.proc is not None and st.proc is not proc:
+                    event("response_recovery_refused", "A different backend process replaced the failed child", fallback=True)
+                    return False
+                if st.proc is proc:
+                    record_server_crash(proc, "request interrupted before first client byte")
+                    st.crash_count += 1
+                if st.crash_count >= G["crashRestartMaxAttempts"]:
+                    st.status = "ERROR"
+                    st.last_error = "Backend crash restart limit reached"
+                    event("response_recovery_refused", st.last_error, fallback=True)
+                    return False
+                st.proc = None
+                st.status = "UNLOADED"
+            # Release lifecycle lock so the monitor can publish post-crash admission data.
+            if not wait_fresh_vram(time.time()):
+                event("response_recovery_refused", "No fresh VRAM sample after backend exit", fallback=True)
+                return False
+            with st.lock:
+                if st.busy != 1 or st.override == "OFF" or GAME.active:
+                    event("response_recovery_refused",
+                          f"Lifecycle changed while waiting for VRAM (busy={st.busy}, mode={st.override}, game={GAME.active})",
+                          fallback=True)
+                    return False
+                error = start_llama(model_id, vision)
+                if not error:
+                    event("response_restarted", "Owned backend restored through A2; replay before first byte")
+                else:
+                    event("response_recovery_refused", f"Backend restart failed: {error}", fallback=True)
+                return not error
+        try:
+            forward_recovery(self, body,
+                             lambda: http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=3600),
+                             recover, lease["cancel"], register)
+        finally:
+            if GAME.enabled:
+                with st.lock:
+                    GAME_REQUESTS.pop(key, None)
 
     def proxy_game(self, body):
         conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=3600)
@@ -1286,8 +1834,26 @@ def disable_core_dumps():
 
 def main():
     disable_core_dumps()
-    if G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0 and not GAME.enabled:
+    try:
+        POLITE.scheduler.recover()
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        POLITE.available = False
+        POLITE.error = str(error)
+        event("cpu_recovery_failed", str(error), fallback=True)
+    if (G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0
+            and not GAME.enabled and not G["politeModel"] and not G["slotGears"] and not G["crashRecovery"]):
         return legacy_main()
+    if (G["slotGears"] or G["crashRecovery"]) and int(G.get("slotSaveCheckpoints", 0)) < 1:
+        raise RuntimeError("slotGears requires slotSaveCheckpoints >= 1")
+    if POLITE.enabled and POLITE.available:
+        try:
+            POLITE.scheduler.change(G["politeStaticWeight"] if G["politeMode"] == "static" else G["politeWeights"][0])
+            event("cpu_policy_started", f"mode={G['politeMode']} weight={POLITE.scheduler.weight} ms={POLITE.scheduler.last_ms}")
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            POLITE.available = False
+            POLITE.error = str(error)
+            event("cpu_policy_failed", str(error), fallback=True)
+    start_wakeup_probe()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGTERM, shutdown)

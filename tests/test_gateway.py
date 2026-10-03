@@ -90,6 +90,17 @@ class GatewayGuard(unittest.TestCase):
         self.tick(10)
         self.tick(15)
 
+    def make_disk_checkpoint(self, payload=b"disk snapshot"):
+        model = self.gw.M["defaultModel"]
+        self.gw.st.model_id = model
+        path = self.disk / self.gw.slot_filename(model, False)
+        path.write_bytes(payload)
+        saved = {"model": model, "vision": False, "tokens": 187000, "bytes": len(payload),
+                 "sha256": self.gw.file_hash(path), "reload_min_gb": 0.0,
+                 "signature": self.gw.checkpoint_signature(model, False), "saved_at": time.time()}
+        self.gw.write_saved_slot_metadata(path, saved)
+        return path
+
     def test_idle_pressure_saves_only_in_ram_then_unloads(self):
         self.tick(10)
         self.tick(14.9)
@@ -211,12 +222,51 @@ class GatewayGuard(unittest.TestCase):
         self.api.assert_not_called()
 
     def test_old_disk_checkpoint_is_staged_in_ram_and_not_deleted(self):
-        name = self.gw.slot_filename(self.gw.st.model_id, False)
-        (self.disk / name).write_bytes(b"disk snapshot")
+        path = self.make_disk_checkpoint()
         self.assertEqual(self.gw.restore_slot_locked(), "")
         self.assertEqual(self.api.call_args.args[2], {"filename": "restore.bin"})
         self.assertEqual(list(self.ram.iterdir()), [])
-        self.assertTrue((self.disk / name).exists())
+        self.assertTrue(path.exists())
+
+    def test_truncated_disk_slot_is_rejected_before_native_restore(self):
+        path = self.make_disk_checkpoint()
+        path.write_bytes(path.read_bytes()[:-1])
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "restart_empty")
+        self.api.assert_not_called()
+
+    def test_same_size_disk_slot_corruption_is_rejected_before_native_restore(self):
+        path = self.make_disk_checkpoint()
+        raw = path.read_bytes()
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "restart_empty")
+        self.api.assert_not_called()
+
+    def test_unverified_legacy_disk_slot_is_not_passed_to_native_restore(self):
+        path = self.disk / self.gw.slot_filename(self.gw.M["defaultModel"], False)
+        path.write_bytes(b"old slot without a SHA-256 sidecar")
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "restart_empty")
+        self.api.assert_not_called()
+        self.assertTrue(path.exists())
+
+    def test_a2_signature_allows_cpu_poll_and_thread_tuning_only(self):
+        model = self.gw.M["defaultModel"]
+        mc = self.gw.M["models"][model]
+        original = {key: mc.get(key) for key in ("threads", "threadsBatch", "poll", "nGpuLayers")}
+        try:
+            baseline = self.gw.checkpoint_signature(model, False)
+            mc.update(threads=5, threadsBatch=4, poll=0)
+            self.assertEqual(self.gw.checkpoint_signature(model, False), baseline)
+            mc["nGpuLayers"] = int(mc.get("nGpuLayers", 99)) - 1
+            self.assertNotEqual(self.gw.checkpoint_signature(model, False), baseline)
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    mc.pop(key, None)
+                else:
+                    mc[key] = value
 
     def test_ready_request_reserves_busy_before_monitor_can_unload(self):
         self.assertEqual(self.gw.acquire_model(self.gw.st.model_id, False), "")
@@ -259,10 +309,10 @@ class GatewayGuard(unittest.TestCase):
         with patch.object(self.gw.time, "sleep", side_effect=sleep), patch.object(self.gw, "start_llama", return_value=""):
             self.assertEqual(self.gw.acquire_model(self.gw.M["defaultModel"], False), "")
 
-    def test_reader_failure_uses_original_load_policy(self):
+    def test_reader_failure_waits_for_fresh_admission_sample(self):
         self.gw.st.vram_free_mib = None
         self.gw.st.vram_sample_at = None
-        self.assertEqual(self.gw.preload_check(self.gw.model_config(self.gw.st.model_id, False)), "")
+        self.assertIn("Fresh NVML", self.gw.preload_check(self.gw.model_config(self.gw.st.model_id, False)))
         self.assertIn("NVML", self.gw.st.guard_fallback)
 
     def test_stale_nvml_fallback_clears_when_monitor_recovers(self):
@@ -305,6 +355,8 @@ class GatewayGuard(unittest.TestCase):
 
     def test_restore_failure_starts_one_fresh_backend_before_request(self):
         self.yield_model()
+        # The pressure has cleared and the monitor supplied a fresh admission sample.
+        self.gw.monitor_tick(16, 12 * 1024, 24)
         first, second = Mock(pid=4321), Mock(pid=4322)
         for proc in (first, second):
             proc.poll.return_value = None

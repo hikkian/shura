@@ -69,6 +69,13 @@ if d.get("game_mode", {}).get("enabled"):
     g = d["game_mode"]
     print(f"game mode  : {g['reason'] or 'quiet'} ({g['elapsed_seconds']} s), active={g['active']}")
     if g.get("errors"): print("game errors: " + "; ".join(g["errors"]))
+p = d.get("polite_model", {})
+if p.get("enabled"):
+    print(f"polite CPU : {p.get('mode', 'dynamic')} L{p['level']}, weight={p.get('weight')}, available={p['available']}" + (" - " + p['error'] if p.get('error') else ""))
+g = d.get("slot_gears", {})
+if g.get("enabled"):
+    for model, gear in g.get("models", {}).items():
+        print(f"slot gears : {model} {gear['slots']} - {gear['reason']}")
 if d["status"] == "READY":
     print(f"idle       : {d['idle_seconds']} s (auto-unload after {d['idle_unload_after_seconds']} s)")
 PY
