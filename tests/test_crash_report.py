@@ -1,13 +1,18 @@
 """Crash reports stay small, redact launch secrets and tolerate missing journals."""
 
 import json
+import os
 import signal
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
+import crash_report  # noqa: E402
+
 from crash_report import MAX_RECORD_BYTES, write_crash_report  # noqa: E402
 
 
@@ -55,6 +60,14 @@ class CrashReportTests(unittest.TestCase):
         record = json.loads(Path(path).read_text())
         self.assertLessEqual(len(record["server_log_tail"]), 150)
         self.assertNotIn("--password=secret", record["launch_args"])
+
+    def test_gateway_journal_unit_is_configurable_only_for_isolated_runner(self):
+        with (patch.dict(os.environ, {"AI_GATEWAY_CRASH_JOURNAL_UNIT": "shura-test.service"}),
+              patch.object(crash_report.subprocess, "run",
+                           return_value=CompletedProcess([], 0, "test journal line\n", "")) as run):
+            report = write_crash_report(self.tmp.name, ["llama-server"], -9, "stream", lambda: {})
+        self.assertIsNotNone(report)
+        self.assertIn("shura-test.service", run.call_args.args[0])
 
 
 if __name__ == "__main__":

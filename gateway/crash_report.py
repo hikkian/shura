@@ -5,6 +5,7 @@ import re
 import signal
 import subprocess
 import time
+import os
 from pathlib import Path
 
 MAX_RECORD_BYTES = 64 * 1024
@@ -39,9 +40,12 @@ def _safe_args(args):
     return result
 
 
-def journal_tail():
+def journal_tail(unit=None):
+    unit = unit or os.environ.get("AI_GATEWAY_CRASH_JOURNAL_UNIT", "ai-gateway.service")
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]{1,128}", unit):
+        unit = "ai-gateway.service"
     result = subprocess.run(
-        ["journalctl", "--user", "-u", "ai-gateway.service", "-n", "150", "--no-pager", "-o", "cat"],
+        ["journalctl", "--user", "-u", unit, "-n", "150", "--no-pager", "-o", "cat"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         timeout=2,
