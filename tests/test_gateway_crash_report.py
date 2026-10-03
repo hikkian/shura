@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import test_gateway as fixture
 sys.path.insert(0, str(fixture.REPO / "gateway"))
-import crash_report
+import crash_report  # noqa: E402
 
 
 class GatewayCrashReport(fixture.GatewayGuard):

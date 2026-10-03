@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
-from crash_report import MAX_RECORD_BYTES, write_crash_report
+from crash_report import MAX_RECORD_BYTES, write_crash_report  # noqa: E402
 
 
 class CrashReportTests(unittest.TestCase):
