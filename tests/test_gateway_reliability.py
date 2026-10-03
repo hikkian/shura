@@ -13,6 +13,11 @@ import test_gateway as fixtures
 REPO = fixtures.REPO
 
 
+def resource_unlimited():
+    import resource
+    return resource.RLIM_INFINITY
+
+
 class GuardReliability(fixtures.GatewayGuard):
     # Avoid rerunning inherited acceptance cases in this supplementary class.
     def test_tool_pauses_never_count_as_ninety_second_idle(self):
@@ -370,6 +375,15 @@ class GuardReliability(fixtures.GatewayGuard):
         body = src[i:i + 1800]
         self.assertIn('freed = running_footprint()', body)
         self.assertIn('preload_check(mc, reclaim=(0.0, freed[1]))', body)
+
+    def test_core_dumps_are_disabled_for_the_servers_but_the_hard_limit_is_left_alone(self):
+        calls = []
+        with patch.object(self.gw.resource, 'getrlimit', return_value=(resource_unlimited(), resource_unlimited())), \
+                patch.object(self.gw.resource, 'setrlimit', side_effect=lambda which, lim: calls.append((which, lim))):
+            self.assertTrue(self.gw.disable_core_dumps())
+        self.assertEqual(calls, [(self.gw.resource.RLIMIT_CORE, (0, resource_unlimited()))])
+        with patch.object(self.gw.resource, 'getrlimit', side_effect=OSError('no')):
+            self.assertFalse(self.gw.disable_core_dumps())                   # a failure must never stop the gateway
 
     def test_image_cap_and_extra_args_reach_the_server_and_vision_overrides_apply(self):
         base = dict(self.gw.M['models'][self.gw.M['defaultModel']])

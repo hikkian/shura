@@ -17,6 +17,7 @@ import json
 import math
 import os
 import re
+import resource
 import shutil
 import signal
 import socket
@@ -1272,7 +1273,19 @@ def shutdown(signum, _frame):
     sys.exit(0)
 
 
+def disable_core_dumps():
+    """A crashing llama-server would otherwise leave a core dump of its whole memory (10 GB seen on 2026-10-03) in /var/lib/systemd/coredump:
+    SSD wear for nothing. The soft limit is inherited by the servers this gateway starts; the hard limit stays, so nothing is locked."""
+    try:
+        _, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, hard))
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 def main():
+    disable_core_dumps()
     if G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0 and not GAME.enabled:
         return legacy_main()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
