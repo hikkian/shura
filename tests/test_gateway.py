@@ -90,6 +90,17 @@ class GatewayGuard(unittest.TestCase):
         self.tick(10)
         self.tick(15)
 
+    def make_disk_checkpoint(self, payload=b"disk snapshot"):
+        model = self.gw.M["defaultModel"]
+        self.gw.st.model_id = model
+        path = self.disk / self.gw.slot_filename(model, False)
+        path.write_bytes(payload)
+        saved = {"model": model, "vision": False, "tokens": 187000, "bytes": len(payload),
+                 "sha256": self.gw.file_hash(path), "reload_min_gb": 0.0,
+                 "signature": self.gw.checkpoint_signature(model, False), "saved_at": time.time()}
+        self.gw.write_saved_slot_metadata(path, saved)
+        return path
+
     def test_idle_pressure_saves_only_in_ram_then_unloads(self):
         self.tick(10)
         self.tick(14.9)
@@ -211,12 +222,34 @@ class GatewayGuard(unittest.TestCase):
         self.api.assert_not_called()
 
     def test_old_disk_checkpoint_is_staged_in_ram_and_not_deleted(self):
-        name = self.gw.slot_filename(self.gw.st.model_id, False)
-        (self.disk / name).write_bytes(b"disk snapshot")
+        path = self.make_disk_checkpoint()
         self.assertEqual(self.gw.restore_slot_locked(), "")
         self.assertEqual(self.api.call_args.args[2], {"filename": "restore.bin"})
         self.assertEqual(list(self.ram.iterdir()), [])
-        self.assertTrue((self.disk / name).exists())
+        self.assertTrue(path.exists())
+
+    def test_truncated_disk_slot_is_rejected_before_native_restore(self):
+        path = self.make_disk_checkpoint()
+        path.write_bytes(path.read_bytes()[:-1])
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "restart_empty")
+        self.api.assert_not_called()
+
+    def test_same_size_disk_slot_corruption_is_rejected_before_native_restore(self):
+        path = self.make_disk_checkpoint()
+        raw = path.read_bytes()
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "restart_empty")
+        self.api.assert_not_called()
+
+    def test_unverified_legacy_disk_slot_is_not_passed_to_native_restore(self):
+        path = self.disk / self.gw.slot_filename(self.gw.M["defaultModel"], False)
+        path.write_bytes(b"old slot without a SHA-256 sidecar")
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "restart_empty")
+        self.api.assert_not_called()
+        self.assertTrue(path.exists())
 
     def test_ready_request_reserves_busy_before_monitor_can_unload(self):
         self.assertEqual(self.gw.acquire_model(self.gw.st.model_id, False), "")

@@ -94,6 +94,25 @@ class GuardReliability(fixtures.GatewayGuard):
         self.assertIsNone(self.gw.st.ram_checkpoint)
         self.assertEqual(list(self.ram.iterdir()), [])
 
+    def test_same_size_slot_corruption_never_reaches_restore_api(self):
+        self.yield_model()
+        slot = self.ram / 'active.bin'
+        original = slot.read_bytes()
+        slot.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        self.gw.st.model_id = self.gw.M['defaultModel']
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), 'restart_empty')
+        self.api.assert_not_called()
+
+    def test_truncated_slot_never_reaches_restore_api(self):
+        self.yield_model()
+        slot = self.ram / 'active.bin'
+        slot.write_bytes(slot.read_bytes()[:-1])
+        self.gw.st.model_id = self.gw.M['defaultModel']
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), 'restart_empty')
+        self.api.assert_not_called()
+
     def test_wrong_restore_token_count_requires_clean_process(self):
         self.yield_model()
         self.gw.st.model_id = self.gw.M['defaultModel']
@@ -323,6 +342,17 @@ class GuardReliability(fixtures.GatewayGuard):
             self.gw.G['slotSaveCheckpoints'] = 1
             enabled = self.gw.build_args(self.gw.M['models'][self.gw.M['defaultModel']], False)
         self.assertEqual(enabled[enabled.index('--slot-save-checkpoints') + 1], '1')
+
+    def test_poll_is_omitted_by_default_and_validated_when_enabled(self):
+        mc = dict(self.gw.M['models'][self.gw.M['defaultModel']])
+        self.assertNotIn('--poll', self.gw.build_args(mc, False))
+        for value in (0, 10, 25, 50):
+            with self.subTest(poll=value):
+                argv = self.gw.build_args({**mc, 'poll': value}, False)
+                self.assertEqual(argv[argv.index('--poll') + 1], str(value))
+        for value in (-1, 101):
+            with self.subTest(poll=value), self.assertRaises(ValueError):
+                self.gw.build_args({**mc, 'poll': value}, False)
 
     def test_chat_template_kwargs_reach_the_server_only_when_configured(self):
         mc = dict(self.gw.M['models'][self.gw.M['defaultModel']])

@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
 from response_recovery import forward as forward_recovery
 from checkpoint_access import private_checkpoint_handler
+from crash_report import write_crash_report
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
 from polite_model import DEFAULTS as POLITE_DEFAULTS, Controller as PoliteController
 from slot_gears import DEFAULTS as GEAR_DEFAULTS, Budget, Ratchet, RollbackFailed, apply_slots as apply_slot_transaction
@@ -145,6 +146,7 @@ class State:
         self.pressure_sustain = 0
         self.multimedia_lock = False
         self.crash_count = 0
+        self.crash_reported = set()
         self.last_error = ""
         self.last_request = time.time()
         self.busy = 0
@@ -198,6 +200,46 @@ def event(reason, detail, fallback=False):
             log(f"Guardian {reason}: {detail}")
     except OSError:
         pass  # A closed journal pipe must not kill the guardian thread.
+
+
+def crash_snapshot(operation):
+    model = st.model_id
+    mc = model_config(model, st.vision) if model in M["models"] else {}
+    try:
+        with open("/proc/pressure/memory") as stream:
+            pressure = next((line.strip() for line in stream if line.startswith("full ")), "")
+    except OSError:
+        pressure = "unavailable"
+    return {
+        "vram_free_mib": st.vram_free_mib,
+        "ram_available_gb": round(mem_available_gb(), 3),
+        "memory_psi_full": pressure,
+        "gateway_status": st.status,
+        "model": model or None,
+        "vision": st.vision,
+        "mode": "OFF" if st.override == "OFF" else "AUTO",
+        "game_mode": GAME.reason if GAME.enabled and GAME.active else None,
+        "slots": mc.get("moeCacheSlots"),
+        "busy_requests": st.busy,
+        "operation": operation,
+        "last_gateway_event": st.last_event,
+        "checkpoint_saved": st.ram_checkpoint is not None,
+    }
+
+
+def record_server_crash(proc, operation):
+    """Persist bounded diagnostics once per child PID; failure must not affect recovery."""
+    if proc is None or proc.pid in st.crash_reported:
+        return None
+    st.crash_reported.add(proc.pid)
+    if len(st.crash_reported) > 32:
+        st.crash_reported.pop()
+    try:
+        return write_crash_report(STATE_DIR, proc.args, proc.poll(), operation,
+                                  lambda: crash_snapshot(operation))
+    except Exception as error:  # noqa: BLE001 - crash reporting is best effort.
+        log(f"Crash report failed: {type(error).__name__}")
+        return None
 
 
 def reset_pressure():
@@ -262,6 +304,13 @@ def build_args(mc, vision):
          "--temp", str(mc["temperature"]), "--top-k", str(mc["topK"]), "--top-p", str(mc["topP"]),
          "--jinja", "--reasoning", mc["reasoning"],
          "--cache-ram", str(M["cacheRamMB"]), "--slot-save-path", str(server_slot_dir())]
+    # Optional CPU wait policy: absent preserves llama.cpp's default --poll 50.
+    poll = mc.get("poll")
+    if poll is not None:
+        poll = int(poll)
+        if not 0 <= poll <= 100:
+            raise ValueError("poll must be between 0 and 100")
+        a += ["--poll", str(poll)]
     # Sampling the model's authors recommend, beyond temperature/top-k/top-p (optional per model, e.g. Occamy: presence_penalty 1.5).
     for key, flag in (("minP", "--min-p"), ("presencePenalty", "--presence-penalty"), ("repeatPenalty", "--repeat-penalty")):
         if mc.get(key) is not None:
@@ -440,6 +489,30 @@ def validate_checkpoint(path, saved):
         raise ValueError("checkpoint hash, size or token count is invalid")
 
 
+def checkpoint_metadata_path(path):
+    path = Path(path)
+    return path.with_name(path.name + ".json")
+
+
+def validate_saved_slot(path, expected_model, expected_vision):
+    metadata = checkpoint_metadata_path(path)
+    if metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size > 16384:
+        raise ValueError("slot metadata is missing or unsafe")
+    saved = json.loads(metadata.read_text())
+    if (saved.get("model") != expected_model or saved.get("vision") is not expected_vision
+            or saved.get("signature") != checkpoint_signature(expected_model, expected_vision)):
+        raise ValueError("slot metadata does not match the requested model and mode")
+    validate_checkpoint(path, saved)
+    return saved
+
+
+def write_saved_slot_metadata(path, saved):
+    metadata = checkpoint_metadata_path(path)
+    temporary = metadata.with_name(metadata.name + ".tmp")
+    temporary.write_text(json.dumps(saved, separators=(",", ":")))
+    os.replace(temporary, metadata)
+
+
 def clear_ram_checkpoint():
     st.ram_checkpoint = None
     if RAM_SLOT_DIR is None:
@@ -488,6 +561,11 @@ def save_slot_locked(ram_only=False):
             if code != 200 or not res or res.get("n_saved") != n or not target.is_file():
                 raise RuntimeError(f"slot save failed: HTTP {code}")
             os.replace(target, SLOT_DIR / name)
+            saved = {"model": st.model_id, "vision": st.vision, "tokens": n,
+                     "bytes": (SLOT_DIR / name).stat().st_size,
+                     "sha256": file_hash(SLOT_DIR / name), "reload_min_gb": st.vram_resume_min_gb,
+                     "signature": checkpoint_signature(st.model_id, st.vision), "saved_at": time.time()}
+            write_saved_slot_metadata(SLOT_DIR / name, saved)
             log(f"Saved slot ({n} prompt tokens) atomically -> {name}")
             return True
         root = prepare_ram_slot_dir()
@@ -522,6 +600,11 @@ def save_slot_locked(ram_only=False):
             try:
                 shutil.copyfile(target, tmp)
                 os.replace(tmp, SLOT_DIR / name)
+                saved = {"model": st.model_id, "vision": st.vision, "tokens": n,
+                         "bytes": (SLOT_DIR / name).stat().st_size,
+                         "sha256": file_hash(SLOT_DIR / name), "reload_min_gb": st.vram_resume_min_gb,
+                         "signature": checkpoint_signature(st.model_id, st.vision), "saved_at": time.time()}
+                write_saved_slot_metadata(SLOT_DIR / name, saved)
             finally:
                 Path(tmp).unlink(missing_ok=True)
             target.unlink(missing_ok=True)
@@ -553,10 +636,13 @@ def restore_slot_locked(timeout=120):
             if checkpoint["signature"] != checkpoint_signature(st.model_id, st.vision):
                 raise ValueError("RAM session configuration changed")
             validate_checkpoint(target, checkpoint)
-        elif st.ram_backend:
-            if not ram_slot_space_ok(disk.stat().st_size):
-                raise RuntimeError("not enough RAM for disk checkpoint staging")
-            shutil.copyfile(disk, target)
+        else:
+            saved = validate_saved_slot(disk, st.model_id, st.vision)
+            if st.ram_backend:
+                if not ram_slot_space_ok(disk.stat().st_size):
+                    raise RuntimeError("not enough RAM for disk checkpoint staging")
+                shutil.copyfile(disk, target)
+                validate_checkpoint(target, saved)
         code, res = llama_call("POST", "/slots/0?action=restore", {"filename": target.name}, timeout=timeout)
         if (code != 200 or not res or res.get("n_restored", 0) <= 0
                 or (from_ram and res["n_restored"] != checkpoint["tokens"])):
@@ -571,7 +657,8 @@ def restore_slot_locked(timeout=120):
     except Exception as e:  # noqa: BLE001 - partially restored backends must be discarded safely.
         event("checkpoint_restore_failed", f"RAM/disk session unusable; prompt will be re-read: {e}", fallback=True)
         # A backend may have partially restored corrupt state. Force a fresh process before proxying.
-        clear_ram_checkpoint()
+        if from_ram:
+            clear_ram_checkpoint()
         st.skip_disk_restore = True
         return "restart_empty"
     finally:
@@ -697,6 +784,13 @@ def backend_port_in_use():
 def start_llama(model_id, vision, fresh=False, health_timeout=None, restore_timeout=120):
     load_deadline = None if health_timeout is None else time.monotonic() + health_timeout
     with st.lock:
+        if st.proc and st.proc.poll() is not None and not st.expected_exit:
+            failed = st.proc
+            record_server_crash(failed, "request arrived after unexpected server exit")
+            st.crash_count += 1
+            st.last_error = f"llama-server crashed (exit {failed.returncode})"
+            st.proc = None
+            st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
         if (st.proc and st.proc.poll() is None and st.status == "READY"
                 and st.model_id == model_id and st.vision == vision):
             return ""
@@ -744,8 +838,10 @@ def start_llama(model_id, vision, fresh=False, health_timeout=None, restore_time
         while time.time() < deadline:
             time.sleep(1)
             if st.proc.poll() is not None:
+                failed = st.proc
+                record_server_crash(failed, "loading llama-server")
                 st.crash_count += 1
-                st.last_error = f"llama-server exited during load (code {st.proc.returncode})"
+                st.last_error = f"llama-server exited during load (code {failed.returncode})"
                 st.proc = None
                 st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
                 log(st.last_error)
@@ -788,8 +884,10 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
             st.proc_vram_pid = st.proc.pid if st.proc else None
             st.proc_vram_sample_at = st.monitor_last_tick
         if st.proc and st.proc.poll() is not None and not st.expected_exit:
+            failed = st.proc
+            record_server_crash(failed, "monitor observed unexpected server exit")
             st.crash_count += 1
-            st.last_error = f"llama-server crashed (exit {st.proc.returncode})"
+            st.last_error = f"llama-server crashed (exit {failed.returncode})"
             event("server_crashed", st.last_error, fallback=True)
             st.proc = None
             st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
@@ -1559,6 +1657,7 @@ class Handler(BaseHTTPRequestHandler):
                 if st.proc is not None and st.proc is not proc:
                     return False
                 if st.proc is proc:
+                    record_server_crash(proc, "request interrupted before first client byte")
                     st.crash_count += 1
                 if st.crash_count >= G["crashRestartMaxAttempts"]:
                     st.status = "ERROR"

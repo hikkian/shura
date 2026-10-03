@@ -249,3 +249,14 @@ and never invokes recovery; its in-stream error is likewise non-retryable. GPU/s
 RAM overhead and final9/9 remain hardware acceptance tasks. If the gateway itself is killed or the
 client connection is already lost, it cannot deliver a terminal error: that transport failure is outside
 the tested no-replay guarantee.
+
+Unexpected llama-server exits write a bounded `~/.local/state/ai-gateway/crashes/crash-*.json`
+record from the gateway monitor. It includes the exit signal/code, recent gateway journal lines,
+state and sanitized launch arguments; records are capped at 64 KiB and the ring retains ten. Journal
+lookup failure is recorded without stopping the gateway. Server stdout/stderr stays attached to the
+unit journal; it is not piped through the gateway, avoiding SIGPIPE if the gateway exits.
+
+Gateway-owned saved slots have an atomic JSON sidecar with byte count, SHA-256, model/mode signature
+and token count. Both disk and RAM checkpoints are checked before the native restore endpoint is
+called. Legacy disk slots without that sidecar are refused and the next prompt is read normally; a
+truncated, changed or mismatched checkpoint never reaches llama.cpp.
