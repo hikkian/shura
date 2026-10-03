@@ -219,7 +219,12 @@ model configuration files. `apply_slots(n)` is separate from the policy, allowin
 The restart mechanism saves and validates A2 before stopping, retains one hardlink in tmpfs throughout
 the transaction, and accepts the new gear only after checkpoint restoration. Failure restores the
 old gear and snapshot. A failed rollback disables gears, blocks admission and retains the recovery
-file instead of discarding it. Changes other than slot count invalidate the transaction. Vision
+file instead of discarding it. A private tmpfs journal rolls an interrupted gateway transaction
+back to the original gear and verified A2 file on startup; a changed model/binary or corrupt snapshot
+blocks admission for manual inspection. When gears are disabled the configured static baseline is
+used. Each restart/rollback has its own 20-second deadline (including stop, post-stop telemetry,
+spawn/health and restore); a failed attempt plus rollback can take twice that, rather than a
+180-second health wait per attempt. Changes other than slot count invalidate the transaction. Vision
 profiles are excluded pending their own quality gates. Status reports each model's slots and reason.
 These features have offline fault coverage, **not GPU or quality acceptance**. Keep them off until
 both model benchmarks and the slot-count PPL/KL gates pass. No footer integration is claimed here.

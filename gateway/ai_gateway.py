@@ -380,6 +380,12 @@ def prepare_ram_slot_dir():
         st.backend_blocked = str(e)
         raise RuntimeError(str(e)) from e
     st.backend_blocked = ""
+    try:
+        recover_gear_transaction(root)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as error:
+        st.backend_blocked = f"Gear recovery refused: {error}"
+        RAM_SLOT_DIR = None
+        raise RuntimeError(st.backend_blocked) from error
     metadata = root / "checkpoint.json"
     if metadata.exists():
         try:
@@ -534,7 +540,7 @@ def save_slot_locked(ram_only=False):
         return False
 
 
-def restore_slot_locked():
+def restore_slot_locked(timeout=120):
     checkpoint = st.ram_checkpoint
     from_ram = bool(checkpoint and checkpoint["model"] == st.model_id and checkpoint["vision"] == st.vision)
     if st.skip_disk_restore and not from_ram:
@@ -554,7 +560,7 @@ def restore_slot_locked():
             if not ram_slot_space_ok(disk.stat().st_size):
                 raise RuntimeError("not enough RAM for disk checkpoint staging")
             shutil.copyfile(disk, target)
-        code, res = llama_call("POST", "/slots/0?action=restore", {"filename": target.name}, timeout=120)
+        code, res = llama_call("POST", "/slots/0?action=restore", {"filename": target.name}, timeout=timeout)
         if (code != 200 or not res or res.get("n_restored", 0) <= 0
                 or (from_ram and res["n_restored"] != checkpoint["tokens"])):
             raise RuntimeError(f"slot restore failed or token count differs: HTTP {code}")
@@ -691,7 +697,8 @@ def backend_port_in_use():
         return False
 
 
-def start_llama(model_id, vision, fresh=False):
+def start_llama(model_id, vision, fresh=False, health_timeout=None, restore_timeout=120):
+    load_deadline = None if health_timeout is None else time.monotonic() + health_timeout
     with st.lock:
         if (st.proc and st.proc.poll() is None and st.status == "READY"
                 and st.model_id == model_id and st.vision == vision):
@@ -735,7 +742,7 @@ def start_llama(model_id, vision, fresh=False):
             stop_llama_locked("spawn or lease failed", save=False)
             st.last_error = f"Could not spawn llama-server: {e}"
             return st.last_error
-        deadline = time.time() + G["healthCheckTimeoutSeconds"]
+        deadline = time.time() + (G["healthCheckTimeoutSeconds"] if load_deadline is None else max(0, load_deadline - time.monotonic()))
         while time.time() < deadline:
             time.sleep(1)
             if st.proc.poll() is not None:
@@ -750,13 +757,17 @@ def start_llama(model_id, vision, fresh=False):
                 if code == 200:
                     st.status, st.crash_count, st.last_error = "READY", 0, ""
                     log(f"llama-server READY (pid {st.proc.pid}, vision={vision})")
-                    error = "" if fresh else restore_slot_locked()
+                    if load_deadline is not None and time.monotonic() >= load_deadline:
+                        st.last_error = "Gear restart deadline exceeded before restore"
+                        return st.last_error
+                    error = "" if fresh else (restore_slot_locked() if load_deadline is None else
+                            restore_slot_locked(timeout=min(restore_timeout, max(0.1, load_deadline - time.monotonic()))))
                     if error == "restart_empty":
                         if not stop_llama_locked("checkpoint restore failed; starting empty", save=False):
                             return st.last_error
                         st.skip_disk_restore = False
                         st.vram_resume_min_gb = 0.0
-                        return start_llama(model_id, vision, fresh=True)
+                        return start_llama(model_id, vision, fresh=True, health_timeout=None if load_deadline is None else max(0.1, load_deadline-time.monotonic()), restore_timeout=restore_timeout)
                     if not error:
                         st.vram_resume_min_gb = 0.0
                     return error
@@ -922,6 +933,7 @@ class GearBackend:
             return None
         saved = st.ram_checkpoint
         if saved is None:
+            self.journal({"empty": True})
             return {"empty": True}
         validate_checkpoint(saved["path"], saved)
         if saved["signature"] != checkpoint_signature(self.model, self.vision):
@@ -930,10 +942,21 @@ class GearBackend:
         backup = prepare_ram_slot_dir() / "gear-rollback.bin"
         if backup.exists() or backup.is_symlink():
             raise RuntimeError("unfinished gear transaction; refusing another restart")
+        self.journal(saved)
         os.link(saved["path"], backup)
         return {**saved, "path": backup}
 
+    def journal(self, snapshot):
+        root = prepare_ram_slot_dir()
+        record = {"version": 1, "model": self.model, "slots": self.original_slots,
+                  "signature": self.original_signature,
+                  "snapshot": {key: value for key, value in snapshot.items() if key != "path"}}
+        temporary = root / "gear-transaction.json.tmp"
+        temporary.write_text(json.dumps(record))
+        os.replace(temporary, root / "gear-transaction.json")
+
     def restart(self, slots, snapshot):
+        deadline = time.monotonic() + G["slotGearRestartSeconds"]
         # Recompute the original signature to prove that only slot count changed.
         present = RUNTIME_SLOTS.get(self.model)
         try:
@@ -963,12 +986,19 @@ class GearBackend:
             os.replace(temporary, root / "checkpoint.json")
         before = st.event_counters.get("checkpoint_restored", 0)
         st.status = "UNLOADED"
-        if not wait_fresh_vram(stopped_at):
+        if not wait_fresh_vram(stopped_at, timeout=min(5, max(0, deadline-time.monotonic()))):
             return False
-        error = start_llama(self.model, self.vision, fresh=snapshot.get("empty", False))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        error = start_llama(self.model, self.vision, fresh=snapshot.get("empty", False),
+                            health_timeout=remaining, restore_timeout=min(5, remaining))
         return not error and (snapshot.get("empty") or st.event_counters.get("checkpoint_restored", 0) > before)
 
     def release(self, snapshot):
+        root = prepare_ram_slot_dir()
+        # Mark the completed transaction first; an orphaned backup alone never authorizes recovery.
+        (root / "gear-transaction.json").unlink(missing_ok=True)
         if not snapshot.get("empty"):
             snapshot["path"].unlink(missing_ok=True)
 
@@ -982,11 +1012,67 @@ def apply_slots(n):
         return apply_slot_transaction(n, GearBackend())
 
 
+def recover_gear_transaction(root):
+    journal = root / "gear-transaction.json"
+    if not journal.exists():
+        return
+    if journal.is_symlink() or journal.stat().st_size > 16384:
+        raise ValueError("unsafe gear journal")
+    record = json.loads(journal.read_text())
+    mid, slots = record["model"], record["slots"]
+    if (record.get("version") != 1 or mid not in M["models"] or type(slots) is not int
+            or not 16 <= slots <= M["models"][mid]["moeCacheSlots"]):
+        raise ValueError("invalid gear journal model/version/slots")
+    prior = RUNTIME_SLOTS.get(mid)
+    RUNTIME_SLOTS[mid] = slots
+    try:
+        if checkpoint_signature(mid, False) != record["signature"]:
+            raise ValueError("gear journal binary/model/config changed")
+        saved = record["snapshot"]
+        if not isinstance(saved, dict):
+            raise ValueError("invalid gear snapshot")
+        if saved.get("empty") is not True:
+            if saved["model"] != mid or saved["vision"] is not False or saved["signature"] != record["signature"]:
+                raise ValueError("gear snapshot ownership mismatch")
+            candidate = root / "gear-rollback.bin"
+            if not candidate.exists():
+                candidate = root / "active.bin"  # journal written before the hardlink / shutdown
+            validate_checkpoint(candidate, saved)
+            active = root / "active.bin"
+            if candidate != active:
+                active.unlink(missing_ok=True)
+                os.link(candidate, active)
+            if not G["slotGears"]:
+                RUNTIME_SLOTS.pop(mid, None)  # disabled means the configured static baseline
+            saved = {**saved, "signature": checkpoint_signature(mid, False)}
+            temporary = root / "checkpoint.json.tmp"
+            temporary.write_text(json.dumps(saved))
+            os.replace(temporary, root / "checkpoint.json")
+        else:
+            st.skip_disk_restore = True
+            if not G["slotGears"]:
+                RUNTIME_SLOTS.pop(mid, None)
+        journal.unlink()
+        (root / "gear-rollback.bin").unlink(missing_ok=True)
+        event("gear_recovered", f"Incomplete gear transaction rolled back for {mid}; A2 available")
+    except BaseException:
+        if prior is None:
+            RUNTIME_SLOTS.pop(mid, None)
+        else:
+            RUNTIME_SLOTS[mid] = prior
+        raise
+
+
 def wait_fresh_vram(after, timeout=5):
     """A gear restart needs a post-stop sample, not a potentially double-counted memory credit."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if st.vram_sample_at is not None and st.vram_sample_at > after and st.vram_free_mib is not None:
+            if st.monitor_error:
+                if st.guard_fallback == st.monitor_error:
+                    st.guard_fallback = ""
+                st.monitor_error = ""
+                event("telemetry_recovered", "Fresh post-stop VRAM sample available")
             return True
         time.sleep(0.05)
     event("gear_telemetry_timeout", "No fresh post-stop VRAM sample; refusing load", fallback=True)

@@ -3,7 +3,7 @@ import math
 
 DEFAULTS = {"slotGears": False, "slotGearLevels": [26, 24, 20, 16], "slotGearCorridorMiB": 250,
             "slotGearDownSeconds": 60, "slotGearUpSeconds": 1800, "slotGearMiBPerSlot": 36,
-            "slotGearChangesPerHour": 2, "slotGearChangesPerDay": 6}
+            "slotGearRestartSeconds": 20, "slotGearChangesPerHour": 2, "slotGearChangesPerDay": 6}
 
 
 class Budget:

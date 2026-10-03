@@ -67,5 +67,6 @@
   "slotGearDownSeconds": 60,
   "slotGearUpSeconds": 1800,
   "slotGearChangesPerHour": 2,
-  "slotGearChangesPerDay": 6
+  "slotGearChangesPerDay": 6,
+  "slotGearRestartSeconds": 20
 }

@@ -111,7 +111,7 @@ class GatewayCpuGears(unittest.TestCase):
         model = gw.st.model_id
         original = gw.model_config(model, False)["moeCacheSlots"]
         seen = []
-        def start(mid, vision, fresh=False, reclaim=(0, 0)):
+        def start(mid, vision, fresh=False, health_timeout=None, restore_timeout=120):
             seen.append(gw.model_config(mid, vision)["moeCacheSlots"])
             gw.st.model_id, gw.st.vision = mid, vision
             if len(seen) == 1:
@@ -159,3 +159,68 @@ class GatewayCpuGears(unittest.TestCase):
         self.assertEqual(gw.st.proc_vram_pid, self.proc.pid)
         self.assertEqual(gw.st.proc_vram_mib, 10600)
         self.assertLess(time.time() - gw.st.vram_sample_at, 1)
+
+    def test_gateway_restart_rolls_back_pending_gear_and_rebinds_a2(self):
+        gw = self.gw
+        gw.G.update(slotSaveCheckpoints=1, slotGears=True)
+        model = gw.st.model_id
+        with patch.object(gw, "RUNTIME_SLOTS", {}):
+            backend = gw.GearBackend()
+            original = backend.current_slots()
+            snapshot = backend.save()
+            gw.RUNTIME_SLOTS[model] = 20
+            gw.clear_ram_checkpoint()  # crash after new restore consumed active.bin
+            gw.RAM_SLOT_DIR = self.ram
+            gw.recover_gear_transaction(self.ram)
+            self.assertEqual(gw.model_config(model, False)["moeCacheSlots"], original)
+            self.assertEqual((self.ram / "active.bin").read_bytes(), b"test checkpoint")
+            import json
+            metadata = json.loads((self.ram / "checkpoint.json").read_text())
+            self.assertEqual(metadata["signature"], gw.checkpoint_signature(model, False))
+            self.assertFalse((self.ram / "gear-transaction.json").exists())
+            self.assertFalse(snapshot["path"].exists())
+
+    def test_recovery_accepts_crash_before_backup_hardlink(self):
+        gw = self.gw
+        gw.G.update(slotSaveCheckpoints=1, slotGears=True)
+        with patch.object(gw, "RUNTIME_SLOTS", {}):
+            backend = gw.GearBackend()
+            snapshot = backend.save()
+            snapshot["path"].unlink()
+            gw.recover_gear_transaction(self.ram)
+            self.assertEqual((self.ram / "active.bin").read_bytes(), b"test checkpoint")
+
+    def test_recovery_rejects_corrupt_snapshot_without_deleting_backup(self):
+        gw = self.gw
+        gw.G.update(slotSaveCheckpoints=1, slotGears=True)
+        with patch.object(gw, "RUNTIME_SLOTS", {}):
+            backend = gw.GearBackend()
+            snapshot = backend.save()
+            snapshot["path"].write_bytes(b"corrupt")
+            with self.assertRaises(ValueError):
+                gw.recover_gear_transaction(self.ram)
+            self.assertTrue(snapshot["path"].exists())
+            self.assertTrue((self.ram / "gear-transaction.json").exists())
+
+    def test_recovery_rejects_changed_binary_before_restoring_context(self):
+        gw = self.gw
+        gw.G.update(slotSaveCheckpoints=1, slotGears=True)
+        with patch.object(gw, "RUNTIME_SLOTS", {}):
+            backend = gw.GearBackend()
+            snapshot = backend.save()
+            with patch.object(gw, "checkpoint_signature", return_value="different"):
+                with self.assertRaisesRegex(ValueError, "binary/model/config changed"):
+                    gw.recover_gear_transaction(self.ram)
+            self.assertTrue(snapshot["path"].exists())
+
+    def test_gear_restart_has_its_own_deadline_and_restore_timeout(self):
+        gw = self.gw
+        gw.G.update(slotSaveCheckpoints=1, slotGearRestartSeconds=20)
+        with patch.object(gw, "RUNTIME_SLOTS", {}):
+            backend = gw.GearBackend()
+            snapshot = backend.save()
+            with patch.object(gw, "start_llama", return_value="injected") as start:
+                self.assertFalse(backend.restart(20, snapshot))
+            self.assertLessEqual(start.call_args.kwargs["health_timeout"], 20)
+            self.assertLessEqual(start.call_args.kwargs["restore_timeout"], 5)
+            backend.release(snapshot)
