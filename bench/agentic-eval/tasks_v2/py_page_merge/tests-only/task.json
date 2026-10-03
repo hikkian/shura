@@ -1,0 +1,18 @@
+{
+  "id": "py_page_merge-tests-only",
+  "family": "py_page_merge",
+  "kind": "tests-only",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "merge_pages(pages, key) flattens page iterables, keeps the first record for each key value, then returns records ordered by key(value); input pages and records are not mutated. Missing keys raise KeyError. Equal sort keys retain first-seen order.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "hidden_tests/grade.py"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

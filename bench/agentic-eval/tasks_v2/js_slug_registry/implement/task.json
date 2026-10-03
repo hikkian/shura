@@ -1,0 +1,18 @@
+{
+  "id": "js_slug_registry-implement",
+  "family": "js_slug_registry",
+  "kind": "implement",
+  "lang": "javascript",
+  "difficulty": "easy",
+  "prompt": "Export slugify(text) and uniqueSlug(text, used). Normalize Unicode with NFKD, remove combining marks, lowercase, collapse non-alphanumeric runs to one dash, trim dashes; an empty result is 'item'. uniqueSlug returns the base if free, else the smallest '-2', '-3', ... suffix absent from the supplied Set.\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

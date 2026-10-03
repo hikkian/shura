@@ -1,0 +1,22 @@
+{
+  "id": "js_invoice_batch-bugfix",
+  "family": "js_invoice_batch",
+  "kind": "bugfix",
+  "lang": "javascript",
+  "difficulty": "easy",
+  "prompt": "Export invoice(lines,taxBps=0), summing integer cents from positive integer quantity and nonnegative integer unitCents. Tax is round-half-up of subtotal*taxBps/10000. Reject booleans, invalid rows/rates with RangeError.\n\nThe existing module has a user-visible regression. Reproduce it with `node --test public-repro.test.js`, fix the implementation (leave the reproduction untouched), then verify the public contract.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": [
+    "node",
+    "--test",
+    "public-repro.test.js"
+  ],
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

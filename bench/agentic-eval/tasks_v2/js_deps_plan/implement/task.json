@@ -1,0 +1,18 @@
+{
+  "id": "js_deps_plan-implement",
+  "family": "js_deps_plan",
+  "kind": "implement",
+  "lang": "javascript",
+  "difficulty": "hard",
+  "prompt": "Export plan(graph), where graph maps nodes to dependencies. Return a deterministic topological order (alphabetically smallest ready node first), include dependency-only nodes, ignore duplicate edges, and throw an Error with a cycle array for a cycle.\n\nThis is a long-horizon project (target 24 deliberate work steps). Work through the contract, boundaries, integration points, regression cases, and final verification in small checkpoints. The deliverable spans a public facade, an implementation module, and project documentation; keep them consistent.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 24
+}

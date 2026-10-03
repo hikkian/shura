@@ -1,0 +1,17 @@
+{
+  "id": "js_slug_registry-tests-only",
+  "family": "js_slug_registry",
+  "kind": "tests-only",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export slugify(text) and uniqueSlug(text, used). Normalize Unicode with NFKD, remove combining marks, lowercase, collapse non-alphanumeric runs to one dash, trim dashes; an empty result is 'item'. uniqueSlug returns the base if free, else the smallest '-2', '-3', ... suffix absent from the supplied Set.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "hidden_tests/grade.cjs"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

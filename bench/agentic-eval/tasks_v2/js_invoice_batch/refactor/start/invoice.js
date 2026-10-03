@@ -1,0 +1,2 @@
+function invoice(lines,taxBps=0){if(!Number.isSafeInteger(taxBps)||taxBps<0)throw new RangeError('rate');let subtotal=0;for(const r of lines){if(!Number.isSafeInteger(r.quantity)||r.quantity<=0||!Number.isSafeInteger(r.unitCents)||r.unitCents<0)throw new RangeError('line');subtotal+=r.quantity*r.unitCents;}const tax=Math.floor((subtotal*taxBps+5000)/10000);return{subtotal,tax,total:subtotal+tax};}
+module.exports={invoice};

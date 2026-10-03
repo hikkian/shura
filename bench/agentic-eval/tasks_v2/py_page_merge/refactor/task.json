@@ -1,0 +1,27 @@
+{
+  "id": "py_page_merge-refactor",
+  "family": "py_page_merge",
+  "kind": "refactor",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "merge_pages(pages, key) flattens page iterables, keeps the first record for each key value, then returns records ordered by key(value); input pages and records are not mutated. Missing keys raise KeyError. Equal sort keys retain first-seen order.\n\nRefactor the working module into a small package named `pages` with a stable public facade and a separate core implementation. Preserve every existing behavior and error contract; do not change the API. Keep the change reviewable across 3 files.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "hidden_tests",
+    "-t",
+    ".",
+    "-q"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [
+    "pages.py"
+  ],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 0
+}

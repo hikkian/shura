@@ -1,0 +1,18 @@
+{
+  "id": "py_event_journal-tests-only",
+  "family": "py_event_journal",
+  "kind": "tests-only",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "replay(events, initial=None) processes events with keys seq, op, key, value. Ignore duplicate sequence numbers after the first; require strictly increasing accepted seq values or raise ValueError. Operations set, delete, and add (integer increment) update a copied initial mapping. Unknown op raises ValueError; failed input does not mutate initial.\n\nThis is a long-horizon project (target 32 deliberate work steps). Work through the contract, boundaries, integration points, regression cases, and final verification in small checkpoints. The deliverable spans a public facade, an implementation module, and project documentation; keep them consistent.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "hidden_tests/grade.py"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 32
+}

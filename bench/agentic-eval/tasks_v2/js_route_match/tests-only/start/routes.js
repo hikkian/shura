@@ -1,0 +1,2 @@
+function matchRoute(pattern,path){ const a=pattern==='/'?[]:pattern.replace(/^\/|\/$/g,'').split('/'), b=path==='/'?[]:path.replace(/^\/|\/$/g,'').split('/'); const names=a.filter(x=>x.startsWith(':')).map(x=>x.slice(1)); if(names.some(x=>!x)||new Set(names).size!==names.length) throw new RangeError('invalid parameter'); if(a.length!==b.length)return null; const out={}; for(let i=0;i<a.length;i++){let v;try{v=decodeURIComponent(b[i]);}catch{return null;} if(a[i].startsWith(':'))out[a[i].slice(1)]=v; else if(a[i]!==b[i])return null;} return out; }
+module.exports={matchRoute};

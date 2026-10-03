@@ -1,0 +1,32 @@
+{
+  "id": "py_retry_schedule-bugfix",
+  "family": "py_retry_schedule",
+  "kind": "bugfix",
+  "lang": "python",
+  "difficulty": "easy",
+  "prompt": "delay_for(attempt, base, cap, jitter=0, sample=0.5) returns capped exponential delay: base*2**(attempt-1), capped at cap, then multiply by (1-jitter + 2*jitter*sample). attempt is a positive int (bool invalid); base/cap nonnegative finite numbers, cap>=base; jitter and sample lie in [0,1]. Invalid values raise ValueError.\n\nThe existing module has a user-visible regression. Reproduce it with `python3 -B -m unittest -q public_repro`, fix the implementation (leave the reproduction untouched), then verify the public contract.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "hidden_tests",
+    "-t",
+    ".",
+    "-q"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "-q",
+    "public_repro"
+  ],
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

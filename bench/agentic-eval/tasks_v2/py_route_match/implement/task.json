@@ -1,0 +1,25 @@
+{
+  "id": "py_route_match-implement",
+  "family": "py_route_match",
+  "kind": "implement",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "match_route(pattern, path) returns a dict of decoded path parameters for literal segments and ':name' segments, or None. A match requires the same number of slash-separated segments. Percent decoding is strict UTF-8; malformed escapes return None. Duplicate parameter names or empty names are invalid patterns and raise ValueError.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "hidden_tests",
+    "-t",
+    ".",
+    "-q"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 0
+}

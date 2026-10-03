@@ -1,0 +1,2 @@
+function replay(events,initial={}){const state=structuredClone(initial),seen=new Set();let last=null;for(const e of events){if(seen.has(e.seq))continue;if(last!==null&&e.seq<=last)throw new RangeError('sequence');seen.add(e.seq);last=e.seq;if(e.op==='set')state[e.key]=e.value;else if(e.op==='delete')delete state[e.key];else if(e.op==='add')state[e.key]=(state[e.key]??0)+e.value;else throw new RangeError('operation');}return state;}
+module.exports={replay};

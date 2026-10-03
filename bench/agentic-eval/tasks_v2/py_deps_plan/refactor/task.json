@@ -1,0 +1,27 @@
+{
+  "id": "py_deps_plan-refactor",
+  "family": "py_deps_plan",
+  "kind": "refactor",
+  "lang": "python",
+  "difficulty": "hard",
+  "prompt": "plan(graph) returns a deterministic topological order for node -> dependencies, including dependency-only nodes; among ready nodes choose alphabetically. Duplicate edges are ignored. A cycle raises ValueError with a .cycle list that starts and ends at the repeated node.\n\nThis is a long-horizon project (target 24 deliberate work steps). Work through the contract, boundaries, integration points, regression cases, and final verification in small checkpoints. The deliverable spans a public facade, an implementation module, and project documentation; keep them consistent.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nRefactor the working module into a small package named `deps` with a stable public facade and a separate core implementation. Preserve every existing behavior and error contract; do not change the API. Keep the change reviewable across 3 files.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "hidden_tests",
+    "-t",
+    ".",
+    "-q"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [
+    "deps.py"
+  ],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 24
+}

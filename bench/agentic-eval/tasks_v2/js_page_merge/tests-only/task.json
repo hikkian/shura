@@ -1,0 +1,17 @@
+{
+  "id": "js_page_merge-tests-only",
+  "family": "js_page_merge",
+  "kind": "tests-only",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export mergePages(pages, key): flatten arrays, keep the first object for each key value, and return objects ordered by key value. Inputs are not mutated; missing properties throw. Equal sort keys preserve first-seen order.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "hidden_tests/grade.cjs"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

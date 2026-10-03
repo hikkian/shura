@@ -1,0 +1,2 @@
+function deepMerge(base,overlay){if(!base||!overlay||Array.isArray(base)||Array.isArray(overlay)||typeof base!=='object'||typeof overlay!=='object')throw new TypeError('roots must be objects');const out=base;for(const [k,v] of Object.entries(overlay)){const plain=x=>x&&typeof x==='object'&&!Array.isArray(x);out[k]=plain(out[k])&&plain(v)?deepMerge(out[k],v):structuredClone(v);}return out;}
+module.exports={deepMerge};

@@ -1,0 +1,18 @@
+{
+  "id": "py_retry_schedule-tests-only",
+  "family": "py_retry_schedule",
+  "kind": "tests-only",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "delay_for(attempt, base, cap, jitter=0, sample=0.5) returns capped exponential delay: base*2**(attempt-1), capped at cap, then multiply by (1-jitter + 2*jitter*sample). attempt is a positive int (bool invalid); base/cap nonnegative finite numbers, cap>=base; jitter and sample lie in [0,1]. Invalid values raise ValueError.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "hidden_tests/grade.py"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

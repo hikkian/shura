@@ -1,0 +1,17 @@
+{
+  "id": "js_route_match-tests-only",
+  "family": "js_route_match",
+  "kind": "tests-only",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export matchRoute(pattern, path). It returns decoded ':name' parameters, or null if literal/segment count differs. Decode percent escapes as strict UTF-8; malformed escapes return null. Duplicate or empty parameter names throw RangeError.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "hidden_tests/grade.cjs"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 0
+}

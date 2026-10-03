@@ -1,0 +1,18 @@
+{
+  "id": "py_invoice_batch-tests-only",
+  "family": "py_invoice_batch",
+  "kind": "tests-only",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "invoice(lines, tax_bps=0) accepts rows with quantity (positive int) and unit_cents (nonnegative int), returns {subtotal,tax,total}. Sum exact integer cents. Tax is round-half-up of subtotal*tax_bps/10000. Reject booleans, invalid rates, and malformed rows with ValueError.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "hidden_tests/grade.py"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

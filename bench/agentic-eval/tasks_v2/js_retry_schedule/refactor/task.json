@@ -1,0 +1,20 @@
+{
+  "id": "js_retry_schedule-refactor",
+  "family": "js_retry_schedule",
+  "kind": "refactor",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export delayFor(attempt, base, cap, jitter=0, sample=.5). Return capped exponential delay times (1-jitter+2*jitter*sample). Validate positive integer attempt, finite nonnegative base/cap with cap>=base, and jitter/sample in [0,1], otherwise throw RangeError.\n\nRefactor the working module into a small package named `retrying` with a stable public facade and a separate core implementation. Preserve every existing behavior and error contract; do not change the API. Keep the change reviewable across 3 files.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [
+    "retrying.js"
+  ],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 0
+}

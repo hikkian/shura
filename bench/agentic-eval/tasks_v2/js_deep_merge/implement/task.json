@@ -1,0 +1,18 @@
+{
+  "id": "js_deep_merge-implement",
+  "family": "js_deep_merge",
+  "kind": "implement",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export deepMerge(base, overlay) returning a fresh object. Recursively merge only plain object pairs; arrays, null, and scalars replace. Do not mutate either input; non-object roots throw TypeError.\n\nThis is a long-horizon project (target 28 deliberate work steps). Work through the contract, boundaries, integration points, regression cases, and final verification in small checkpoints. The deliverable spans a public facade, an implementation module, and project documentation; keep them consistent.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 28
+}

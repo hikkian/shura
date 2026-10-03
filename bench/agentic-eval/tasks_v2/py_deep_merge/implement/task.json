@@ -1,0 +1,25 @@
+{
+  "id": "py_deep_merge-implement",
+  "family": "py_deep_merge",
+  "kind": "implement",
+  "lang": "python",
+  "difficulty": "medium",
+  "prompt": "deep_merge(base, overlay) returns a fresh dict: recursively merge dict/dict, replace lists and scalars, and treat None as an explicit value. Neither input is mutated. If either root is not a dict, raise TypeError.\n\nThis is a long-horizon project (target 28 deliberate work steps). Work through the contract, boundaries, integration points, regression cases, and final verification in small checkpoints. The deliverable spans a public facade, an implementation module, and project documentation; keep them consistent.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "hidden_tests",
+    "-t",
+    ".",
+    "-q"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 28
+}

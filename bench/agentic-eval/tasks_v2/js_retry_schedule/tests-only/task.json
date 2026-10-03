@@ -1,0 +1,17 @@
+{
+  "id": "js_retry_schedule-tests-only",
+  "family": "js_retry_schedule",
+  "kind": "tests-only",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export delayFor(attempt, base, cap, jitter=0, sample=.5). Return capped exponential delay times (1-jitter+2*jitter*sample). Validate positive integer attempt, finite nonnegative base/cap with cap>=base, and jitter/sample in [0,1], otherwise throw RangeError.\n\nAdd focused regression tests under the existing test folder. Do not edit production files. Cover the contract boundary shown by the API and ensure the test suite would catch a realistic regression.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "hidden_tests/grade.cjs"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

@@ -1,0 +1,25 @@
+{
+  "id": "py_slug_registry-implement",
+  "family": "py_slug_registry",
+  "kind": "implement",
+  "lang": "python",
+  "difficulty": "easy",
+  "prompt": "slugify(text) and unique_slug(text, used). Normalize Unicode to ASCII, lowercase, collapse non-alphanumeric runs to one dash, trim dashes; an empty slug is 'item'. unique_slug returns the base if free, else the smallest '-2', '-3', ... suffix not in used (case-sensitive set).\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "python3",
+    "-B",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "hidden_tests",
+    "-t",
+    ".",
+    "-q"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "1-2",
+  "long_horizon_steps": 0
+}

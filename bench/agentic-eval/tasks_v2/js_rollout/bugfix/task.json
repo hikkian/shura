@@ -1,0 +1,22 @@
+{
+  "id": "js_rollout-bugfix",
+  "family": "js_rollout",
+  "kind": "bugfix",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export enabled(flag,userId,percentage,salt='') with the same contract: SHA-256 of UTF-8 salt + NUL + flag + NUL + userId, first 8 bytes big-endian modulo 10000, enabled iff bucket < percentage*100. Use Node's built-in crypto only. Validate required strings and percentage [0,100], throwing RangeError.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nThe existing module has a user-visible regression. Reproduce it with `node --test public-repro.test.js`, fix the implementation (leave the reproduction untouched), then verify the public contract.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": [
+    "node",
+    "--test",
+    "public-repro.test.js"
+  ],
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 0
+}

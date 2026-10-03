@@ -1,0 +1,20 @@
+{
+  "id": "js_event_journal-refactor",
+  "family": "js_event_journal",
+  "kind": "refactor",
+  "lang": "javascript",
+  "difficulty": "hard",
+  "prompt": "Export replay(events, initial={}). Each event has seq/op/key/value. Ignore duplicate sequence numbers after the first; accepted sequence values must increase. Support set/delete/add integer operations, copy initial state, throw RangeError for invalid sequences or operations, and leave input unchanged.\n\nThis is a long-horizon project (target 32 deliberate work steps). Work through the contract, boundaries, integration points, regression cases, and final verification in small checkpoints. The deliverable spans a public facade, an implementation module, and project documentation; keep them consistent.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nRefactor the working module into a small package named `journal` with a stable public facade and a separate core implementation. Preserve every existing behavior and error contract; do not change the API. Keep the change reviewable across 3 files.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [
+    "journal.js"
+  ],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 32
+}

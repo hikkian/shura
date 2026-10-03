@@ -1,0 +1,18 @@
+{
+  "id": "js_route_match-implement",
+  "family": "js_route_match",
+  "kind": "implement",
+  "lang": "javascript",
+  "difficulty": "medium",
+  "prompt": "Export matchRoute(pattern, path). It returns decoded ':name' parameters, or null if literal/segment count differs. Decode percent escapes as strict UTF-8; malformed escapes return null. Duplicate or empty parameter names throw RangeError.\n\nThis change crosses multiple files (3-6): keep the public facade, implementation, and supporting project notes aligned.\n\nImplement the requested behavior in the existing module.\n\nUse only the standard library. Keep the public API and specified error behavior. Do not add dependencies or access the network.",
+  "test_cmd": [
+    "node",
+    "--test",
+    "hidden_tests/contract.test.js"
+  ],
+  "timeout_s": 900,
+  "solution_remove": [],
+  "visible_cmd": null,
+  "files_changed_target": "3-6",
+  "long_horizon_steps": 0
+}
