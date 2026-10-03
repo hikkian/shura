@@ -259,10 +259,10 @@ class GatewayGuard(unittest.TestCase):
         with patch.object(self.gw.time, "sleep", side_effect=sleep), patch.object(self.gw, "start_llama", return_value=""):
             self.assertEqual(self.gw.acquire_model(self.gw.M["defaultModel"], False), "")
 
-    def test_reader_failure_uses_original_load_policy(self):
+    def test_reader_failure_waits_for_fresh_admission_sample(self):
         self.gw.st.vram_free_mib = None
         self.gw.st.vram_sample_at = None
-        self.assertEqual(self.gw.preload_check(self.gw.model_config(self.gw.st.model_id, False)), "")
+        self.assertIn("Fresh NVML", self.gw.preload_check(self.gw.model_config(self.gw.st.model_id, False)))
         self.assertIn("NVML", self.gw.st.guard_fallback)
 
     def test_stale_nvml_fallback_clears_when_monitor_recovers(self):
@@ -305,6 +305,8 @@ class GatewayGuard(unittest.TestCase):
 
     def test_restore_failure_starts_one_fresh_backend_before_request(self):
         self.yield_model()
+        # The pressure has cleared and the monitor supplied a fresh admission sample.
+        self.gw.monitor_tick(16, 12 * 1024, 24)
         first, second = Mock(pid=4321), Mock(pid=4322)
         for proc in (first, second):
             proc.poll.return_value = None

@@ -33,6 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_nvml import NVML
 from checkpoint_access import private_checkpoint_handler
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
+from polite_model import DEFAULTS as POLITE_DEFAULTS, Controller as PoliteController
+from slot_gears import DEFAULTS as GEAR_DEFAULTS, Budget, Ratchet, RollbackFailed, apply_slots as apply_slot_transaction
 
 CFG_DIR = Path(os.environ.get("AI_GATEWAY_CONFIG", Path(__file__).resolve().parent.parent / "config"))
 STATE_DIR = Path(os.path.expanduser(os.environ.get("AI_GATEWAY_STATE", "~/.local/state/ai-gateway")))
@@ -57,7 +59,7 @@ def load_config(name):
 G = load_config("guardian.json")
 M = load_config("model-launch.json")
 M["models"] = {mid: {k: expand(k, v) for k, v in mc.items()} for mid, mc in M["models"].items()}
-G = {**GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
+G = {**POLITE_DEFAULTS, **GEAR_DEFAULTS, **GAME_DEFAULTS, "vramGuard": False, "vramIdleSeconds": 90,
      "vramEmergencyMiB": 60, "vramEmergencySeconds": 10,
      "vramFreeCriticalMiB": 120, "vramPressureSeconds": 5,
      "vramReloadWaitSeconds": 30, "vramPressureSlotReserveMiB": 512,
@@ -212,8 +214,18 @@ def legacy_main():
     module.main()
 
 
+RUNTIME_SLOTS = {}
+GEARS = {}
+GEAR_BUDGET = Budget()
+GEAR_BUDGET_LOADED = False
+POLITE = PoliteController(G)
+WAKEUP = {"proc": None, "sample_at": None, "p99_ms": None, "started_at": None}
+
+
 def model_config(model_id, vision):
     mc = dict(M["models"][model_id])
+    if model_id in RUNTIME_SLOTS and not vision:
+        mc["moeCacheSlots"] = RUNTIME_SLOTS[model_id]
     if vision:
         mc.update(mc.get("visionOverrides", {}))
     return mc
@@ -279,12 +291,16 @@ def build_args(mc, vision):
     if mc.get("niceLevel"):
         # Lower CPU priority: desktop apps win any contention; no speed is lost while the desktop is idle.
         a = ["nice", "-n", str(mc["niceLevel"])] + a
+    if POLITE.enabled and POLITE.available:
+        # Replace the nice wrapper, rather than adding nice10 twice.
+        command = a[3:] if a[:1] == ["nice"] else a
+        a = [sys.executable, str(Path(__file__).with_name("cpu_launch.py")), str(POLITE.policy.level), *command]
     return a
 
 
 def server_slot_dir():
     st.ram_backend = False
-    if G["vramGuard"] or GAME.enabled:
+    if G["vramGuard"] or GAME.enabled or G["slotGears"]:
         try:
             path = prepare_ram_slot_dir()
             st.ram_backend = True
@@ -320,12 +336,12 @@ def preload_check(mc, reclaim=(0.0, 0.0)):
         return f"Not enough free RAM to load the model ({ram:.1f} GB available, need {G['ramFreeMinGBToLoad']} GB)"
     sample_age = time.time() - st.vram_sample_at if st.vram_sample_at is not None else math.inf
     if sample_age > G.get("vramTelemetryStaleSeconds", 5) or st.monitor_error:
-        if GAME.enabled:
-            return "Fresh VRAM admission data unavailable; retry shortly"
-        st.monitor_error = "Fresh NVML data unavailable; skipping VRAM admission check"
-        event("telemetry_failed", st.monitor_error, fallback=True)
+        message = "Fresh NVML admission data unavailable; wait for a fresh VRAM sample"
+        if st.monitor_error != message:
+            st.monitor_error = message
+            event("telemetry_failed", message, fallback=True)
         reset_pressure()
-        return ""
+        return message
     vram = (st.vram_free_mib or 0) / 1024 + reclaim[1]
     required = max(mc["vramFreeMinGBToLoad"], st.vram_resume_min_gb)
     if vram < required:
@@ -770,8 +786,10 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
             st.status = "ERROR" if st.crash_count >= G["crashRestartMaxAttempts"] else "UNLOADED"
 
         valid = math.isfinite(free_mib) and 0 <= free_mib <= 2097152
-        if GAME.enabled and valid:
+        if valid and st.monitor_error:
+            event("telemetry_recovered", "VRAM readings available again")
             st.monitor_error = ""
+            st.guard_fallback = ""
         idle = (time.time() if wall_now is None else wall_now) - st.last_request
         if G["vramGuard"]:
             if not valid:
@@ -851,6 +869,223 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
         st.monitor_healthy = True
 
 
+def stop_wakeup_probe():
+    proc = WAKEUP["proc"]
+    if proc is not None:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+        proc.stdout.close()
+        WAKEUP["proc"] = None
+
+
+def start_wakeup_probe():
+    if not POLITE.enabled or not POLITE.available:
+        return
+    proc = subprocess.Popen([sys.executable, "-u", str(Path(__file__).with_name("wakeup_probe.py"))],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+    WAKEUP["proc"], WAKEUP["started_at"] = proc, time.monotonic()
+
+    def read_probe():
+        for line in proc.stdout:
+            try:
+                data = json.loads(line)
+                value = float(data["p99_ms"])
+                if math.isfinite(value) and value >= 0:
+                    WAKEUP["p99_ms"], WAKEUP["sample_at"] = value, time.monotonic()
+            except (ValueError, KeyError, TypeError):
+                continue
+    threading.Thread(target=read_probe, daemon=True, name="shura-wakeup-reader").start()
+
+
+atexit.register(stop_wakeup_probe)
+
+
+class GearBackend:
+    """Only called under st.lock, between requests. Snapshot is a tmpfs hardlink, not a second copy."""
+    def __init__(self):
+        self.model, self.vision = st.model_id, st.vision
+        self.original_signature = checkpoint_signature(self.model, self.vision)
+        self.original_slots = self.current_slots()
+
+    def current_slots(self):
+        return model_config(self.model, self.vision)["moeCacheSlots"]
+
+    def save(self):
+        if st.busy or self.vision or int(G.get("slotSaveCheckpoints", 0)) < 1:
+            return None
+        if not save_slot_locked(ram_only=True):
+            return None
+        saved = st.ram_checkpoint
+        if saved is None:
+            return {"empty": True}
+        validate_checkpoint(saved["path"], saved)
+        if saved["signature"] != checkpoint_signature(self.model, self.vision):
+            raise ValueError("gear snapshot configuration mismatch")
+        # Private root is verified by prepare_ram_slot_dir. Refuse stale transaction files.
+        backup = prepare_ram_slot_dir() / "gear-rollback.bin"
+        if backup.exists() or backup.is_symlink():
+            raise RuntimeError("unfinished gear transaction; refusing another restart")
+        os.link(saved["path"], backup)
+        return {**saved, "path": backup}
+
+    def restart(self, slots, snapshot):
+        # Recompute the original signature to prove that only slot count changed.
+        present = RUNTIME_SLOTS.get(self.model)
+        try:
+            RUNTIME_SLOTS[self.model] = self.original_slots
+            if checkpoint_signature(self.model, self.vision) != self.original_signature:
+                raise RuntimeError("model/binary/config changed during gear transaction")
+        finally:
+            if present is None:
+                RUNTIME_SLOTS.pop(self.model, None)
+            else:
+                RUNTIME_SLOTS[self.model] = present
+        if not stop_llama_locked("slot gear change", save=False):
+            return False
+        stopped_at = time.time()
+        RUNTIME_SLOTS[self.model] = slots
+        root = prepare_ram_slot_dir()
+        if not snapshot.get("empty"):
+            # Model, vision, binary and all other settings remain fixed within this locked transaction.
+            active = root / "active.bin"
+            active.unlink(missing_ok=True)
+            os.link(snapshot["path"], active)
+            saved = {**snapshot, "path": active, "signature": checkpoint_signature(self.model, self.vision)}
+            st.ram_checkpoint = saved
+            metadata = {key: value for key, value in saved.items() if key != "path"}
+            temporary = root / "checkpoint.json.tmp"
+            temporary.write_text(json.dumps(metadata))
+            os.replace(temporary, root / "checkpoint.json")
+        before = st.event_counters.get("checkpoint_restored", 0)
+        st.status = "UNLOADED"
+        if not wait_fresh_vram(stopped_at):
+            return False
+        error = start_llama(self.model, self.vision, fresh=snapshot.get("empty", False))
+        return not error and (snapshot.get("empty") or st.event_counters.get("checkpoint_restored", 0) > before)
+
+    def release(self, snapshot):
+        if not snapshot.get("empty"):
+            snapshot["path"].unlink(missing_ok=True)
+
+
+def apply_slots(n):
+    with st.lock:
+        if st.busy or st.status != "READY" or st.vision or not st.ram_backend:
+            return False
+        if type(n) is not int or n < 16 or n > M["models"][st.model_id]["moeCacheSlots"]:
+            return False
+        return apply_slot_transaction(n, GearBackend())
+
+
+def wait_fresh_vram(after, timeout=5):
+    """A gear restart needs a post-stop sample, not a potentially double-counted memory credit."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if st.vram_sample_at is not None and st.vram_sample_at > after and st.vram_free_mib is not None:
+            return True
+        time.sleep(0.05)
+    event("gear_telemetry_timeout", "No fresh post-stop VRAM sample; refusing load", fallback=True)
+    return False
+
+
+def gear_budget_root():
+    global GEAR_BUDGET_LOADED
+    root = prepare_ram_slot_dir()
+    if not GEAR_BUDGET_LOADED:
+        ledger = root / "gear-budget.json"
+        if ledger.exists():
+            if ledger.is_symlink() or ledger.stat().st_size > 16384:
+                raise RuntimeError("invalid gear budget ledger")
+            history = json.loads(ledger.read_text())
+            if (not isinstance(history, list) or len(history) > G["slotGearChangesPerDay"]
+                    or any(type(t) not in (int, float) or not math.isfinite(t) or t < 0
+                           or t > time.monotonic() for t in history)):
+                raise RuntimeError("invalid gear budget timestamps")
+            GEAR_BUDGET.history = history
+        GEAR_BUDGET_LOADED = True
+    return root
+
+
+def persist_gear_budget():
+    root = gear_budget_root()
+    temporary = root / "gear-budget.json.tmp"
+    temporary.write_text(json.dumps(GEAR_BUDGET.history))
+    os.replace(temporary, root / "gear-budget.json")
+
+
+def reliability_tick(now):
+    with st.lock:
+        proc = st.proc
+        if POLITE.enabled and POLITE.available:
+            age = now - WAKEUP["sample_at"] if WAKEUP["sample_at"] is not None else math.inf
+            if age <= 5:
+                helper = WAKEUP["proc"]
+                POLITE.tick(now, proc.pid if proc and proc.poll() is None else None,
+                            WAKEUP["p99_ms"], (os.getpid(), helper.pid if helper else None))
+            elif (WAKEUP["sample_at"] is not None or
+                  (WAKEUP["started_at"] is not None and now - WAKEUP["started_at"] > 5)):
+                POLITE.stale(proc.pid if proc and proc.poll() is None else None)
+        if not G["slotGears"] or not st.model_id:
+            return
+        try:
+            gear_budget_root()
+        except (OSError, ValueError, RuntimeError) as error:
+            G["slotGears"] = False
+            event("gears_disabled", f"Budget cannot be verified: {error}", fallback=True)
+            return
+        mid = st.model_id
+        if mid not in GEARS:
+            GEARS[mid] = Ratchet(G, M["models"][mid]["moeCacheSlots"], GEAR_BUDGET)
+            GEARS[mid].current = model_config(mid, False)["moeCacheSlots"]
+        gear = GEARS[mid]
+        age = time.time() - st.vram_sample_at if st.vram_sample_at is not None else math.inf
+        free = st.vram_free_mib if age <= G.get("vramTelemetryStaleSeconds", 5) and not st.monitor_error else None
+        target = gear.target(now, free, busy=st.busy > 0,
+                             ready=st.status == "READY" and not st.vision and not GAME.active)
+        if target is not None:
+            fatal = False
+            try:
+                ok = apply_slots(target)
+            except RollbackFailed as error:
+                ok, fatal = False, True
+                G["slotGears"] = False
+                st.status, st.last_error = "ERROR", str(error)
+                event("gears_disabled", str(error), fallback=True)
+            except (OSError, RuntimeError, ValueError) as error:
+                ok = False
+                event("gear_failed", str(error), fallback=True)
+            gear.completed(time.monotonic(), target, ok)
+            if fatal:
+                gear.reason = "rollback failed; A2 snapshot retained; controller disabled"
+            try:
+                persist_gear_budget()
+            except OSError as error:
+                G["slotGears"] = False
+                event("gears_disabled", f"Cannot persist change budget: {error}", fallback=True)
+            event("gear_changed" if ok else "gear_rolled_back", f"model={mid} slots={gear.current}: {gear.reason}")
+
+
+def publish_vram_sample(free_mib, proc, process_mib):
+    """Sensor publication cannot wait behind a 15-second lifecycle transaction.
+
+    These are observational fields only; pressure decisions still require st.lock.
+    Publish the timestamp last, after the value it certifies.
+    """
+    wall = time.time()
+    if math.isfinite(free_mib) and 0 <= free_mib <= 2097152:
+        st.vram_free_mib = int(free_mib)
+        st.vram_sample_at = wall
+    if proc is not None and st.proc is proc and isinstance(process_mib, int) and process_mib >= 0:
+        st.proc_vram_mib = process_mib
+        st.proc_vram_pid = proc.pid
+        st.proc_vram_sample_at = wall
+
+
 def monitor(stop=None):
     stop = stop or threading.Event()
     while not stop.wait(1):
@@ -863,7 +1098,17 @@ def monitor(stop=None):
                     proc_mib = nvml_device().proc_mib(proc.pid)
                 except (OSError, RuntimeError, ValueError, OverflowError):
                     proc_mib = None
-            monitor_tick(time.monotonic(), free_mib, mem_available_gb(), process_mib=proc_mib)
+            if G["slotGears"]:
+                publish_vram_sample(free_mib, proc, proc_mib)
+                if st.lock.acquire(blocking=False):
+                    try:
+                        monitor_tick(time.monotonic(), free_mib, mem_available_gb(), process_mib=proc_mib)
+                        reliability_tick(time.monotonic())
+                    finally:
+                        st.lock.release()
+            else:
+                monitor_tick(time.monotonic(), free_mib, mem_available_gb(), process_mib=proc_mib)
+                reliability_tick(time.monotonic())
         except Exception as e:  # noqa: BLE001 - a failed sensor tick must be recorded, not kill the monitor.
             with st.lock:
                 st.monitor_healthy = False
@@ -879,7 +1124,7 @@ def acquire_model(model_id, vision):
         with st.lock:
             if GAME.enabled and (GAME.active or not GAME.ready):
                 return "Model paused because of a game: " + (GAME.reason or "detector initializing")
-            if (G["vramGuard"] or GAME.enabled) and RAM_SLOT_DIR is None:
+            if (G["vramGuard"] or GAME.enabled or G["slotGears"]) and RAM_SLOT_DIR is None:
                 try:
                     prepare_ram_slot_dir()
                 except (OSError, RuntimeError) as e:
@@ -1016,6 +1261,8 @@ def status_snapshot():
         "terse_supported": supports_terse(st.model_id or M["defaultModel"]),
         "terse_models": [m for m in M["models"] if supports_terse(m)],
         "game_mode": GAME.snapshot(),
+        "polite_model": POLITE.snapshot(),
+        "slot_gears": {"enabled": G["slotGears"], "models": {mid: gear.snapshot() for mid, gear in GEARS.items()}},
         "status": st.status, "model": st.model_id, "vision": st.vision, "override": st.override,
         "memory_pressure": st.memory_pressure, "multimedia_lock": st.multimedia_lock,
         "vram_pressure": st.vram_pressure, "last_yield_reason": st.last_yield_reason,
@@ -1286,8 +1533,12 @@ def disable_core_dumps():
 
 def main():
     disable_core_dumps()
-    if G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0 and not GAME.enabled:
+    if (G["vramGuard"] is not True and int(G.get("slotSaveCheckpoints", 0)) == 0
+            and not GAME.enabled and not G["politeModel"] and not G["slotGears"]):
         return legacy_main()
+    if G["slotGears"] and int(G.get("slotSaveCheckpoints", 0)) < 1:
+        raise RuntimeError("slotGears requires slotSaveCheckpoints >= 1")
+    start_wakeup_probe()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     signal.signal(signal.SIGTERM, shutdown)

@@ -195,3 +195,37 @@ in the system prompt of every request, so trimming Playwright from 25 to 14 tool
 Paused/draining admission returns503 with Retry-After. Active responses get up to gameDrainSeconds (default60); timeout produces an explicit game_pause_timeout SSE error or503. Stop follows a successful atomic A2 save; save failure keeps the server loaded and retries after30s. Ordinary idle save policy is unchanged. Snapshots are removed after restore.
 
 Isolated reduced4 tests:187k A2 cache_n186999/prompt_n33,6GiB CUDA hog after parking,3s false signal,20s flaps,manual control,final9/9. Real timeout used reduced4/mmap after load-mode none hit the PSI guard. Three short-context matched pairs gave medianON/OFF0.9814,identical output/MTP;CPU<=2.5 and pair delta<=0.8. GameMode registration was mocked to avoid its system-tuning hooks; installed ClientCount query inspected. Real games and instant VRAM allocation surges were not tested: delayed detection cannot guarantee game-start headroom. Local evidence:ignored bench/results/game-mode-a2-20261001.
+
+### Offline reliability prototypes (default off)
+
+`politeModel` enables CPU PSI, independent wakeup-latency and non-model CPU-load sensors.
+The AIMD controller selects nice 10 / nice 19 / SCHED_IDLE / SCHED_IDLE with half the inherited CPU set.
+It reduces priority at most once per five seconds and recovers one level after 30 seconds of calm.
+The launch wrapper sets the current level before exec so new server threads inherit it.
+All server TIDs are synchronized afterwards. PID start time is checked before scheduling.
+Hosts unable to restore nice 10 and SCHED_OTHER without privilege are refused **before** any scheduling
+change; this requires RLIMIT_NICE >= 10 or CAP_SYS_NICE. No system setting is changed automatically.
+Sensor or syscall failures disable the controller and attempt L0 restoration.
+`/guardian/status` exposes `polite_model`; `shura status` displays the level and refusal reason.
+
+`slotGears` requires A2 (`slotSaveCheckpoints >= 1`). Its independent per-model ratchet defaults to
+26/24/20/16, never grows beyond the configured baseline, waits 60 seconds below 250 MiB to reduce slots,
+and 30 minutes above the corridor plus the next step's estimated memory to grow them.
+Only idle gaps permit a change. A global budget shared by both models allows two attempts per hour
+and six per day, including failed attempts. The small budget ledger survives gateway restarts in
+private tmpfs; malformed or unwritable ledgers disable gears. Runtime slot overrides never edit the
+model configuration files. `apply_slots(n)` is separate from the policy, allowing future live resize.
+
+The restart mechanism saves and validates A2 before stopping, retains one hardlink in tmpfs throughout
+the transaction, and accepts the new gear only after checkpoint restoration. Failure restores the
+old gear and snapshot. A failed rollback disables gears, blocks admission and retains the recovery
+file instead of discarding it. Changes other than slot count invalidate the transaction. Vision
+profiles are excluded pending their own quality gates. Status reports each model's slots and reason.
+These features have offline fault coverage, **not GPU or quality acceptance**. Keep them off until
+both model benchmarks and the slot-count PPL/KL gates pass. No footer integration is claimed here.
+
+L2 automatic replay after emitted tool calls is intentionally not implemented. In installed OpenCode
+1.18.32, a retryable SSE error can replay the original request after a tool has executed. A mock test
+with a repeated tool call writes two bytes instead of one. A safe integration must either preserve
+and reconcile completed tool results in the engine, or forbid automatic replay after tool emission;
+it cannot merely append a 503 error to every interrupted stream.

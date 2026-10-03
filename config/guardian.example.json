@@ -52,5 +52,20 @@
     "kscreenlocker_greet",
     "steam",
     "steamwebhelper"
-  ]
+  ],
+  "politeModel": false,
+  "politeCalmSeconds": 30,
+  "politeChangeSeconds": 5,
+  "slotGears": false,
+  "slotGearLevels": [
+    26,
+    24,
+    20,
+    16
+  ],
+  "slotGearCorridorMiB": 250,
+  "slotGearDownSeconds": 60,
+  "slotGearUpSeconds": 1800,
+  "slotGearChangesPerHour": 2,
+  "slotGearChangesPerDay": 6
 }
