@@ -497,6 +497,8 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
             "server_failed": server_failed,
             "server_failure_reason": server_monitor.reason if server_failed else None,
             "attempt": attempt,
+            "agent_log": str(log_path),
+            "test_log": str(test_log) if not server_failed and not safety_watchdog.tripped.is_set() else None,
             **harness.count_events(log_path),
         }
         if not passed:

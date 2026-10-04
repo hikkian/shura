@@ -100,7 +100,8 @@ def summarize(results_path: Path, agent_log_dir: Path) -> dict[str, Any]:
     per_arm = defaultdict(Counter)
     for row in rows:
         task_id = row.get("task", row.get("id", "unknown"))
-        log_path = agent_log_dir / f"{task_id}__{row.get('arm','stub')}__{row.get('rep',0)}.agent.log"
+        log_path = Path(row.get("agent_log") or
+                        agent_log_dir / f"{task_id}__{row.get('arm','stub')}__{row.get('rep',0)}.agent.log")
         parsed = parse_agent_log(log_path)
         requests = int(row.get("requests", row.get("requests_count", 0)) or 0)
         resolved = bool(row.get("resolved", row.get("passed", False)))
