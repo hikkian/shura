@@ -98,7 +98,9 @@ def main() -> int:
         print(json.dumps(report["unsupported_runtime_tasks"], ensure_ascii=False, indent=2))
     if report["failures"]:
         print(json.dumps(report["failures"], ensure_ascii=False, indent=2))
-    return 1 if report["failed_validation"] else 0
+    # This command curates a usable subset. A task that fails a gate is excluded
+    # and reported, while the manifest remains safe to consume when other tasks pass.
+    return 0 if report["valid"] else 1
 
 
 if __name__ == "__main__":

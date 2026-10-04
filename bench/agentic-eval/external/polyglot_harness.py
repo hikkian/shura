@@ -117,7 +117,7 @@ def _server_log_decode_rate(log_path: Path, start_offset: int) -> tuple[int, flo
     except OSError:
         return None
     pattern = re.compile(
-        r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens"
+        r"(?<!prompt )eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens"
         r"\s*\(\s*([\d.]+)\s*ms per token,\s*([\d.]+)\s*tokens per second"
     )
     for line in reversed(text.splitlines()):
@@ -134,7 +134,7 @@ def _server_log_decode_average(log_path: Path, start_offset: int) -> float | Non
             text = stream.read().decode(errors="replace")
     except OSError:
         return None
-    pattern = re.compile(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens")
+    pattern = re.compile(r"(?<!prompt )eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens")
     samples = []
     for line in text.splitlines():
         match = pattern.search(line)
@@ -313,6 +313,7 @@ def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str],
                 **harness.ENGINE_ENV,
                 "OPENCODE_CONFIG": str(config),
                 "OPENCODE_CONFIG_DIR": str(cfg_dir),
+                "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "32768",
                 "NO_PROXY": "*", "no_proxy": "*",
                 "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "32768",
                 "XDG_CONFIG_HOME": str(scratch / "home/.config"),
