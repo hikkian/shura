@@ -54,6 +54,7 @@ run_arm() {
     args+=(--stub)
   else
     args+=(--server-argv-json "$SERVER_ARGV")
+    args+=(--warmup-200)
   fi
 
   local devices=()
@@ -66,7 +67,7 @@ run_arm() {
     devices+=(--ro-bind /usr/local /usr/local)
   fi
 
-  taskset -c 0,1 nice -n 19 bwrap --die-with-parent --unshare-net \
+  bwrap --die-with-parent --unshare-net \
     --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib \
     --symlink usr/lib64 /lib64 --ro-bind /etc /etc --ro-bind /sys /sys \
     --proc /proc --dev /dev "${devices[@]}" --tmpfs /tmp \

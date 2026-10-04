@@ -22,7 +22,13 @@ def run(task_dir: Path, workdir: Path) -> int:
             print(f"missing hidden fixture: {rel}", file=sys.stderr)
             return 2
         dest.parent.mkdir(parents=True, exist_ok=True)
+        reference_hash = hashlib.sha256(src.read_bytes()).hexdigest()
         shutil.copy2(src, dest)
+        restored_hash = hashlib.sha256(dest.read_bytes()).hexdigest()
+        if restored_hash != reference_hash:
+            print(f"failed to restore authoritative test file: {rel}", file=sys.stderr)
+            return 2
+        print(f"RESTORED_REFERENCE_TEST {rel} sha256={restored_hash}", flush=True)
     # validate_tasks.py stages fixtures under this directory; after restoring their
     # original Exercism paths, leaving it in the project causes recursive runners
     # (notably `go test ./...`) to compile a second, invalid test package.

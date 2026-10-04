@@ -11,7 +11,7 @@ SPEC.loader.exec_module(prep)
 
 
 class PolyglotPreparationTests(unittest.TestCase):
-    def test_import_preserves_starter_and_hides_test_files(self):
+    def test_import_preserves_starter_and_exposes_public_tests(self):
         with tempfile.TemporaryDirectory(prefix="polyglot-import-", dir="/dev/shm") as tmp:
             root = Path(tmp)
             source = root / "source"
@@ -30,14 +30,17 @@ class PolyglotPreparationTests(unittest.TestCase):
             task_dir = out / ids["python"][0] / "implement"
             task = json.loads((task_dir / "task.json").read_text())
             self.assertEqual(task["hidden_files"], ["demo_test.py"])
+            self.assertEqual(task["visible_test_files"], ["demo_test.py"])
             self.assertTrue((task_dir / "start/demo.py").is_file())
-            self.assertFalse((task_dir / "start/demo_test.py").exists())
+            self.assertTrue((task_dir / "start/demo_test.py").is_file())
             self.assertTrue((task_dir / "hidden/demo_test.py").is_file())
             self.assertTrue((task_dir / "solution/demo.py").is_file())
             self.assertTrue(task["reference_available"])
             self.assertIn("run_aider_tests.py", task["test_cmd"][1])
             self.assertEqual(task["language_test_cmd"], ["pytest", "-q", "demo_test.py"])
-            self.assertNotIn("demo_test.py", task["prompt"])
+            self.assertIn("demo_test.py", task["prompt"])
+            self.assertIn("Public tests in this folder", task["prompt"])
+            self.assertIn("Solution files: `demo.py`", task["prompt"])
 
     def test_task_kinds_are_independent_ideas(self):
         self.assertEqual(prep.TEST_COMMANDS["python"], ["pytest", "-q"])

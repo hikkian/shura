@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import resource
 import shutil
 import signal
@@ -90,6 +91,107 @@ def _require_draft_mtp(argv: list[str]) -> None:
         raise ValueError("test server argv must explicitly enable --spec-type draft-mtp")
 
 
+def _server_command(argv: list[str]) -> list[str]:
+    """Run llama-server on all allowed CPUs at nice 10; never inherit client affinity."""
+    command = list(argv)
+    while command and Path(command[0]).name in {"nice", "taskset"}:
+        if Path(command[0]).name == "nice":
+            command = command[3:] if len(command) >= 4 and command[1] == "-n" else command[1:]
+        elif "-c" in command:
+            command = command[command.index("-c") + 2:]
+        else:
+            command = command[1:]
+    return ["/usr/bin/nice", "-n", "10", *command]
+
+
+def _client_command(argv: list[str], cpus: str) -> list[str]:
+    """Apply taskset/nice only to OpenCode and its child tool processes."""
+    return ["/usr/bin/taskset", "-c", cpus, "/usr/bin/nice", "-n", "19", *argv]
+
+
+def _server_log_decode_rate(log_path: Path, start_offset: int) -> tuple[int, float, str] | None:
+    try:
+        with log_path.open("rb") as stream:
+            stream.seek(start_offset)
+            text = stream.read().decode(errors="replace")
+    except OSError:
+        return None
+    pattern = re.compile(
+        r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens"
+        r"\s*\(\s*([\d.]+)\s*ms per token,\s*([\d.]+)\s*tokens per second"
+    )
+    for line in reversed(text.splitlines()):
+        match = pattern.search(line)
+        if match:
+            return int(match.group(2)), float(match.group(4)), line.strip()
+    return None
+
+
+def _server_log_decode_average(log_path: Path, start_offset: int) -> float | None:
+    try:
+        with log_path.open("rb") as stream:
+            stream.seek(start_offset)
+            text = stream.read().decode(errors="replace")
+    except OSError:
+        return None
+    pattern = re.compile(r"eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*tokens")
+    samples = []
+    for line in text.splitlines():
+        match = pattern.search(line)
+        if match and float(match.group(1)) > 0 and int(match.group(2)) > 0:
+            samples.append((float(match.group(1)), int(match.group(2))))
+    elapsed_ms = sum(ms for ms, _ in samples)
+    return 1000.0 * sum(tokens for _, tokens in samples) / elapsed_ms if elapsed_ms else None
+
+
+def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event) -> float:
+    body = {
+        "model": "tiel-coder",
+        "messages": [{"role": "user", "content": (
+            "Output a comma-separated sequence of consecutive positive integers beginning at 1. "
+            "Continue without explanation until the response token limit stops you."
+        )}],
+        "temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_tokens": 200, "stream": False,
+    }
+    (out / "warmup-request.json").write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    start_offset = server_log.stat().st_size
+    request = urllib.request.Request(
+        upstream.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    t0 = time.monotonic()
+    with urllib.request.urlopen(request, timeout=120) as response:
+        payload = json.loads(response.read())
+    elapsed = time.monotonic() - t0
+    (out / "warmup-response.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                                               encoding="utf-8")
+    if abort_event.is_set():
+        raise RuntimeError("S6 safety watchdog tripped during the 200-token warm-up")
+    logged = None
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        logged = _server_log_decode_rate(server_log, start_offset)
+        if logged:
+            break
+        time.sleep(0.1)
+    if not logged:
+        raise RuntimeError("200-token warm-up completed but decode rate was not found in llama-server.log")
+    predicted_n, tokens_per_second, log_line = logged
+    usage_tokens = (payload.get("usage") or {}).get("completion_tokens")
+    record = {"requested_tokens": 200, "usage_completion_tokens": usage_tokens,
+              "server_log_predicted_tokens": predicted_n,
+              "server_log_decode_tokens_per_second": tokens_per_second,
+              "warmup_wall_seconds": round(elapsed, 3), "server_log_line": log_line}
+    (out / "warmup-result.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
+                                             encoding="utf-8")
+    print(f"warmup: requested=200 usage={usage_tokens} server_log={predicted_n} tokens tps={tokens_per_second:.2f}", flush=True)
+    if usage_tokens != 200 or predicted_n != 200:
+        raise RuntimeError(f"warm-up produced usage={usage_tokens}, server_log={predicted_n}; expected exactly 200 tokens")
+    if tokens_per_second < 35.0:
+        raise RuntimeError(f"warm-up decode speed {tokens_per_second:.2f} tok/s is below 35 tok/s")
+    return tokens_per_second
+
+
 def _model_server(args, out: Path, stub_server=None, safety_watchdog=None):
     if stub_server is not None:
         return stub_server, "http://127.0.0.1:%d" % stub_server.server_port, None
@@ -100,9 +202,7 @@ def _model_server(args, out: Path, stub_server=None, safety_watchdog=None):
     if not argv:
         raise ValueError("server argv is empty")
     _require_draft_mtp(argv)
-    if Path(argv[0]).name == "nice":
-        argv = argv[3:] if len(argv) >= 4 and argv[1] == "-n" else argv[1:]
-    argv = ["/usr/bin/taskset", "-c", args.cpus, "/usr/bin/nice", "-n", "19", *argv]
+    argv = _server_command(argv)
     log = (out / "llama-server.log").open("wb")
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                             start_new_session=True, preexec_fn=_preexec_safety)
@@ -189,7 +289,7 @@ def _config_for_task(snapshot: Path, cfg_dir: Path, proxy_url: str,
 
 
 def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str],
-            context: int, abort_event):
+            context: int, cpus: str, abort_event):
     def run(workdir, prompt, cfg_dir, data_dir, timeout_s, log_path):
         scratch = Path(workdir).parent
         # OpenCode 1.18.32 waits for dependency checks for both config and project
@@ -205,7 +305,7 @@ def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str],
                "XDG_DATA_HOME": str(scratch / "home/.local/share"),
                "XDG_CACHE_HOME": str(scratch / "home/.cache"),
                "NO_PROXY": "*", "no_proxy": "*", "PWD": str(workdir)}
-        argv = harness.agent_argv(workdir, prompt)
+        argv = _client_command(harness.agent_argv(workdir, prompt), cpus)
         if os.environ.get("POLYGLOT_DIRECT_ENGINE") == "1":
             wrapped = argv
         else:
@@ -298,7 +398,7 @@ def _save_result(path: Path, record: dict) -> None:
         os.close(fd)
 
 
-def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context, safety_watchdog):
+def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context, safety_watchdog, server_log):
     scratch = Path(tempfile.mkdtemp(prefix=f"{task['id']}-{arm}-0-", dir=scratch_root))
     try:
         work = scratch / "work"
@@ -308,12 +408,16 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
                             "--task-dir", str(task["dir"])]
         log_path = Path(out_dir) / "agent-logs" / f"{task['id']}__{arm}__0.agent.log"
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        server_log_offset = server_log.stat().st_size if server_log.is_file() else 0
         code, timed_out, seconds = runner(work, task["prompt"], cfg, scratch / "data",
                                           task.get("timeout_s", 900), log_path)
+        decode_rate = _server_log_decode_average(server_log, server_log_offset)
         if safety_watchdog.tripped.is_set():
             passed, tail = False, f"S6 watchdog stopped run: {safety_watchdog.reason}"
         else:
-            passed, tail = harness.run_tests(work, task["dir"] / "hidden", task["test_cmd"], timeout=30)
+            test_log = Path(out_dir) / "test-logs" / f"{task['id']}__{arm}__0.log"
+            passed, tail = harness.run_tests(work, task["dir"] / "hidden", task["test_cmd"], timeout=30,
+                                             log_path=test_log)
         totals = measurement_proxy.totals(proxy_log)
         record = {
             "arm": arm, "task": task["id"], "family": task["family"], "kind": task["kind"],
@@ -322,6 +426,7 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
             "agent_exit": code, "seconds": round(seconds, 1),
             "tokens": totals["completion_tokens"], "prompt_tokens": totals["prompt_tokens"],
             "requests": totals["requests"], "request_errors": totals["errors"],
+            "decode_tokens_per_second": round(decode_rate, 3) if decode_rate else None,
             **harness.count_events(log_path),
         }
         if not passed:
@@ -352,11 +457,13 @@ def run(args) -> list[dict]:
     if selected_languages:
         tasks = [t for t in tasks if t["lang"] in selected_languages]
     if args.task_ids:
-        wanted = set(args.task_ids.split(","))
-        tasks = [t for t in tasks if t["id"] in wanted]
+        wanted = [item.strip() for item in args.task_ids.split(",") if item.strip()]
+        by_id = {t["id"]: t for t in tasks}
+        tasks = [by_id[item] for item in wanted if item in by_id]
     if args.task_ids_file:
-        wanted = {line.strip() for line in Path(args.task_ids_file).read_text().splitlines() if line.strip()}
-        tasks = [t for t in tasks if t["id"] in wanted]
+        wanted = [line.strip() for line in Path(args.task_ids_file).read_text().splitlines() if line.strip()]
+        by_id = {t["id"]: t for t in tasks}
+        tasks = [by_id[item] for item in wanted if item in by_id]
     if args.limit:
         tasks = tasks[:args.limit]
     if not tasks:
@@ -396,6 +503,8 @@ def run(args) -> list[dict]:
             if safety_watchdog.gpu is None:
                 raise RuntimeError("NVML unavailable; refusing real-model run without GPU safety telemetry")
             stub, upstream, owned_server = _model_server(args, out_dir, safety_watchdog=safety_watchdog)
+            if args.warmup_200:
+                _warmup_200(upstream, out_dir, out_dir / "llama-server.log", safety_watchdog.tripped)
 
         for idx, task in enumerate(tasks, 1):
             if safety_watchdog.tripped.is_set():
@@ -423,8 +532,9 @@ def run(args) -> list[dict]:
                                   out_dir, args.scratch,
                                   runner=_runner(Path(args.config_snapshot), model,
                                                  f"http://127.0.0.1:{server.server_port}",
-                                                 features, args.context, safety_watchdog.tripped),
-                                  context=args.context, safety_watchdog=safety_watchdog)
+                                                  features, args.context, args.cpus, safety_watchdog.tripped),
+                                  context=args.context, safety_watchdog=safety_watchdog,
+                                  server_log=out_dir / "llama-server.log")
             finally:
                 server.shutdown()
                 server.server_close()
@@ -484,11 +594,12 @@ def main():
     parser.add_argument("--arm-name", default="", help="stable resume key, e.g. tiel-no-plugins")
     parser.add_argument("--context", type=int, default=131072)
     parser.add_argument("--tmpfs-min-free-gib", type=float, default=1.5)
-    parser.add_argument("--cpus", default="0,1", help="CPU affinity inherited by model/agent subprocesses")
+    parser.add_argument("--cpus", default="0,1", help="CPU affinity for OpenCode client and child tools only")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--stub", action="store_true")
     parser.add_argument("--server-port", type=int, default=8090)
     parser.add_argument("--server-argv-json", default="")
+    parser.add_argument("--warmup-200", action="store_true")
     args = parser.parse_args()
     run(args)
 

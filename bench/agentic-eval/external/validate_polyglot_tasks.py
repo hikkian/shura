@@ -30,7 +30,7 @@ def validate(tasks_root: Path) -> dict:
             no_reference.append(task["id"])
             print(f"SKIP {task['id']}: no checked-in reference", flush=True)
             continue
-        runtime_problem = _runtime_problem(task["lang"])
+        runtime_problem = _runtime_problem(task["lang"], task)
         if runtime_problem:
             unsupported_runtime[task["id"]] = runtime_problem
             print(f"SKIP {task['id']}: {runtime_problem}", flush=True)
@@ -55,7 +55,7 @@ def validate(tasks_root: Path) -> dict:
     }
 
 
-def _runtime_problem(language: str) -> str | None:
+def _runtime_problem(language: str, task: dict | None = None) -> str | None:
     required = {"go": "go", "cpp": "g++", "rust": "cargo"}
     if language in required and shutil.which(required[language]) is None:
         return f"missing {required[language]} executable; no packages installed"
@@ -66,6 +66,16 @@ def _runtime_problem(language: str) -> str | None:
     if language == "java":
         if shutil.which("gradle") is None:
             return "missing system Gradle; wrapper downloads are disabled"
+    if language == "cpp" and task:
+        for root_key in ("start", "solution"):
+            root = task["dir"] / root_key
+            for source in root.rglob("*"):
+                if source.is_file() and source.suffix in {".h", ".hpp", ".cpp", ".cc"}:
+                    try:
+                        if "#include <boost/" in source.read_text(encoding="utf-8", errors="ignore"):
+                            return "missing Boost headers; packages are not installed during corpus validation"
+                    except OSError:
+                        pass
     return None
 
 

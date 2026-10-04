@@ -43,6 +43,24 @@ class ExternalRunControlTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             polyglot_harness._require_draft_mtp(["llama-server", "--ngl", "99"])
 
+    def test_server_and_client_cpu_policies_are_separate(self):
+        server = polyglot_harness._server_command([
+            "/usr/bin/taskset", "-c", "0,1", "/usr/bin/nice", "-n", "19",
+            "/opt/llama-server", "-t", "6",
+        ])
+        self.assertEqual(server, ["/usr/bin/nice", "-n", "10", "/opt/llama-server", "-t", "6"])
+        client = polyglot_harness._client_command(["/opt/opencode", "run"], "0,1")
+        self.assertEqual(client, ["/usr/bin/taskset", "-c", "0,1", "/usr/bin/nice", "-n", "19",
+                                  "/opt/opencode", "run"])
+
+    def test_server_log_decode_speed_reads_exact_eval_sample(self):
+        with tempfile.TemporaryDirectory(prefix="server-rate-", dir="/dev/shm") as tmp:
+            log = Path(tmp) / "server.log"
+            log.write_text("load line\neval time = 4000.00 ms / 200 tokens (20.00 ms per token, 50.00 tokens per second)\n")
+            self.assertEqual(polyglot_harness._server_log_decode_rate(log, 0), (
+                200, 50.0, "eval time = 4000.00 ms / 200 tokens (20.00 ms per token, 50.00 tokens per second)"))
+            self.assertEqual(polyglot_harness._server_log_decode_average(log, 0), 50.0)
+
     def test_resume_recovers_complete_lines_and_drops_torn_tail(self):
         with tempfile.TemporaryDirectory(prefix="resume-", dir="/dev/shm") as tmp:
             path = Path(tmp) / "results.jsonl"

@@ -1,10 +1,10 @@
 """Checks every task BEFORE it is allowed into the experiment. A broken task adds noise or, worse, a bias.
 
 For each task:
-  1. task.json is complete and the prompt does not leak the hidden tests' file names or contents;
-  2. start/ + hidden tests  -> must FAIL (otherwise the task asks for nothing);
-  3. start/ + reference solution + hidden tests -> must PASS, 3 times in a row (a flaky test is thrown out), each in < 30 s;
-  4. the hidden tests are not importable from start/ (the agent cannot read them).
+  1. task.json is complete and any declared public tests are present in start/;
+  2. start/ + tests -> must FAIL (otherwise the task asks for nothing);
+  3. start/ + reference solution + tests -> must PASS 3 times, each in < 30 s.
+Public test names and contents may appear in the prompt and start tree.
 Exit code 0 only when every task is valid.
 
     python3 bench/agentic-eval/validate_tasks.py [tasks-root]
@@ -41,13 +41,11 @@ def check(task):
             problems.append(f"missing folder {sub}/")
     if problems:
         return problems
-    hidden_names = {p.name for p in (d / "hidden").rglob("*") if p.is_file()}
-    start_names = {p.name for p in (d / "start").rglob("*") if p.is_file()}
-    if hidden_names & start_names:
-        problems.append(f"hidden file name(s) also in start/: {sorted(hidden_names & start_names)}")
-    for name in hidden_names:
-        if name in task["prompt"]:
-            problems.append(f"the prompt mentions a hidden file: {name}")
+    for rel in task.get("visible_test_files", []):
+        if not (d / "start" / rel).is_file():
+            problems.append(f"declared public test is missing from start/: {rel}")
+    if problems:
+        return problems
     with tempfile.TemporaryDirectory(prefix="validate-", dir="/dev/shm") as tmp:
         work = Path(tmp) / "work"
         shutil.copytree(d / "start", work)

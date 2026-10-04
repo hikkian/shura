@@ -21,7 +21,7 @@ TEST_COMMANDS = {
     "rust": ["cargo", "test", "--", "--include-ignored"],
 }
 SUPPORTED = set(TEST_COMMANDS)
-BASE_PROMPT = """Complete this Exercism exercise through the ShuraCode agent. Follow the exercise description and preserve the requested API. Edit only the listed solution files; do not change tests, benchmark metadata, or package-manager lockfiles. Run the provided tests and fix failures before finishing."""
+BASE_PROMPT = """Complete this Exercism exercise through the ShuraCode agent. Follow the exercise description and preserve the requested API. Edit only the solution files listed below; do not change tests, benchmark metadata, or package-manager lockfiles. Public test files are included in this working directory. Run them during the task, fix failures, and leave every test file unchanged."""
 
 
 def _copy_tree(source: Path, dest: Path, *, excluded: set[str] = frozenset()) -> None:
@@ -60,6 +60,12 @@ def render_exercise(exercise: Path, out: Path, language: str) -> str:
     solution_dir = task_dir / "solution"
     excluded = set(tests)
     _copy_tree(exercise, start, excluded=excluded)
+    # Keep the Exercism tests visible to the agent, while retaining an untouched
+    # copy under hidden/ for the post-run scoring pass.
+    for rel in tests:
+        visible = start / rel
+        visible.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(exercise / rel, visible)
     solution_dir.mkdir(parents=True, exist_ok=True)
     for rel in tests:
         dest = hidden / rel
@@ -111,11 +117,9 @@ def render_exercise(exercise: Path, out: Path, language: str) -> str:
         if path.is_file():
             docs.append(path.read_text(encoding="utf-8").strip())
     prompt = "\n\n".join(p for p in docs if p)
-    # Some upstream descriptions mention their unit-test filenames explicitly.
-    # Keep their prose but never reveal those names to the agent.
-    for hidden_name in {Path(name).name for name in tests}:
-        prompt = prompt.replace(hidden_name, "the provided tests")
-    prompt += "\n\n" + BASE_PROMPT
+    test_list = ", ".join(f"`{name}`" for name in tests)
+    solution_list = ", ".join(f"`{name}`" for name in solution)
+    prompt += "\n\n" + BASE_PROMPT + f"\n\nSolution files: {solution_list}.\nPublic tests in this folder: {test_list}."
 
     language_command = list(TEST_COMMANDS[language])
     if language == "python":
@@ -127,9 +131,8 @@ def render_exercise(exercise: Path, out: Path, language: str) -> str:
     else:
         # Native runners discover the restored test files from the project root.
         pass
-    # `validate_tasks.py` places tests under hidden_tests/ first. This adapter copies
-    # them back to their Exercism paths, runs the language command and never exposes
-    # the hidden files during the agent turn. The task directory itself is tmpfs.
+    # The agent sees public tests in start/. The scoring adapter restores the
+    # untouched reference copies from hidden/ after the agent exits.
     command = [sys.executable, str(Path(__file__).with_name("run_aider_tests.py")),
                "--task-dir", str(task_dir)]
 
@@ -145,6 +148,7 @@ def render_exercise(exercise: Path, out: Path, language: str) -> str:
         "benchmark": "aider-polyglot",
         "benchmark_source_id": exercise.name,
         "solution_files": solution,
+        "visible_test_files": tests,
         "reference_available": reference_available,
         "hidden_files": tests,
         "example_files": files.get("example", []),

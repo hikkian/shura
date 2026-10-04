@@ -67,7 +67,7 @@ def write_config(cfg_dir, port, context=32768, output=8192, effort="medium"):
     return cfg_dir
 
 
-def run_tests(workdir, hidden, test_cmd, timeout=120):
+def run_tests(workdir, hidden, test_cmd, timeout=120, log_path=None):
     """Copy the hidden tests over the work folder and run the task's test command. Returns (passed, output_tail)."""
     dest = Path(workdir) / "hidden_tests"
     if dest.exists():
@@ -78,9 +78,18 @@ def run_tests(workdir, hidden, test_cmd, timeout=120):
     try:
         r = subprocess.run(test_cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout,
                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        if log_path:
+            Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+            stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            Path(log_path).write_text(stdout + stderr, encoding="utf-8")
         return False, "hidden tests timed out"
-    return r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    output = r.stdout + r.stderr
+    if log_path:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(log_path).write_text(output, encoding="utf-8")
+    return r.returncode == 0, output[-1500:]
 
 
 ENGINE = os.environ.get("SHURACODE_ENGINE", str(Path.home() / ".local/share/shuracode/libexec/shuracode"))
