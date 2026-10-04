@@ -67,6 +67,7 @@ class Watchdog(threading.Thread):
         self.reason = ""
         self.stop_event = threading.Event()
         self.peak = {"gpu_c": 0, "cpu_c": 0, "vram_used_mib": 0}
+        self.minimum = {"vram_free_mib": None, "ram_available_gib": None}
         self.read = reader or self._read
         try:
             self.gpu = gpu if gpu is not None else Gpu()
@@ -90,6 +91,11 @@ class Watchdog(threading.Thread):
             for k, v in (("gpu_c", r.get("gpu_c")), ("cpu_c", r.get("cpu_c")), ("vram_used_mib", r.get("vram_used"))):
                 if v is not None:
                     self.peak[k] = max(self.peak[k], v)
+            for key, value in (("vram_free_mib", r.get("vram_free")),
+                               ("ram_available_gib", r.get("ram"))):
+                if value is not None:
+                    current = self.minimum[key]
+                    self.minimum[key] = value if current is None else min(current, value)
             hot = (r.get("gpu_c") or 0) > L["gpu_c"] or (r.get("cpu_c") or 0) > L["cpu_c"]
             hot_since = (hot_since or time.monotonic()) if hot else None
             low_vram = low_vram + 1 if (r.get("vram_free") is not None and r["vram_free"] < L["vram_free_mib"]) else 0

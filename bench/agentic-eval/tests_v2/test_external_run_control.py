@@ -61,6 +61,36 @@ class ExternalRunControlTests(unittest.TestCase):
                 200, 50.0, "eval time = 4000.00 ms / 200 tokens (20.00 ms per token, 50.00 tokens per second)"))
             self.assertEqual(polyglot_harness._server_log_decode_average(log, 0), 50.0)
 
+    def test_server_monitor_detects_exit_and_repeated_unhealthy_probes(self):
+        class Exited:
+            def poll(self):
+                return 17
+
+        exited = polyglot_harness.ServerHealthMonitor(
+            Exited(), "http://127.0.0.1:9/health", period=0.01)
+        exited.start()
+        exited.join(timeout=1)
+        self.assertTrue(exited.failed.is_set())
+        self.assertIn("exited with code 17", exited.reason)
+
+        class Running:
+            def poll(self):
+                return None
+
+        unhealthy = polyglot_harness.ServerHealthMonitor(
+            Running(), "http://127.0.0.1:9/health", period=0.01, failures=2,
+            health_check=lambda: False)
+        unhealthy.start()
+        unhealthy.join(timeout=1)
+        self.assertTrue(unhealthy.failed.is_set())
+        self.assertIn("missed 2 probes", unhealthy.reason)
+
+    def test_checkpoint_warmup_is_due_every_twenty_completed_tasks_once(self):
+        self.assertFalse(polyglot_harness._checkpoint_warmup_due(19, 0))
+        self.assertTrue(polyglot_harness._checkpoint_warmup_due(20, 0))
+        self.assertFalse(polyglot_harness._checkpoint_warmup_due(20, 20))
+        self.assertTrue(polyglot_harness._checkpoint_warmup_due(40, 20))
+
     def test_resume_recovers_complete_lines_and_drops_torn_tail(self):
         with tempfile.TemporaryDirectory(prefix="resume-", dir="/dev/shm") as tmp:
             path = Path(tmp) / "results.jsonl"
@@ -114,6 +144,8 @@ class ExternalRunControlTests(unittest.TestCase):
         watchdog.stop()
         watchdog.join(timeout=1)
         self.assertFalse(watchdog.tripped.is_set())
+        self.assertEqual(watchdog.minimum["vram_free_mib"], 4096)
+        self.assertEqual(watchdog.minimum["ram_available_gib"], 8.0)
 
     def test_zram_limit_trips_immediately(self):
         trips = []

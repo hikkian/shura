@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -144,7 +145,8 @@ def _server_log_decode_average(log_path: Path, start_offset: int) -> float | Non
     return 1000.0 * sum(tokens for _, tokens in samples) / elapsed_ms if elapsed_ms else None
 
 
-def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event) -> float:
+def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event, tag: str = "start") -> float:
+    safe_tag = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in tag)
     body = {
         "model": "tiel-coder",
         "messages": [{"role": "user", "content": (
@@ -153,7 +155,8 @@ def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event) -> floa
         )}],
         "temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_tokens": 200, "stream": False,
     }
-    (out / "warmup-request.json").write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (out / f"warmup-{safe_tag}-request.json").write_text(
+        json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     start_offset = server_log.stat().st_size
     request = urllib.request.Request(
         upstream.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
@@ -163,8 +166,8 @@ def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event) -> floa
     with urllib.request.urlopen(request, timeout=120) as response:
         payload = json.loads(response.read())
     elapsed = time.monotonic() - t0
-    (out / "warmup-response.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                                               encoding="utf-8")
+    (out / f"warmup-{safe_tag}-response.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if abort_event.is_set():
         raise RuntimeError("S6 safety watchdog tripped during the 200-token warm-up")
     logged = None
@@ -182,8 +185,8 @@ def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event) -> floa
               "server_log_predicted_tokens": predicted_n,
               "server_log_decode_tokens_per_second": tokens_per_second,
               "warmup_wall_seconds": round(elapsed, 3), "server_log_line": log_line}
-    (out / "warmup-result.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n",
-                                             encoding="utf-8")
+    (out / f"warmup-{safe_tag}-result.json").write_text(
+        json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"warmup: requested=200 usage={usage_tokens} server_log={predicted_n} tokens tps={tokens_per_second:.2f}", flush=True)
     if usage_tokens != 200 or predicted_n != 200:
         raise RuntimeError(f"warm-up produced usage={usage_tokens}, server_log={predicted_n}; expected exactly 200 tokens")
@@ -192,7 +195,61 @@ def _warmup_200(upstream: str, out: Path, server_log: Path, abort_event) -> floa
     return tokens_per_second
 
 
-def _model_server(args, out: Path, stub_server=None, safety_watchdog=None):
+class ServerHealthMonitor(threading.Thread):
+    """Detect an exited or unresponsive test server without waiting out the task cap."""
+
+    def __init__(self, proc, health_url: str, *, period: float = 5.0, failures: int = 6,
+                 health_check=None):
+        super().__init__(daemon=True)
+        self.proc = proc
+        self.health_url = health_url
+        self.period = period
+        self.failure_limit = failures
+        self.health_check = health_check or self._check_health
+        self.stop_event = threading.Event()
+        self.failed = threading.Event()
+        self.reason = ""
+
+    def _check_health(self) -> bool:
+        try:
+            with urllib.request.urlopen(self.health_url, timeout=2) as response:
+                return response.status == 200
+        except OSError:
+            return False
+
+    def run(self):
+        missed = 0
+        while not self.stop_event.wait(self.period):
+            code = self.proc.poll()
+            if code is not None:
+                self.reason = f"llama-server exited with code {code}"
+                self.failed.set()
+                return
+            try:
+                healthy = self.health_check()
+            except Exception as exc:
+                healthy = False
+                self.reason = f"health probe raised {type(exc).__name__}: {exc}"
+            missed = 0 if healthy else missed + 1
+            if missed >= self.failure_limit:
+                if not self.reason:
+                    self.reason = f"/health missed {missed} probes at {self.period:g}s intervals"
+                self.failed.set()
+                return
+
+    def stop(self):
+        self.stop_event.set()
+
+
+class CombinedAbortEvent:
+    def __init__(self, *events):
+        self.events = events
+
+    def is_set(self):
+        return any(event.is_set() for event in self.events)
+
+
+def _model_server(args, out: Path, stub_server=None, safety_watchdog=None, instance: int = 0):
     if stub_server is not None:
         return stub_server, "http://127.0.0.1:%d" % stub_server.server_port, None
     if not args.server_argv_json:
@@ -203,7 +260,8 @@ def _model_server(args, out: Path, stub_server=None, safety_watchdog=None):
         raise ValueError("server argv is empty")
     _require_draft_mtp(argv)
     argv = _server_command(argv)
-    log = (out / "llama-server.log").open("wb")
+    log_name = "llama-server.log" if instance == 0 else f"llama-server-restart-{instance}.log"
+    log = (out / log_name).open("wb")
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                             start_new_session=True, preexec_fn=_preexec_safety)
     try:
@@ -313,7 +371,6 @@ def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str],
                 **harness.ENGINE_ENV,
                 "OPENCODE_CONFIG": str(config),
                 "OPENCODE_CONFIG_DIR": str(cfg_dir),
-                "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "32768",
                 "NO_PROXY": "*", "no_proxy": "*",
                 "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "32768",
                 "XDG_CONFIG_HOME": str(scratch / "home/.config"),
@@ -386,6 +443,10 @@ def _completed(results_path: Path) -> set[tuple[str, str, int]]:
     return completed
 
 
+def _checkpoint_warmup_due(completed_count: int, last_warmup_count: int) -> bool:
+    return completed_count > 0 and completed_count % 20 == 0 and last_warmup_count != completed_count
+
+
 def _save_result(path: Path, record: dict) -> None:
     payload = (json.dumps(record, ensure_ascii=False) + "\n").encode()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -399,7 +460,8 @@ def _save_result(path: Path, record: dict) -> None:
         os.close(fd)
 
 
-def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context, safety_watchdog, server_log):
+def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
+             safety_watchdog, server_log, server_monitor=None, attempt=0):
     scratch = Path(tempfile.mkdtemp(prefix=f"{task['id']}-{arm}-0-", dir=scratch_root))
     try:
         work = scratch / "work"
@@ -407,16 +469,20 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
         cfg = harness.write_config(scratch / "cfg", port, context=context, output=32768)
         task["test_cmd"] = [sys.executable, str(BENCH / "external" / "run_aider_tests.py"),
                             "--task-dir", str(task["dir"])]
-        log_path = Path(out_dir) / "agent-logs" / f"{task['id']}__{arm}__0.agent.log"
+        attempt_suffix = "" if attempt == 0 else f"__attempt{attempt}"
+        log_path = Path(out_dir) / "agent-logs" / f"{task['id']}__{arm}__0{attempt_suffix}.agent.log"
         Path(log_path).parent.mkdir(parents=True, exist_ok=True)
         server_log_offset = server_log.stat().st_size if server_log.is_file() else 0
         code, timed_out, seconds = runner(work, task["prompt"], cfg, scratch / "data",
                                           task.get("timeout_s", 900), log_path)
         decode_rate = _server_log_decode_average(server_log, server_log_offset)
+        server_failed = bool(server_monitor and server_monitor.failed.is_set())
         if safety_watchdog.tripped.is_set():
             passed, tail = False, f"S6 watchdog stopped run: {safety_watchdog.reason}"
+        elif server_failed:
+            passed, tail = False, f"server failed during task: {server_monitor.reason}"
         else:
-            test_log = Path(out_dir) / "test-logs" / f"{task['id']}__{arm}__0.log"
+            test_log = Path(out_dir) / "test-logs" / f"{task['id']}__{arm}__0{attempt_suffix}.log"
             passed, tail = harness.run_tests(work, task["dir"] / "hidden", task["test_cmd"], timeout=30,
                                              log_path=test_log)
         totals = measurement_proxy.totals(proxy_log)
@@ -428,6 +494,9 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
             "tokens": totals["completion_tokens"], "prompt_tokens": totals["prompt_tokens"],
             "requests": totals["requests"], "request_errors": totals["errors"],
             "decode_tokens_per_second": round(decode_rate, 3) if decode_rate else None,
+            "server_failed": server_failed,
+            "server_failure_reason": server_monitor.reason if server_failed else None,
+            "attempt": attempt,
             **harness.count_events(log_path),
         }
         if not passed:
@@ -491,6 +560,66 @@ def run(args) -> list[dict]:
     pressure_guard = system_pressure.SystemPressureGuard(safety_watchdog._trip, period=5.0)
     pressure_guard.start()
     records = []
+    restart_count = 0
+    server_instance = 0
+    server_log_path = out_dir / "llama-server.log"
+    restart_log = out_dir / "server-restarts.jsonl"
+    interrupted_log = out_dir / "interrupted-attempts.jsonl"
+
+    def start_server():
+        nonlocal stub, upstream, owned_server, server_log_path
+        stub, upstream, owned_server = _model_server(
+            args, out_dir, safety_watchdog=safety_watchdog, instance=server_instance)
+        server_log_path = out_dir / ("llama-server.log" if server_instance == 0
+                                     else f"llama-server-restart-{server_instance}.log")
+
+    def warmup(tag: str, completed: int):
+        if args.stub or not args.warmup_200:
+            return
+        rate = _warmup_200(upstream, out_dir, server_log_path,
+                           safety_watchdog.tripped, tag=tag)
+        _save_result(out_dir / "warmups.jsonl", {
+            "ts": time.time(), "tag": tag, "completed_tasks": completed,
+            "decode_tokens_per_second": rate,
+        })
+
+    def restart_server(reason: str, task_id: str | None):
+        nonlocal restart_count, server_instance, owned_server, upstream, server_log_path
+        while restart_count < args.max_server_restarts:
+            if owned_server:
+                proc, log = owned_server
+                _stop_owned(proc)
+                log.close()
+                owned_server = None
+            restart_count += 1
+            server_instance = restart_count
+            _save_result(restart_log, {
+                "ts": time.time(), "restart_count": restart_count,
+                "task": task_id, "reason": reason, "action": "restarting",
+            })
+            try:
+                start_server()
+                warmup(f"restart-{restart_count}", len(done))
+                return
+            except Exception as exc:
+                reason = f"restart {restart_count} failed: {type(exc).__name__}: {exc}"
+                _save_result(restart_log, {
+                    "ts": time.time(), "restart_count": restart_count,
+                    "task": task_id, "reason": reason, "action": "restart-failed",
+                })
+                if safety_watchdog.tripped.is_set() or "below 35 tok/s" in str(exc):
+                    raise
+                if owned_server:
+                    proc, log = owned_server
+                    _stop_owned(proc)
+                    log.close()
+                    owned_server = None
+        _save_result(restart_log, {
+            "ts": time.time(), "restart_count": restart_count,
+            "task": task_id, "reason": reason, "action": "limit-reached",
+        })
+        raise RuntimeError(f"server restart limit ({args.max_server_restarts}) reached: {reason}")
+
     try:
         if args.stub:
             from stub_openai_server import Handler, ThreadingHTTPServer
@@ -503,10 +632,32 @@ def run(args) -> list[dict]:
         else:
             if safety_watchdog.gpu is None:
                 raise RuntimeError("NVML unavailable; refusing real-model run without GPU safety telemetry")
-            stub, upstream, owned_server = _model_server(args, out_dir, safety_watchdog=safety_watchdog)
-            if args.warmup_200:
-                _warmup_200(upstream, out_dir, out_dir / "llama-server.log", safety_watchdog.tripped)
+            while True:
+                try:
+                    start_server()
+                    warmup("start", len(done))
+                    break
+                except Exception as exc:
+                    if safety_watchdog.tripped.is_set():
+                        raise
+                    if "below 35 tok/s" in str(exc) or "expected exactly 200 tokens" in str(exc):
+                        raise
+                    if restart_count >= args.max_server_restarts:
+                        raise RuntimeError(f"server restart limit ({args.max_server_restarts}) reached during startup: {exc}")
+                    if owned_server:
+                        failed_proc, failed_log = owned_server
+                        _stop_owned(failed_proc)
+                        failed_log.close()
+                        owned_server = None
+                    restart_count += 1
+                    server_instance = restart_count
+                    _save_result(restart_log, {
+                        "ts": time.time(), "restart_count": restart_count, "task": None,
+                        "reason": f"startup/warmup failure: {type(exc).__name__}: {exc}",
+                        "action": "retry-startup",
+                    })
 
+        last_warmup_count = len(done)
         for idx, task in enumerate(tasks, 1):
             if safety_watchdog.tripped.is_set():
                 break
@@ -515,37 +666,88 @@ def run(args) -> list[dict]:
             if (task["id"], arm, 0) in done:
                 print(f"resume: skip {task['id']} ({arm})", flush=True)
                 continue
+            if _checkpoint_warmup_due(len(done), last_warmup_count):
+                try:
+                    warmup(f"checkpoint-{len(done)}", len(done))
+                except Exception as exc:
+                    if safety_watchdog.tripped.is_set() or "below 35 tok/s" in str(exc):
+                        raise
+                    restart_server(f"checkpoint warmup failure: {type(exc).__name__}: {exc}", task["id"])
+                last_warmup_count = len(done)
             task_path = Path(task["dir"])
             # The ordinary harness runner copies hidden tests after the agent. Restore
             # them under their public Exercism paths inside this offline runner adapter.
             task["test_cmd"] = [sys.executable, str(BENCH / "external" / "run_aider_tests.py"), "--task-dir", str(task_path)]
             if args.timeout_s > 0:
                 task["timeout_s"] = args.timeout_s
-            proxy_log = out_dir / "proxy" / f"{task['id']}__{arm}__0.jsonl"
-            proxy_log.parent.mkdir(parents=True, exist_ok=True)
-            proxy_log.unlink(missing_ok=True)
-            server = capture_proxy.serve(0, upstream, str(proxy_log), str(body_log), sample)
-            import threading
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            try:
-                result = _run_one(task, arm, server.server_port, proxy_log,
-                                  out_dir, args.scratch,
-                                  runner=_runner(Path(args.config_snapshot), model,
-                                                 f"http://127.0.0.1:{server.server_port}",
-                                                  features, args.context, args.cpus, safety_watchdog.tripped),
-                                  context=args.context, safety_watchdog=safety_watchdog,
-                                  server_log=out_dir / "llama-server.log")
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=2)
-            records.append(result)
-            _save_result(results_path, result)
-            done.add((task["id"], arm, 0))
-            print(f"{idx}/{len(tasks)} {task['id']} resolved={result['resolved']} requests={result['requests']}", flush=True)
+            attempt = 0
+            while True:
+                if safety_watchdog.tripped.is_set():
+                    break
+                proxy_suffix = "" if attempt == 0 else f"__attempt{attempt}"
+                proxy_log = out_dir / "proxy" / f"{task['id']}__{arm}__0{proxy_suffix}.jsonl"
+                proxy_log.parent.mkdir(parents=True, exist_ok=True)
+                proxy_log.unlink(missing_ok=True)
+                server = capture_proxy.serve(0, upstream, str(proxy_log), str(body_log), sample)
+                import threading
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                monitor = None
+                try:
+                    if owned_server:
+                        monitor = ServerHealthMonitor(owned_server[0],
+                                                      f"http://127.0.0.1:{args.server_port}/health")
+                        monitor.start()
+                    abort_event = (CombinedAbortEvent(safety_watchdog.tripped, monitor.failed)
+                                   if monitor else safety_watchdog.tripped)
+                    result = _run_one(task, arm, server.server_port, proxy_log,
+                                      out_dir, args.scratch,
+                                      runner=_runner(Path(args.config_snapshot), model,
+                                                     f"http://127.0.0.1:{server.server_port}",
+                                                     features, args.context, args.cpus, abort_event),
+                                      context=args.context, safety_watchdog=safety_watchdog,
+                                      server_log=server_log_path, server_monitor=monitor, attempt=attempt)
+                finally:
+                    if monitor:
+                        monitor.stop()
+                        monitor.join(timeout=3)
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+
+                if safety_watchdog.tripped.is_set():
+                    _save_result(interrupted_log, {
+                        "ts": time.time(), "task": task["id"], "attempt": attempt,
+                        "reason": safety_watchdog.reason, "action": "stopped-by-safety",
+                        "partial_result": result,
+                    })
+                    print(f"S6 safety stop: {safety_watchdog.reason}", flush=True)
+                    break
+                if result.get("server_failed") or (monitor and monitor.failed.is_set()):
+                    reason = (monitor.reason if monitor and monitor.failed.is_set()
+                              else result.get("server_failure_reason") or "server failed during task")
+                    _save_result(interrupted_log, {
+                        "ts": time.time(), "task": task["id"], "attempt": attempt,
+                        "reason": reason, "action": "task-retry-after-server-restart",
+                        "partial_result": result,
+                    })
+                    restart_server(reason, task["id"])
+                    attempt += 1
+                    continue
+                records.append(result)
+                _save_result(results_path, result)
+                done.add((task["id"], arm, 0))
+                print(f"{idx}/{len(tasks)} {task['id']} resolved={result['resolved']} requests={result['requests']}", flush=True)
+                if len(done) % 20 == 0:
+                    try:
+                        warmup(f"checkpoint-{len(done)}", len(done))
+                    except Exception as exc:
+                        if safety_watchdog.tripped.is_set() or "below 35 tok/s" in str(exc):
+                            raise
+                        restart_server(f"checkpoint warmup failure: {type(exc).__name__}: {exc}", task["id"])
+                    last_warmup_count = len(done)
+                break
             if safety_watchdog.tripped.is_set():
-                print(f"S6 safety stop: {safety_watchdog.reason}", flush=True)
                 break
     finally:
         pressure_guard.stop()
@@ -559,8 +761,10 @@ def run(args) -> list[dict]:
                 "samples": stub_safety_samples["count"] if stub_safety_samples is not None else None,
                 "reason": safety_watchdog.reason or None,
                 "tripped": safety_watchdog.tripped.is_set(),
+                "server_restarts": restart_count,
                 "limits": safety_watchdog.limits,
                 "peak": safety_watchdog.peak,
+                "minimum": safety_watchdog.minimum,
                 "system_pressure": {
                     "baseline": pressure_guard.baseline,
                     "peak_zram_pct": pressure_guard.peak_zram_pct,
@@ -601,6 +805,7 @@ def main():
     parser.add_argument("--server-port", type=int, default=8090)
     parser.add_argument("--server-argv-json", default="")
     parser.add_argument("--warmup-200", action="store_true")
+    parser.add_argument("--max-server-restarts", type=int, default=3)
     args = parser.parse_args()
     run(args)
 
