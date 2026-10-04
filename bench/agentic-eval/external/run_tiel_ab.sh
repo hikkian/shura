@@ -2,8 +2,15 @@
 set -euo pipefail
 
 if [[ $# -lt 2 ]]; then
-  echo "usage: $0 /dev/shm/run-root --stub | --server-argv-json /dev/shm/llama-argv.json" >&2
+  echo "usage: $0 /dev/shm/run-root --stub | --server-argv-json /dev/shm/llama-argv.json [--single-arm]" >&2
   exit 2
+fi
+SINGLE_ARM=0
+if [[ "${!#}" == "--single-arm" ]]; then
+  SINGLE_ARM=1
+  run_args=("$@")
+  unset 'run_args[-1]'
+  set -- "${run_args[@]}"
 fi
 
 ROOT=$(realpath "$1")
@@ -37,6 +44,7 @@ run_arm() {
     --scratch "$ROOT/scratch"
     --config-snapshot "$ROOT/config.snapshot.json"
     --model tiel
+    --languages "python,go,cpp"
     --arm-name "$arm_name"
     --context 131072
     --cpus "0,1"
@@ -53,6 +61,9 @@ run_arm() {
     for device in /dev/nvidia0 /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools; do
       [[ -e "$device" ]] && devices+=(--dev-bind "$device" "$device")
     done
+    devices+=(--ro-bind /home/alisher/Desktop/AI/llama.cpp-perf-a2/build /home/alisher/Desktop/AI/llama.cpp-perf-a2/build)
+    devices+=(--ro-bind /home/alisher/Desktop/AI/models /home/alisher/Desktop/AI/models)
+    devices+=(--ro-bind /usr/local /usr/local)
   fi
 
   taskset -c 0,1 nice -n 19 bwrap --die-with-parent --unshare-net \
@@ -73,4 +84,6 @@ run_arm() {
 }
 
 run_arm tiel-no-plugins ""
-run_arm tiel-all-plugins "completion-gate,soft-edit,loop-detector,task-card"
+if [[ "$SINGLE_ARM" == 0 ]]; then
+  run_arm tiel-all-plugins "completion-gate,soft-edit,loop-detector,task-card"
+fi

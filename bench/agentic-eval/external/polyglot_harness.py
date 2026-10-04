@@ -24,6 +24,7 @@ import harness
 import proxy as measurement_proxy
 import safety
 import capture_proxy
+import system_pressure
 
 SHURA_REPO = Path("/home/alisher/Projects/shuracode")
 MCP_MODULES = Path("/home/alisher/.config/shuracode/node_modules")
@@ -51,11 +52,13 @@ def _preexec_safety():
         pass
 
 
-def _wait_healthy(url: str, proc: subprocess.Popen, timeout: int = 600, abort_event=None) -> None:
+def _wait_healthy(url: str, proc: subprocess.Popen, timeout: int = 600, abort_event=None,
+                  abort_reason=None) -> None:
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         if abort_event is not None and abort_event.is_set():
-            raise RuntimeError("S6 safety watchdog tripped while waiting for the test server")
+            detail = abort_reason() if abort_reason else ""
+            raise RuntimeError(f"S6 safety watchdog tripped while waiting for the test server: {detail}")
         if proc.poll() is not None:
             raise RuntimeError(f"model server exited ({proc.returncode}) during load")
         try:
@@ -87,7 +90,7 @@ def _require_draft_mtp(argv: list[str]) -> None:
         raise ValueError("test server argv must explicitly enable --spec-type draft-mtp")
 
 
-def _model_server(args, out: Path, stub_server=None, abort_event=None):
+def _model_server(args, out: Path, stub_server=None, safety_watchdog=None):
     if stub_server is not None:
         return stub_server, "http://127.0.0.1:%d" % stub_server.server_port, None
     if not args.server_argv_json:
@@ -104,7 +107,9 @@ def _model_server(args, out: Path, stub_server=None, abort_event=None):
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                             start_new_session=True, preexec_fn=_preexec_safety)
     try:
-        _wait_healthy(f"http://127.0.0.1:{args.server_port}/health", proc, abort_event=abort_event)
+        _wait_healthy(f"http://127.0.0.1:{args.server_port}/health", proc,
+                      abort_event=safety_watchdog.tripped if safety_watchdog else None,
+                      abort_reason=lambda: safety_watchdog.reason if safety_watchdog else "")
     except Exception:
         _stop_owned(proc)
         log.close()
@@ -370,8 +375,13 @@ def run(args) -> list[dict]:
         safety_watchdog = safety.Watchdog("/", period=1.0, gpu=object(), reader=stub_reader)
     else:
         stub_safety_samples = None
-        safety_watchdog = safety.Watchdog("/", period=5.0)
+        # In bwrap, `/` is the sandbox mount tree and its apparent free bytes are
+        # not the host SSD. BENCH is a read-only bind mount on the real project
+        # filesystem, so this checks the actual disk headroom without writing to it.
+        safety_watchdog = safety.Watchdog(str(BENCH), period=5.0)
     safety_watchdog.start()
+    pressure_guard = system_pressure.SystemPressureGuard(safety_watchdog._trip, period=5.0)
+    pressure_guard.start()
     records = []
     try:
         if args.stub:
@@ -383,7 +393,9 @@ def run(args) -> list[dict]:
             threading.Thread(target=stub.serve_forever, daemon=True).start()
             upstream = f"http://127.0.0.1:{stub.server_port}"
         else:
-            stub, upstream, owned_server = _model_server(args, out_dir, abort_event=safety_watchdog.tripped)
+            if safety_watchdog.gpu is None:
+                raise RuntimeError("NVML unavailable; refusing real-model run without GPU safety telemetry")
+            stub, upstream, owned_server = _model_server(args, out_dir, safety_watchdog=safety_watchdog)
 
         for idx, task in enumerate(tasks, 1):
             if safety_watchdog.tripped.is_set():
@@ -425,18 +437,26 @@ def run(args) -> list[dict]:
                 print(f"S6 safety stop: {safety_watchdog.reason}", flush=True)
                 break
     finally:
+        pressure_guard.stop()
+        pressure_guard.join(timeout=2)
+        pressure_guard.sample_once()
         safety_watchdog.stop()
         safety_watchdog.join(timeout=2)
         safety_path = out_dir / f"safety-{body_arm}.json"
-        if records or not safety_path.exists():
-            safety_path.write_text(json.dumps({
+        safety_path.write_text(json.dumps({
                 "mode": "stub-synthetic" if args.stub else "S6-real",
                 "samples": stub_safety_samples["count"] if stub_safety_samples is not None else None,
                 "reason": safety_watchdog.reason or None,
                 "tripped": safety_watchdog.tripped.is_set(),
                 "limits": safety_watchdog.limits,
                 "peak": safety_watchdog.peak,
-            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                "system_pressure": {
+                    "baseline": pressure_guard.baseline,
+                    "peak_zram_pct": pressure_guard.peak_zram_pct,
+                    "peak_psi_memory_full_avg10": pressure_guard.peak_psi_pct,
+                    "samples": pressure_guard.samples,
+                },
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         if stub:
             stub.shutdown()
             stub.server_close()

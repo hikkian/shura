@@ -15,6 +15,7 @@ sys.path.insert(0, str(BENCH / "external"))
 import capture_proxy
 import safety
 import polyglot_harness
+import system_pressure
 
 
 class EchoHandler(BaseHTTPRequestHandler):
@@ -95,6 +96,37 @@ class ExternalRunControlTests(unittest.TestCase):
         watchdog.stop()
         watchdog.join(timeout=1)
         self.assertFalse(watchdog.tripped.is_set())
+
+    def test_zram_limit_trips_immediately(self):
+        trips = []
+        guard = system_pressure.SystemPressureGuard(
+            trips.append, reader=lambda: {"zram_pct": 92.1, "psi_memory_full_avg10": 0.0}
+        )
+        guard.sample_once()
+        self.assertEqual(len(trips), 1)
+        self.assertIn("zram occupancy", trips[0])
+
+    def test_psi_requires_two_consecutive_high_samples(self):
+        trips = []
+        samples = iter([
+            {"zram_pct": 69.0, "psi_memory_full_avg10": 10.1},
+            {"zram_pct": 69.0, "psi_memory_full_avg10": 9.9},
+            {"zram_pct": 69.0, "psi_memory_full_avg10": 10.1},
+            {"zram_pct": 69.0, "psi_memory_full_avg10": 10.2},
+        ])
+        def reader():
+            return next(samples, {"zram_pct": 69.0, "psi_memory_full_avg10": 0.0})
+        guard = system_pressure.SystemPressureGuard(
+            trips.append,
+            reader=lambda: {"zram_pct": 69.0, "psi_memory_full_avg10": 0.0},
+        )
+        guard.reader = reader
+        for _ in range(3):
+            guard.sample_once()
+        self.assertEqual(trips, [])
+        guard.sample_once()
+        self.assertEqual(len(trips), 1)
+        self.assertIn("PSI memory full", trips[0])
 
 
 if __name__ == "__main__":
