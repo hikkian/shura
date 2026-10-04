@@ -14,6 +14,9 @@ if [[ "${!#}" == "--single-arm" ]]; then
 fi
 
 ROOT=$(realpath "$1")
+mkdir -p "$ROOT/slots" "$ROOT/tmp"
+TASK_IDS_FILE="${PILOT_TASK_IDS_FILE:-$ROOT/validated-ids.txt}"
+case "$TASK_IDS_FILE" in /dev/shm/*) ;; *) echo "task ID manifest must be under /dev/shm" >&2; exit 2 ;; esac
 MODE=$2
 SERVER_ARGV=""
 if [[ "$MODE" == "--server-argv-json" ]]; then
@@ -39,7 +42,7 @@ run_arm() {
   local plugins=$2
   local args=(
     --tasks "$ROOT/tasks-polyglot"
-    --task-ids-file "$ROOT/validated-ids.txt"
+    --task-ids-file "$TASK_IDS_FILE"
     --out "$ROOT/run"
     --scratch "$ROOT/scratch"
     --config-snapshot "$ROOT/config.snapshot.json"
