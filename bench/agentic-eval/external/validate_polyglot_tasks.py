@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 
 BENCH = Path(__file__).resolve().parents[1]
@@ -20,12 +22,18 @@ from validate_tasks import check
 def validate(tasks_root: Path) -> dict:
     valid: list[str] = []
     no_reference: list[str] = []
+    unsupported_runtime: dict[str, str] = {}
     failures: dict[str, list[str]] = {}
     tasks = harness.all_tasks(tasks_root)
     for index, task in enumerate(tasks, 1):
         if not task.get("reference_available"):
             no_reference.append(task["id"])
             print(f"SKIP {task['id']}: no checked-in reference", flush=True)
+            continue
+        runtime_problem = _runtime_problem(task["lang"])
+        if runtime_problem:
+            unsupported_runtime[task["id"]] = runtime_problem
+            print(f"SKIP {task['id']}: {runtime_problem}", flush=True)
             continue
         problems = check(task)
         if problems:
@@ -38,11 +46,27 @@ def validate(tasks_root: Path) -> dict:
         "total_imported": len(tasks),
         "valid": len(valid),
         "no_reference": len(no_reference),
+        "unsupported_runtime": len(unsupported_runtime),
         "failed_validation": len(failures),
         "valid_task_ids": valid,
         "no_reference_task_ids": no_reference,
+        "unsupported_runtime_tasks": unsupported_runtime,
         "failures": failures,
     }
+
+
+def _runtime_problem(language: str) -> str | None:
+    required = {"go": "go", "cpp": "g++", "rust": "cargo"}
+    if language in required and shutil.which(required[language]) is None:
+        return f"missing {required[language]} executable; no packages installed"
+    if language == "javascript":
+        modules = Path(os.environ.get("POLYGLOT_NPM_MODULES", "/npm-install/node_modules"))
+        if not (modules / ".bin/jest").exists():
+            return "missing preinstalled Jest; no npm packages installed"
+    if language == "java":
+        if shutil.which("gradle") is None:
+            return "missing system Gradle; wrapper downloads are disabled"
+    return None
 
 
 def main() -> int:
@@ -53,13 +77,15 @@ def main() -> int:
     args = parser.parse_args()
     if not str(args.manifest.resolve()).startswith("/dev/shm/"):
         raise SystemExit("refusing to write validation manifest outside /dev/shm")
-    if __import__("os").environ.get("SHURA_POLYGLOT_NETNS") != "1":
+    if os.environ.get("SHURA_POLYGLOT_NETNS") != "1":
         raise SystemExit("run validation inside the network-isolated bubblewrap")
     report = validate(args.tasks)
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
     args.manifest.write_text("\n".join(report["valid_task_ids"]) + "\n", encoding="utf-8")
-    print(json.dumps({k: v for k, v in report.items() if not k.endswith("task_ids") and k != "failures"},
+    print(json.dumps({k: v for k, v in report.items() if not k.endswith("task_ids") and k not in {"failures", "unsupported_runtime_tasks"}},
                      ensure_ascii=False, indent=2))
+    if report["unsupported_runtime_tasks"]:
+        print(json.dumps(report["unsupported_runtime_tasks"], ensure_ascii=False, indent=2))
     if report["failures"]:
         print(json.dumps(report["failures"], ensure_ascii=False, indent=2))
     return 1 if report["failed_validation"] else 0

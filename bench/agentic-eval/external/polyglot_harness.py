@@ -9,17 +9,21 @@ import argparse
 import json
 import os
 from pathlib import Path
+import resource
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 
 BENCH = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BENCH))
 import harness
-import proxy
+import proxy as measurement_proxy
+import safety
+import capture_proxy
 
 SHURA_REPO = Path("/home/alisher/Projects/shuracode")
 MCP_MODULES = Path("/home/alisher/.config/shuracode/node_modules")
@@ -39,9 +43,19 @@ def sampling(model: str) -> dict:
     raise ValueError("model must be tiel-coder or occamy")
 
 
-def _wait_healthy(url: str, proc: subprocess.Popen, timeout: int = 600) -> None:
+def _preexec_safety():
+    harness._expendable()
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (AttributeError, OSError, ValueError):
+        pass
+
+
+def _wait_healthy(url: str, proc: subprocess.Popen, timeout: int = 600, abort_event=None) -> None:
     start = time.monotonic()
     while time.monotonic() - start < timeout:
+        if abort_event is not None and abort_event.is_set():
+            raise RuntimeError("S6 safety watchdog tripped while waiting for the test server")
         if proc.poll() is not None:
             raise RuntimeError(f"model server exited ({proc.returncode}) during load")
         try:
@@ -64,7 +78,16 @@ def _stop_owned(proc: subprocess.Popen | None) -> None:
         proc.wait()
 
 
-def _model_server(args, out: Path, stub_server=None):
+def _require_draft_mtp(argv: list[str]) -> None:
+    enabled = "--spec-type=draft-mtp" in argv or any(
+        argv[index] == "--spec-type" and index + 1 < len(argv) and argv[index + 1] == "draft-mtp"
+        for index in range(len(argv))
+    )
+    if not enabled:
+        raise ValueError("test server argv must explicitly enable --spec-type draft-mtp")
+
+
+def _model_server(args, out: Path, stub_server=None, abort_event=None):
     if stub_server is not None:
         return stub_server, "http://127.0.0.1:%d" % stub_server.server_port, None
     if not args.server_argv_json:
@@ -73,13 +96,15 @@ def _model_server(args, out: Path, stub_server=None):
     argv = [str(part).replace("{PORT}", str(args.server_port)) for part in argv]
     if not argv:
         raise ValueError("server argv is empty")
-    if Path(argv[0]).name != "nice":
-        argv = ["nice", "-n", "10", *argv]
+    _require_draft_mtp(argv)
+    if Path(argv[0]).name == "nice":
+        argv = argv[3:] if len(argv) >= 4 and argv[1] == "-n" else argv[1:]
+    argv = ["/usr/bin/taskset", "-c", args.cpus, "/usr/bin/nice", "-n", "19", *argv]
     log = (out / "llama-server.log").open("wb")
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                            start_new_session=True, preexec_fn=harness._expendable)
+                            start_new_session=True, preexec_fn=_preexec_safety)
     try:
-        _wait_healthy(f"http://127.0.0.1:{args.server_port}/health", proc)
+        _wait_healthy(f"http://127.0.0.1:{args.server_port}/health", proc, abort_event=abort_event)
     except Exception:
         _stop_owned(proc)
         log.close()
@@ -125,7 +150,8 @@ def _prepare_plugin_dependencies(directory: Path) -> None:
 
 
 def _config_for_task(snapshot: Path, cfg_dir: Path, proxy_url: str,
-                     model: str, features: list[str], plugin_root: Path):
+                     model: str, features: list[str], plugin_root: Path,
+                     context: int = 131072):
     _prepare_plugin_dependencies(cfg_dir)
     cfg = json.loads(snapshot.read_text(encoding="utf-8"))
     provider_id = next((name for name, provider in cfg["provider"].items() if model in (provider.get("models") or {})), None)
@@ -138,7 +164,7 @@ def _config_for_task(snapshot: Path, cfg_dir: Path, proxy_url: str,
     cfg["small_model"] = cfg["model"]
     model_cfg = provider["models"][model]
     model_cfg.setdefault("limit", {})["output"] = 32768
-    model_cfg.setdefault("limit", {}).setdefault("context", 200000)
+    model_cfg["limit"]["context"] = context
 
     cfg["plugin"] = [str(plugin_root / "server.ts")]
     for name in features:
@@ -157,7 +183,8 @@ def _config_for_task(snapshot: Path, cfg_dir: Path, proxy_url: str,
     return path
 
 
-def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str]):
+def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str],
+            context: int, abort_event):
     def run(workdir, prompt, cfg_dir, data_dir, timeout_s, log_path):
         scratch = Path(workdir).parent
         # OpenCode 1.18.32 waits for dependency checks for both config and project
@@ -166,7 +193,7 @@ def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str]):
         _prepare_plugin_dependencies(Path(workdir) / ".opencode")
         _prepare_plugin_dependencies(scratch / "home" / ".config" / "opencode")
         plugin_root = _stage_plugins(scratch, features)
-        config = _config_for_task(snapshot, Path(cfg_dir), proxy_url, model, features, plugin_root)
+        config = _config_for_task(snapshot, Path(cfg_dir), proxy_url, model, features, plugin_root, context)
         env = {**os.environ, **harness.ENGINE_ENV,
                "OPENCODE_CONFIG": str(config), "OPENCODE_CONFIG_DIR": str(cfg_dir),
                "HOME": str(scratch / "home"), "XDG_CONFIG_HOME": str(scratch / "home/.config"),
@@ -182,6 +209,7 @@ def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str]):
                 "OPENCODE_CONFIG": str(config),
                 "OPENCODE_CONFIG_DIR": str(cfg_dir),
                 "NO_PROXY": "*", "no_proxy": "*",
+                "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "32768",
                 "XDG_CONFIG_HOME": str(scratch / "home/.config"),
                 "XDG_DATA_HOME": str(scratch / "home/.local/share"),
                 "XDG_CACHE_HOME": str(scratch / "home/.cache"),
@@ -196,42 +224,124 @@ def _runner(snapshot: Path, model: str, proxy_url: str, features: list[str]):
         with Path(log_path).open("wb") as log:
             proc = subprocess.Popen(wrapped, cwd=workdir, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, env=env,
-                                    start_new_session=True, preexec_fn=harness._expendable)
-            try:
-                code = proc.wait(timeout=timeout_s)
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                timed_out, code = True, None
+                                    start_new_session=True, preexec_fn=_preexec_safety)
+            start_deadline = time.monotonic() + timeout_s
+            timed_out = False
+            code = None
+            while proc.poll() is None:
+                if abort_event.is_set():
+                    timed_out = True
+                    break
+                if time.monotonic() >= start_deadline:
+                    timed_out = True
+                    break
+                time.sleep(0.2)
+            if timed_out:
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:
                     proc.wait(timeout=15)
                 except subprocess.TimeoutExpired:
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait()
+            else:
+                code = proc.returncode
         return code, timed_out, time.monotonic() - start
     return run
+
+
+def _require_tmpfs(*paths: str | Path) -> None:
+    root = Path("/dev/shm").resolve()
+    for value in paths:
+        if not value:
+            continue
+        path = Path(value).resolve()
+        if path != root and root not in path.parents:
+            raise SystemExit(f"large run input/output must stay in /dev/shm: {path}")
+
+
+def _completed(results_path: Path) -> set[tuple[str, str, int]]:
+    """Read a resumable JSONL journal and discard only a torn trailing record."""
+    if not results_path.is_file():
+        return set()
+    good_lines = []
+    completed = set()
+    for line in results_path.read_bytes().splitlines(keepends=True):
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            break
+        if isinstance(row, dict) and row.get("task") and row.get("arm"):
+            completed.add((str(row["task"]), str(row["arm"]), int(row.get("rep", 0))))
+        good_lines.append(line)
+    if len(good_lines) != len(results_path.read_bytes().splitlines(keepends=True)):
+        recovered = results_path.with_suffix(".recovered")
+        recovered.write_bytes(b"".join(good_lines))
+        os.replace(recovered, results_path)
+    return completed
+
+
+def _save_result(path: Path, record: dict) -> None:
+    payload = (json.dumps(record, ensure_ascii=False) + "\n").encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(fd, payload[offset:])
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context, safety_watchdog):
+    scratch = Path(tempfile.mkdtemp(prefix=f"{task['id']}-{arm}-0-", dir=scratch_root))
+    try:
+        work = scratch / "work"
+        shutil.copytree(task["dir"] / "start", work)
+        cfg = harness.write_config(scratch / "cfg", port, context=context, output=32768)
+        task["test_cmd"] = [sys.executable, str(BENCH / "external" / "run_aider_tests.py"),
+                            "--task-dir", str(task["dir"])]
+        log_path = Path(out_dir) / "agent-logs" / f"{task['id']}__{arm}__0.agent.log"
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        code, timed_out, seconds = runner(work, task["prompt"], cfg, scratch / "data",
+                                          task.get("timeout_s", 900), log_path)
+        if safety_watchdog.tripped.is_set():
+            passed, tail = False, f"S6 watchdog stopped run: {safety_watchdog.reason}"
+        else:
+            passed, tail = harness.run_tests(work, task["dir"] / "hidden", task["test_cmd"], timeout=30)
+        totals = measurement_proxy.totals(proxy_log)
+        record = {
+            "arm": arm, "task": task["id"], "family": task["family"], "kind": task["kind"],
+            "rep": 0, "resolved": bool(passed), "timed_out": timed_out,
+            "context_limit_tokens": context, "output_limit_tokens": 32768,
+            "agent_exit": code, "seconds": round(seconds, 1),
+            "tokens": totals["completion_tokens"], "prompt_tokens": totals["prompt_tokens"],
+            "requests": totals["requests"], "request_errors": totals["errors"],
+            **harness.count_events(log_path),
+        }
+        if not passed:
+            record["test_tail"] = tail[-600:]
+        if safety_watchdog.tripped.is_set():
+            record["safety_stop"] = safety_watchdog.reason
+        return record
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def run(args) -> list[dict]:
     if os.environ.get("SHURA_POLYGLOT_NETNS") != "1":
         raise SystemExit("refusing to run agent unless SHURA_POLYGLOT_NETNS=1 is set inside bwrap --unshare-net")
+    _require_tmpfs(args.tasks, args.out, args.config_snapshot, args.scratch, args.task_ids_file,
+                   args.server_argv_json)
     task_dir = Path(args.tasks)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    scratch_root = Path(args.scratch)
+    scratch_root.mkdir(parents=True, exist_ok=True)
     model = "tiel-coder" if args.model == "tiel" else "occamy"
+    features = [name for name in args.plugins.split(",") if name]
+    arm = args.arm_name or (f"{args.model}-with-reliability" if features else f"{args.model}-no-reliability")
     sample = sampling(model)
-    stub, upstream, owned_server = None, None, None
-    if args.stub:
-        from stub_openai_server import Handler, ThreadingHTTPServer
-        Handler.profile = "text"
-        Handler.log_path = out_dir / "stub-requests.jsonl"
-        stub = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        import threading
-        threading.Thread(target=stub.serve_forever, daemon=True).start()
-        upstream = f"http://127.0.0.1:{stub.server_port}"
-    else:
-        stub, upstream, owned_server = _model_server(args, out_dir)
-
     tasks = harness.all_tasks(task_dir)
     selected_languages = {x.strip() for x in args.languages.split(",") if x.strip()}
     if selected_languages:
@@ -246,39 +356,87 @@ def run(args) -> list[dict]:
         tasks = tasks[:args.limit]
     if not tasks:
         raise SystemExit("no tasks selected")
-
+    results_path = out_dir / "results.jsonl"
+    done = _completed(results_path) if args.resume else set()
+    body_arm = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in arm)
+    body_log = out_dir / f"request-bodies-{body_arm}.jsonl.gz"
+    stub, upstream, owned_server = None, None, None
+    if args.stub:
+        stub_safety_samples = {"count": 0}
+        def stub_reader():
+            stub_safety_samples["count"] += 1
+            return {"gpu_c": 45, "cpu_c": 55, "vram_free": 8192, "vram_used": 0,
+                    "ram": 8.0, "disk": 100.0}
+        safety_watchdog = safety.Watchdog("/", period=1.0, gpu=object(), reader=stub_reader)
+    else:
+        stub_safety_samples = None
+        safety_watchdog = safety.Watchdog("/", period=5.0)
+    safety_watchdog.start()
     records = []
     try:
+        if args.stub:
+            from stub_openai_server import Handler, ThreadingHTTPServer
+            Handler.profile = "text"
+            Handler.log_path = out_dir / f"stub-requests-{body_arm}.jsonl"
+            stub = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            import threading
+            threading.Thread(target=stub.serve_forever, daemon=True).start()
+            upstream = f"http://127.0.0.1:{stub.server_port}"
+        else:
+            stub, upstream, owned_server = _model_server(args, out_dir, abort_event=safety_watchdog.tripped)
+
         for idx, task in enumerate(tasks, 1):
+            if safety_watchdog.tripped.is_set():
+                break
+            if shutil.disk_usage(scratch_root).free < int(args.tmpfs_min_free_gib * (1024 ** 3)):
+                raise RuntimeError("tmpfs free-space guard stopped the run")
+            if (task["id"], arm, 0) in done:
+                print(f"resume: skip {task['id']} ({arm})", flush=True)
+                continue
             task_path = Path(task["dir"])
             # The ordinary harness runner copies hidden tests after the agent. Restore
             # them under their public Exercism paths inside this offline runner adapter.
             task["test_cmd"] = [sys.executable, str(BENCH / "external" / "run_aider_tests.py"), "--task-dir", str(task_path)]
             if args.timeout_s > 0:
                 task["timeout_s"] = args.timeout_s
-            proxy_log = out_dir / "proxy" / f"{task['id']}__{args.model}__0.jsonl"
+            proxy_log = out_dir / "proxy" / f"{task['id']}__{arm}__0.jsonl"
             proxy_log.parent.mkdir(parents=True, exist_ok=True)
             proxy_log.unlink(missing_ok=True)
-            server = proxy.serve(0, upstream, str(proxy_log), sample)
+            server = capture_proxy.serve(0, upstream, str(proxy_log), str(body_log), sample)
             import threading
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                result = harness.run_one(task, args.model, 0, server.server_port, proxy_log,
-                                         out_dir / "agent-logs", context=200000,
-                                         runner=_runner(Path(args.config_snapshot), model,
-                                                        f"http://127.0.0.1:{server.server_port}",
-                                                        args.plugins.split(",") if args.plugins else []),
-                                         scratch_root=args.scratch)
+                result = _run_one(task, arm, server.server_port, proxy_log,
+                                  out_dir, args.scratch,
+                                  runner=_runner(Path(args.config_snapshot), model,
+                                                 f"http://127.0.0.1:{server.server_port}",
+                                                 features, args.context, safety_watchdog.tripped),
+                                  context=args.context, safety_watchdog=safety_watchdog)
             finally:
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=2)
             records.append(result)
-            with (out_dir / "results.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(result) + "\n")
+            _save_result(results_path, result)
+            done.add((task["id"], arm, 0))
             print(f"{idx}/{len(tasks)} {task['id']} resolved={result['resolved']} requests={result['requests']}", flush=True)
+            if safety_watchdog.tripped.is_set():
+                print(f"S6 safety stop: {safety_watchdog.reason}", flush=True)
+                break
     finally:
+        safety_watchdog.stop()
+        safety_watchdog.join(timeout=2)
+        safety_path = out_dir / f"safety-{body_arm}.json"
+        if records or not safety_path.exists():
+            safety_path.write_text(json.dumps({
+                "mode": "stub-synthetic" if args.stub else "S6-real",
+                "samples": stub_safety_samples["count"] if stub_safety_samples is not None else None,
+                "reason": safety_watchdog.reason or None,
+                "tripped": safety_watchdog.tripped.is_set(),
+                "limits": safety_watchdog.limits,
+                "peak": safety_watchdog.peak,
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         if stub:
             stub.shutdown()
             stub.server_close()
@@ -303,6 +461,11 @@ def main():
     parser.add_argument("--timeout-s", type=int, default=0,
                         help="override per-task deadline (useful for endpoint smoke tests)")
     parser.add_argument("--plugins", default="", help="comma list of completion-gate,soft-edit,loop-detector,task-card")
+    parser.add_argument("--arm-name", default="", help="stable resume key, e.g. tiel-no-plugins")
+    parser.add_argument("--context", type=int, default=131072)
+    parser.add_argument("--tmpfs-min-free-gib", type=float, default=1.5)
+    parser.add_argument("--cpus", default="0,1", help="CPU affinity inherited by model/agent subprocesses")
+    parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--stub", action="store_true")
     parser.add_argument("--server-port", type=int, default=8090)
     parser.add_argument("--server-argv-json", default="")

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import re
+import unittest
 
 
 def run(task_dir: Path, workdir: Path) -> int:
@@ -26,7 +27,7 @@ def run(task_dir: Path, workdir: Path) -> int:
     # original Exercism paths, leaving it in the project causes recursive runners
     # (notably `go test ./...`) to compile a second, invalid test package.
     shutil.rmtree(workdir / "hidden_tests", ignore_errors=True)
-    tmp_root = Path(os.environ.get("POLYGLOT_TMPDIR", "/dev/shm/shura-quality-20261004/tmp"))
+    tmp_root = Path(os.environ.get("POLYGLOT_TMPDIR", "/dev/shm/agentic-eval-external/tmp"))
     tmp_root.mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
@@ -46,6 +47,15 @@ def run(task_dir: Path, workdir: Path) -> int:
         "GRADLE_USER_HOME": str(tmp_root / "gradle-home"),
     }
     command = list(task.get("language_test_cmd", task["test_cmd"]))
+    if task["lang"] == "python":
+        # Exercism's Python test suites are unittest-based. Avoid a pytest package
+        # installation solely for public-corpus validation.
+        suite = unittest.TestLoader().discover(str(workdir), pattern="*_test.py", top_level_dir=str(workdir))
+        if suite.countTestCases() == 0:
+            print("no Python unittest files discovered", file=sys.stderr)
+            return 2
+        result = unittest.TextTestRunner(verbosity=2, stream=sys.stdout).run(suite)
+        return 0 if result.wasSuccessful() else 1
     if task["lang"] == "javascript":
         # The upstream helper hardcodes /npm-install. Use the caller's read-only
         # preinstalled tree and link it from this disposable task directory.

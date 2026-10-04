@@ -9,6 +9,8 @@ import power
 
 SETS = {
     "Aider Polyglot Python": 34,
+    "ShuraCode subset 40": 40,
+    "ShuraCode subset 50": 50,
     "Aider Polyglot validated subset": 92,
     "Aider Polyglot JavaScript": 49,
     "Aider Polyglot Python+JavaScript": 83,

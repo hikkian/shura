@@ -6,6 +6,14 @@ tasks, sessions, caches, and results. The agent and test subprocesses must run i
 `bwrap --unshare-net`; only the host-side local proxy and stub share that isolated
 loopback namespace.
 
+The Aider Polyglot snapshot used for the offline checks was commit
+`7e0611e77b54e2dea774cdc0aa00cf9f7ed6144f`. Of 225 imported exercises, the
+three-gate validated manifest contained 34 Python, 36 Go, and 22 C++ tasks (92
+total). Three Go starters already passed their hidden tests; one C++ reference
+requires Boost, and three C++ tasks lack references. Rust has 30 reference files
+but no local Cargo executable. JavaScript and Java have no reference files in
+this Aider snapshot.
+
 ## Import and validate Aider Polyglot
 
 With the official Aider Polyglot checkout already in tmpfs:
@@ -42,37 +50,87 @@ nice -n 10 bwrap --die-with-parent --unshare-net \
 The command validates that each selected starter fails, its reference passes
 three times, tests complete within 30 seconds, and test filenames are absent from
 the task prompt. Only IDs in `validated-polyglot-ids.txt` should be used in an
-experiment. It skips tasks without an upstream `.meta/example.*` reference.
+experiment. It skips tasks without an upstream `.meta/example.*` reference and
+tasks whose local test runtime is missing.
+
+Reference-source audit for the imported Aider slugs: the official Java track at
+`exercism/java@1075bfdabef69af7be24390337d212f179cad9d8` has reference files under
+`exercises/practice/<slug>/.meta/src/reference/java/` for all 47 Java exercises.
+They are not in the validated manifest because this host has no Gradle or JUnit
+cache and the wrapper would need to download packages. The official JavaScript
+track at `exercism/javascript@65a60cac2145e8c6549de39e807753e577a02f8d` has no
+reference-source files for the 49 matching slugs; its practice folders contain
+starters and tests only. The host also has no preinstalled Jest. No source or test
+packages were installed.
+
+The ShuraCode host's OpenCode overlay is 1.18.32. In that tag,
+`session/llm/request.ts` calls `maxOutputTokens(model, flags.outputTokenMax)`;
+`provider/transform.ts` defines `OUTPUT_TOKEN_MAX = 32_000` and clamps with
+`Math.min(model.limit.output, outputTokenMax)`. `effect/runtime-flags.ts` reads
+`OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` as a positive integer. There is no JSON
+config setting that raises this engine ceiling. The exact launch environment line
+for a future live run is:
+
+```sh
+export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=32768
+```
+
+It must be present in the environment of the OpenCode/ShuraCode process. Setting
+only `limit.output: 32768` leaves the engine's default ceiling at 32,000.
 
 ## Run ShuraCode through the measured harness
 
 First make a scratch config snapshot with `snapshot_live_config.py`. It reads the
 current config but writes only to tmpfs; external MCP and personal memory are
-excluded. Then run a single-task smoke against the local stub:
+excluded. Prepare a validated ID manifest there, then run both complete arms with
+the packaged wrapper:
 
 ```sh
-SHURA_POLYGLOT_NETNS=1 nice -n 10 bwrap --die-with-parent --unshare-net \
-  ... bind the ShuraCode engine read-only, the plugin SDK read-only, and `/dev/shm/bench` ... \
-  python3 -B bench/agentic-eval/external/polyglot_harness.py \
-  --tasks /dev/shm/bench/tasks-polyglot \
-  --out /dev/shm/bench/smoke \
-  --config-snapshot /dev/shm/bench/config.snapshot.json \
-  --scratch /dev/shm/bench/scratch --model tiel \
-  --languages python --task-ids aider-python-proverb --timeout-s 30 --stub
+bash bench/agentic-eval/external/run_tiel_ab.sh /dev/shm/bench --stub
 ```
 
-For real-model runs, replace `--stub` with a JSON array in a tmpfs file passed
-through `--server-argv-json`; use a test-only server command copied from the
-approved launch configuration, with only its port and slot path redirected to
-tmpfs. Run the measured proxy and agent in the same no-network namespace. Tiel
-uses `0.6 / 0.95 / 20`, Occamy `1.0 / 0.95 / 20 / presence_penalty 1.5`, both
-with a 32,768 output limit. The runner saves one JSONL result per task and keeps
-each raw agent log in the selected output directory.
+The wrapper runs first `tiel-no-plugins`, then
+`tiel-all-plugins` (`completion-gate,soft-edit,loop-detector,task-card`) against
+the same task manifest and output directory. For a one-task smoke, write just
+`aider-python-proverb` to `validated-ids.txt`. `--resume` is on by default, so a
+repeated arm skips task IDs already recorded in `results.jsonl`.
+
+For a GPU run, the exact command is:
+
+```sh
+bash bench/agentic-eval/external/run_tiel_ab.sh /dev/shm/bench \
+  --server-argv-json /dev/shm/bench/llama-argv.json
+```
+
+That JSON file is a JSON array containing a test-only
+server command with a test port, copied from the approved launch command, and
+must include `--spec-type draft-mtp` (the runner refuses to start without it). It
+and all outputs stay in tmpfs. The runner sets model output limit 32,768, context
+131,072, and `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=32768`; it captures each raw
+OpenAI-compatible request body into its own atomically renamed gzip JSON file
+before proxy rewriting, so a stopped run cannot corrupt earlier request captures
+and the actual `max_tokens` is verifiable. S6 `safety.py` watchdog is active for real
+runs; the stub path feeds synthetic safe readings and never opens NVML. Launch
+with `taskset -c 0,1 nice -n 19` to keep all child processes at the requested
+priority and affinity.
 
 The one-task stub smoke is about 2–3 seconds after OpenCode dependency checks are
-seeded from the preinstalled read-only SDK. A real 92-task pass will take on the
-order of hours and must be scheduled as a separate, approved GPU run; no real
-model was started as part of this offline task.
+seeded from the preinstalled read-only SDK. Using the prior S6 observation of
+about six minutes per real task, 92 tasks take roughly 9.2 hours per arm, or 18.4
+hours total, before restart/test overhead. A 40-task subset is about four hours
+per arm/eight hours total; a 50-task subset is about five hours per arm/ten hours
+total. No real model was started as part of this offline task.
+
+Paired-power simulation for the single two-arm comparison (80 Monte Carlo trials,
+1,000 sign flips, one planned contrast) gave, under the broad task-difficulty mix,
+approximate 5/10-point power of
+2.5%/13.8% for 40 tasks and 5.0%/18.8% for 50 tasks. The 80%-power minimum
+detectable effect was about 24.6 and 23.9 percentage points respectively. These
+small subsets therefore cannot reliably resolve a 5–10-point plugin effect.
+For all 92 validated tasks, the same simulation estimated 12.5%/36.2% power at
+5/10 points and an 80%-power detectable effect of about 16.2 points. Separately
+testing four plugin contrasts and applying Holm correction would lower power
+further.
 
 ## Reference-only cycles
 
