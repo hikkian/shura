@@ -60,6 +60,16 @@ def parse_agent_log(path: Path) -> dict[str, Any]:
                 if message_id not in seen_length_messages:
                     seen_length_messages.add(message_id)
                     length_finishes += 1
+            # OpenCode 1.18.32 writes model output truncation on the enclosing
+            # step_finish event, not always as message.finish/finish_reason.
+            if item.get("type") == "step_finish":
+                part = item.get("part") if isinstance(item.get("part"), dict) else {}
+                step_reason = part.get("reason")
+                if str(step_reason).lower() in {"length", "max_tokens", "max_output_tokens"}:
+                    message_id = str(part.get("messageID") or part.get("id") or item.get("id") or id(item))
+                    if message_id not in seen_length_messages:
+                        seen_length_messages.add(message_id)
+                        length_finishes += 1
             status = item.get("status")
             state = item.get("state") if isinstance(item.get("state"), dict) else {}
             failed = status == "error" or state.get("status") == "error" or item.get("error") not in (None, False, "")

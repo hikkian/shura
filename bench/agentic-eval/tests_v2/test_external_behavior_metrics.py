@@ -11,6 +11,17 @@ SPEC.loader.exec_module(metrics)
 
 
 class BehaviorMetricsTests(unittest.TestCase):
+    def test_step_finish_length_is_counted_for_opencode_events(self):
+        with tempfile.TemporaryDirectory(prefix="behavior-step-length-", dir="/dev/shm") as tmp:
+            event_path = Path(tmp) / "task.agent.log"
+            event_path.write_text(json.dumps({
+                "type": "step_finish",
+                "part": {"reason": "length", "messageID": "message-1", "tokens": {"output": 32768}},
+            }))
+            parsed = metrics.parse_agent_log(event_path)
+            self.assertEqual(parsed["finish_length"], 1)
+            self.assertEqual(parsed["assistant_finishes"], 0)
+
     def test_events_count_loops_errors_and_output_truncation(self):
         with tempfile.TemporaryDirectory(prefix="behavior-metrics-", dir="/dev/shm") as tmp:
             logs = Path(tmp) / "agent-logs"
