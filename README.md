@@ -13,7 +13,7 @@
 ![Python](https://img.shields.io/badge/gateway-stdlib%20Python-3776AB)
 [![CI](https://github.com/hikkian/shura/actions/workflows/ci.yml/badge.svg)](https://github.com/hikkian/shura/actions/workflows/ci.yml)
 
-English · [Русский](README.ru.md)
+English · [Русский](README.ru.md) · [Қазақша](README.kz.md)
 
 </div>
 
