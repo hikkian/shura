@@ -32,6 +32,20 @@ class EchoHandler(BaseHTTPRequestHandler):
 
 
 class ExternalRunControlTests(unittest.TestCase):
+    def test_solution_stub_indicators(self):
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            (work / "empty.py").write_text("  \n")
+            (work / "todo.py").write_text("def solve():\n    raise NotImplementedError()\n")
+            (work / "done.py").write_text("def solve():\n    return 42\n")
+            self.assertEqual(polyglot_harness._solution_stub_indicators(
+                work, ["empty.py", "todo.py", "done.py"]), {
+                    "empty_solution_files": ["empty.py"],
+                    "not_implemented_solution_files": ["todo.py"],
+                    "has_empty_solution": True,
+                    "has_not_implemented": True,
+                })
+
     def test_tmpfs_guard_rejects_disk_paths(self):
         polyglot_harness._require_tmpfs("/dev/shm/run")
         with self.assertRaises(SystemExit):

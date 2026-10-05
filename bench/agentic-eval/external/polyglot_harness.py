@@ -464,6 +464,27 @@ def _save_result(path: Path, record: dict) -> None:
         os.close(fd)
 
 
+def _solution_stub_indicators(work: Path, solution_files: list[str]) -> dict:
+    """Record explicit empty/NotImplemented solution files before scratch cleanup."""
+    empty: list[str] = []
+    not_implemented: list[str] = []
+    for relative in solution_files:
+        path = work / relative
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            empty.append(relative)
+            continue
+        if not content.strip():
+            empty.append(relative)
+        elif "NotImplementedError" in content:
+            not_implemented.append(relative)
+    return {"empty_solution_files": empty,
+            "not_implemented_solution_files": not_implemented,
+            "has_empty_solution": bool(empty),
+            "has_not_implemented": bool(not_implemented)}
+
+
 def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
              safety_watchdog, server_log, server_monitor=None, attempt=0):
     scratch = Path(tempfile.mkdtemp(prefix=f"{task['id']}-{arm}-0-", dir=scratch_root))
@@ -479,6 +500,7 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
         server_log_offset = server_log.stat().st_size if server_log.is_file() else 0
         code, timed_out, seconds = runner(work, task["prompt"], cfg, scratch / "data",
                                           task.get("timeout_s", 900), log_path)
+        stub_indicators = _solution_stub_indicators(work, task.get("solution_files", []))
         decode_rate = _server_log_decode_average(server_log, server_log_offset)
         server_failed = bool(server_monitor and server_monitor.failed.is_set())
         if safety_watchdog.tripped.is_set():
@@ -503,6 +525,7 @@ def _run_one(task, arm, port, proxy_log, out_dir, scratch_root, runner, context,
             "attempt": attempt,
             "agent_log": str(log_path),
             "test_log": str(test_log) if not server_failed and not safety_watchdog.tripped.is_set() else None,
+            **stub_indicators,
             **harness.count_events(log_path),
         }
         if not passed:
