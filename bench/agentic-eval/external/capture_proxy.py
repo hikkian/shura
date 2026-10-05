@@ -47,7 +47,12 @@ class CaptureHandler(proxy.Handler):
                     body = json.loads(captured)
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     body = {"raw_body_utf8": captured.decode("utf-8", errors="replace")}
-                record = {"ts": time.time(), "path": self.path, "request": body}
+                try:
+                    effective = json.loads(proxy.rewrite_body(json.dumps(body).encode(), self.extra))
+                except (TypeError, ValueError, UnicodeDecodeError):
+                    effective = None
+                record = {"ts": time.time(), "path": self.path, "request": body,
+                          "effective_request": effective}
                 base = Path(self.capture_path)
                 suffix = ".jsonl.gz"
                 directory = base.parent / (base.name[:-len(suffix)] if base.name.endswith(suffix) else base.stem)

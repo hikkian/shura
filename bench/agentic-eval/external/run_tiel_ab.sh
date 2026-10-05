@@ -36,19 +36,21 @@ SHURA_REPO=/home/alisher/Projects/shura
 SHURACODE_REPO=/home/alisher/Projects/shuracode
 ENGINE=/home/alisher/.local/share/shuracode/libexec/shuracode
 SDK=/home/alisher/.config/shuracode/node_modules
+MODEL_NAME="${PILOT_MODEL:-tiel}"
 
 run_arm() {
   local arm_name=$1
   local plugins=$2
+  local selected_arm="${PILOT_ARM_NAME:-$arm_name}"
   local args=(
     --tasks "$ROOT/tasks-polyglot"
     --task-ids-file "$TASK_IDS_FILE"
     --out "$ROOT/run"
     --scratch "$ROOT/scratch"
     --config-snapshot "$ROOT/config.snapshot.json"
-    --model tiel
+    --model "$MODEL_NAME"
     --languages "python,go,cpp"
-    --arm-name "$arm_name"
+    --arm-name "$selected_arm"
     --context 131072
     --cpus "0,1"
   )

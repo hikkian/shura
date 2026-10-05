@@ -42,7 +42,11 @@ def sampling(model: str) -> dict:
     if model == "tiel-coder":
         return {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "max_tokens": 32768}
     if model == "occamy":
-        return {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "max_tokens": 32768, "presence_penalty": 1.5}
+        return {
+            "temperature": 1.0, "top_p": 0.95, "top_k": 20, "max_tokens": 32768,
+            "presence_penalty": 1.5, "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True},
+        }
     raise ValueError("model must be tiel-coder or occamy")
 
 

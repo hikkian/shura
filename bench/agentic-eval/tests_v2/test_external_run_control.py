@@ -111,12 +111,17 @@ class ExternalRunControlTests(unittest.TestCase):
             threading.Thread(target=upstream.serve_forever, daemon=True).start()
             capture_path = root / "request-bodies.jsonl.gz"
             usage_path = root / "usage.jsonl"
+            extra = {"temperature": 1.0, "top_p": 0.95, "top_k": 20,
+                     "presence_penalty": 1.5, "min_p": 0.0, "max_tokens": 32768,
+                     "chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True}}
             server = capture_proxy.serve(
-                0, f"http://127.0.0.1:{upstream.server_port}", str(usage_path), str(capture_path)
+                0, f"http://127.0.0.1:{upstream.server_port}", str(usage_path), str(capture_path), extra
             )
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
-            request_body = {"model": "stub", "max_tokens": 32768, "messages": [{"role": "user", "content": "test"}]}
+            request_body = {"model": "stub", "max_tokens": 32000, "temperature": 0.6,
+                            "messages": [{"role": "user", "content": "test"}]}
+            expected_upstream = {**request_body, **extra}
             try:
                 request = Request(
                     f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
@@ -125,7 +130,7 @@ class ExternalRunControlTests(unittest.TestCase):
                     method="POST",
                 )
                 with urlopen(request, timeout=5) as response:
-                    self.assertEqual(json.loads(response.read()), request_body)
+                    self.assertEqual(json.loads(response.read()), expected_upstream)
             finally:
                 server.shutdown(); server.server_close(); thread.join(timeout=2)
                 upstream.shutdown(); upstream.server_close()
@@ -133,7 +138,23 @@ class ExternalRunControlTests(unittest.TestCase):
             body_file = next(body_dir.glob("*.json.gz"))
             with gzip.open(body_file, "rt", encoding="utf-8") as stream:
                 captured = json.loads(stream.readline())
-            self.assertEqual(captured["request"]["max_tokens"], 32768)
+            self.assertEqual(captured["request"]["max_tokens"], 32000)
+            effective = captured["effective_request"]
+            self.assertEqual(effective["max_tokens"], 32768)
+            self.assertEqual((effective["temperature"], effective["top_p"], effective["top_k"]),
+                             (1.0, 0.95, 20))
+            self.assertEqual(effective["presence_penalty"], 1.5)
+            self.assertEqual(effective["min_p"], 0.0)
+            self.assertEqual(effective["chat_template_kwargs"], {
+                "enable_thinking": True, "preserve_thinking": True,
+            })
+
+    def test_occamy_author_sampling_is_explicit(self):
+        self.assertEqual(polyglot_harness.sampling("occamy"), {
+            "temperature": 1.0, "top_p": 0.95, "top_k": 20, "max_tokens": 32768,
+            "presence_penalty": 1.5, "min_p": 0.0,
+            "chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True},
+        })
 
     def test_s6_watchdog_can_be_exercised_without_nvml(self):
         safe_reading = lambda: {"gpu_c": 40, "cpu_c": 50, "vram_free": 4096,
