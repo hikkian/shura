@@ -136,7 +136,7 @@ its rollback step must be added.
 The revised guard has offline fault tests. **GPU validation and acceptance are pending.** The earlier
 prototype passed interleaved speed/quality checks but hit the zram growth stop before final 9/9 after
 restore; those results do not accept the revised implementation. See
-[benchmark notes](BENCHMARKS.md#gateway-vram-guard-partial-validation).
+[benchmark notes](BENCHMARKS.md#elastic-vram-part-a-guardian-acceptance-2026-09-30).
 
 No periodic metrics are written to disk. Emergency slot bytes and metadata stay in RAM (0 GB/day of
 SSD checkpoint writes), including after gateway restart. Transition/error messages use the existing
