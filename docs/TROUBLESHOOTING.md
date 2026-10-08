@@ -29,7 +29,7 @@ recurrent state to re-evaluate the last token. Continuations of the conversation
 something or lower it in `config/guardian.json`. Check `curl -s localhost:8080/guardian/status`.
 
 ## Gateway is in `ERROR`
-Three consecutive failed loads. Read `journalctl --user -u ai-gateway -n 100`, fix the cause, then
+The gateway goes to `ERROR` after `crashRestartMaxAttempts` consecutive crashes or exits (3 in the example config): a server that exits while loading or after it was running. A load that only times out on the health check does not count. Read `journalctl --user -u ai-gateway -n 100`, fix the cause, then
 `curl -X POST localhost:8080/guardian/ai-on`.
 
 ## Web search tool fails

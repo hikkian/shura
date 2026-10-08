@@ -45,7 +45,7 @@ using the browser, the IDE, messengers and calls on the same machine.
 | Model | [Tiel-Coder-35B-A3B-MTP](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP), `UD-IQ4_XS`, 18 GB |
 | Hardware tested | RTX 4070 SUPER 12 GB · Ryzen 5 5600 · 32 GB DDR4-3200 · Fedora 44 (one machine) |
 | Context | 200k window, benchmarked with **~187k tokens actually filled** |
-| Decode speed at 187k | **38–39 tok/s** on a quiet desktop, **34–37** on a busy one ([details](#results)); ~50–54 up to 64k |
+| Decode speed at 187k | **38–39 tok/s** on a quiet desktop, **34–37** on a busy one ([details](#results)); ~49–54 up to 64k |
 | Returning to a session | 1.9 s between sessions, ~13 s after a full model reload |
 | Desktop latency while generating | p99 0.1–0.3 ms (idle: 0.1–0.5 ms) |
 | Everything offline | inference, web search, browser automation |
@@ -97,7 +97,7 @@ How the speed was reached (mean decode tok/s over 5 requests at ~187k):
 | + perf fork with the MoE expert cache (16 slots) | 35.9 |
 | + patched TurboQuant `turbo3` KV, which leaves room for 24 slots | **38.3** |
 
-The MTP head is on in all rows (~85% of drafts accepted). Every measurement, including the methodology
+The MTP head is on in all rows (~83% of drafts accepted at the live setting, n_max 1 and p_min 0.2). Every measurement, including the methodology
 and the ideas that did not work, is in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**.
 
 | Session resume at 187k | Time |
@@ -111,11 +111,11 @@ and the ideas that did not work, is in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md
 | Desktop impact while generating | |
 |---|---:|
 | UI scheduler latency p99 | 0.1–0.3 ms |
-| Free RAM with a browser, IDE and messenger open | ~12.5 GB of 32 GB |
+| Free RAM with a browser, IDE and messenger open | not measured; llama-server RSS is 12.5 GB (`--load-mode none`) or 15.1 GB (mmap) |
 | CPU threads used by the model | 6 of 12, at lower priority |
 
 > [!WARNING]
-> **The caveat that matters: VRAM is shared with your desktop.** 24 expert slots take about 10.9 GB of
+> **The caveat that matters: VRAM is shared with your desktop.** 24 expert slots were not measured; 22 slots take 11.59 GB and 28 slots 11.83 GB (turbo3) of
 > the 12 GB card. On a desktop that also runs a browser, a messenger and a video call, free VRAM can drop
 > below 150 MiB (the desktop's GPU memory moves by ±270 MiB; the lock screen alone takes ~350 MiB). On such a
 > machine the stable setting today is **12–16 slots and 34–37 tok/s** at 187k. One busy CPU core costs
@@ -194,8 +194,8 @@ changes: **[docs/INSTALLER.md](docs/INSTALLER.md)**. Manual setup: **[docs/INSTA
 Everything starts with the desktop session; nothing needs to be launched by hand.
 
 - **App menu → Shura.** Pick a project folder and ShuraCode opens there in its own window. Right-click the
-  icon for *Load model now* / *Unload model*. Works on any desktop with any common terminal
-  (`SHURA_TERMINAL` chooses one).
+  icon for *Load model now* / *Unload model*. Works with one of the supported terminals
+  (`SHURA_TERMINAL` chooses one; only Ghostty has been tested).
 - **Terminal:** `cd` into a project and type `shura`. The model starts loading in the background.
 
 ```
@@ -234,7 +234,7 @@ itself, without compiling anything and without root.
 first; a dropped download **resumes**; every file is verified (size and SHA-256); it runs the real server with the planned
 settings to **prove** they work; if the machine runs out of memory it plans again with more room left free and retries; and
 if nothing works it leaves a report without personal data and keeps the downloads, so the next run does not start over.
-`shura uninstall` removes everything it put on your disk.
+`shura uninstall` removes the Shura home folder (engines, models, logs, state). The `setup.sh` install also writes files outside it ([INSTALLER.md](docs/INSTALLER.md)); uninstall leaves those.
 
 > [!NOTE]
 > Where it can run (Vulkan on Linux, Metal on Apple Silicon, CUDA on Windows with NVIDIA), `shura install` also tries a
@@ -265,8 +265,7 @@ if nothing works it leaves a report without personal data and keeps the download
 | CPU-only, including many-channel servers | `shura install` | **Unverified**; speed predictions are least certain here |
 
 What is checked automatically on every commit (CI): unit tests on Linux, macOS and Windows; the real llama.cpp build
-is downloaded and run on a 19 MB model (the CPU build on Linux and Windows, the Metal build on macOS, inside a CI virtual machine); the Vulkan build runs on a software driver (experimental); the
-flags `shura install` passes to `llama-server` were checked against the real `--help` of the pinned release (b11301).
+is downloaded and run on a 19 MB model (the CPU build on Linux and Windows, the Metal build on macOS, inside a CI virtual machine); the Vulkan build runs on a software driver (experimental). The flags `shura install` passes to `llama-server` were checked against the real `--help` of the pinned release (b11301); no CI step repeats that check.
 
 What **no one has checked**: a real GPU other than the author's; loading the real 17 GB model on other hardware; the speed
 predictions (estimates, fitted to one machine, shown as a range, and the plan is tested by really starting the server);
@@ -306,9 +305,9 @@ How the decision is made: **[docs/HARDWARE.md](docs/HARDWARE.md)**. To add your 
 
 **What this is not:**
 - It is a 35B-A3B-class model at 4-bit. Expect a capable local coding assistant, not a frontier model.
-- Linux and NVIDIA only. The expert cache and TurboQuant in the llama.cpp fork are written in CUDA.
+- Tested on Linux and NVIDIA only. The expert cache and TurboQuant in the llama.cpp fork are written in CUDA.
 - Not validated on other hardware: other distributions (the installer's package steps were checked in
-  Ubuntu 24.04, Debian 12 and Arch containers only; a full fresh install has not been run there), XFCE and
+  Ubuntu 24.04, Debian 12, Arch and Fedora 44 containers only; a full fresh install has not been run there), XFCE and
   tiling WMs, GNOME since the switch to KDE, terminals other than Ghostty (dry-run only), the
   `kdialog`/`yad` dialogs, and GPUs other than a 12 GB card.
 

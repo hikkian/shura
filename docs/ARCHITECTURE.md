@@ -8,7 +8,6 @@ flowchart LR
         OC["ShuraCode<br/>(OpenCode engine, offline)"]
     end
     subgraph Tools["MCP servers (stdio)"]
-        F["mcp-tool-filter.js<br/>trims tool schemas"]
         PW["Playwright MCP<br/>headless Chromium"]
         SX["mcp-searxng"]
     end
@@ -22,8 +21,8 @@ flowchart LR
     OC -- "OpenAI API" --> GW --> LS
     LS --- GPU
     LS --- CPU
-    OC -- stdio --> F --> PW
-    F --> SX --> SXN
+    OC -- stdio --> PW
+    OC -- stdio --> SX --> SXN
 ```
 
 ## The gateway
@@ -68,13 +67,13 @@ stateDiagram-v2
 | `GET /guardian/status` | JSON: state, mode, RAM/VRAM headroom, idle time, last error, `vram_pressure`, `last_yield_reason`, `last_yield_at`, `ram_session_saved`, `vram_reload_min_gb` |
 | `POST /guardian/unload` | Save slot and unload now; the next request reloads |
 | `POST /guardian/ai-off` · `ai-on` | Persistent manual disable / re-enable (also clears `ERROR`) |
-| `POST /guardian/multimedia-lock` · `unlock` | Free the GPU for another job (e.g. Whisper) and block loads meanwhile |
+| `POST /guardian/multimedia-lock` · `multimedia-unlock` | Free the GPU for another job (e.g. Whisper) and block loads meanwhile |
 
 Every other path is proxied to llama-server unchanged (including its web UI at `/`).
 
 ### Yielding VRAM to the desktop (experimental, off by default)
 
-`vramGuard: false` runs the preserved original gateway entrypoint. Existing installations do not
+`vramGuard: false` alone does not run the preserved original gateway entrypoint (see the switch list near the end of this section). Existing installations do not
 activate the guard when the new code is installed. Enabling it needs operator approval after isolated
 validation. The live binary and model launch configuration are unchanged by this feature.
 
@@ -122,7 +121,7 @@ exceptions are caught and reported; later ticks retry instead of silently losing
 | `vramEmergencySeconds` | 10 | Consecutive seconds below emergency threshold. |
 | `vramReloadWaitSeconds` | 30 | Maximum request wait before 503. |
 | `vramPressureSlotDir` | `/dev/shm` | Existing tmpfs parent; private per-state directory. |
-| `vramPressureSlotReserveMiB` | 512 | Minimum tmpfs free space and RAM above `ramFreeMinGB`; the 187k slot is about 1.25 GiB. |
+| `vramPressureSlotReserveMiB` | 512 | Minimum tmpfs free space and RAM above `ramFreeMinGB`; the 187k slot is about 1.19 GiB (1,273,555,436 bytes with one checkpoint appendix). |
 
 After an approved deployment, rollback is one operator command from the repository root:
 `python3 scripts/rollback_gateway.py --config-dir config`. It waits up to 90 seconds for the active
@@ -130,8 +129,8 @@ answer, gates new requests, backs up the guardian config, atomically disables `v
 only the existing user service, and restores the prior manual on/off setting. A failed restart restores
 the original config and retries the service. This command has offline tests and has **not** been run
 against the live service. Part A preserves the original gateway source in `_gateway_legacy.py` and does
-not replace the llama-server binary. The preserved legacy gateway runs only when both `vramGuard` and
-`slotSaveCheckpoints` are disabled; enabling either selects the new gateway. Before a later binary deployment, a verified binary backup and
+not replace the llama-server binary. The preserved legacy gateway runs only when all of `vramGuard`,
+`slotSaveCheckpoints`, `gameMode`, `politeModel`, `slotGears` and `crashRecovery` are off; turning on any one of them selects the new gateway. Before a later binary deployment, a verified binary backup and
 its rollback step must be added.
 
 The revised guard has offline fault tests. **GPU validation and acceptance are pending.** The earlier
@@ -157,7 +156,7 @@ agentic coding. The obvious approach is to dump the slot to disk after every res
 
 | Strategy | Writes/day (heavy use) | Rated endurance consumed |
 |---|---:|---|
-| Save after every response (hundreds/day at 100-187k tokens) | 135-640 GB | full rating in ~7-30 years |
+| Save after every response (hundreds/day at 100-187k tokens) | 135-640 GB | full rating in ~7-32 years |
 | Save only when switching sessions | 10-25 GB | negligible |
 | **Keep in RAM, save only on model unload (this project)** | a few GB | negligible |
 
@@ -180,15 +179,7 @@ of the conversation works as expected.
 
 Native checkpoint mutations (`POST`, `PUT`, `DELETE`, or `PATCH` on `/slots`) are private to the gateway lifecycle. The public gateway rejects them with HTTP 403 before loading a model, in both gateway implementations. Internal A2 save/restore calls still go directly to the owned backend and enforce model/mode ownership. Controlled native slot benchmarks must address their isolated llama-server directly. Read-only slot inspection remains available.
 
-## MCP tool trimming
-
-[`mcp/mcp-tool-filter.js`](../mcp/mcp-tool-filter.js) is a transparent stdio proxy that filters an MCP
-server's `tools/list` response against an allowlist before the client sees it. Every tool schema sits
-in the system prompt of every request, so trimming Playwright from 25 to 14 tools and SearXNG from
-4 to 2 saves ~2,850 tokens of prefill per fresh session.
-
-
-### Opt-in game parking
+## Opt-in game parking
 
 `gameMode` and automatic detector flags default to false. The mode uses A2 RAM snapshots and independent NVML/Steam/reaper/GameMode signals. Known desktop processes and the owned model are excluded. Activation requires5s; release requires60s quiet and never preloads the model. `shura pause`/`resume` use the same policy; status reports PARKED_BY_GAME, reason and elapsed time.
 
@@ -196,7 +187,7 @@ Paused/draining admission returns503 with Retry-After. Active responses get up t
 
 Isolated reduced4 tests:187k A2 cache_n186999/prompt_n33,6GiB CUDA hog after parking,3s false signal,20s flaps,manual control,final9/9. Real timeout used reduced4/mmap after load-mode none hit the PSI guard. Three short-context matched pairs gave medianON/OFF0.9814,identical output/MTP;CPU<=2.5 and pair delta<=0.8. GameMode registration was mocked to avoid its system-tuning hooks; installed ClientCount query inspected. Real games and instant VRAM allocation surges were not tested: delayed detection cannot guarantee game-start headroom. Local evidence:ignored bench/results/game-mode-a2-20261001.
 
-### Offline reliability prototypes (default off)
+## Offline reliability prototypes (default off)
 
 `politeModel` uses the owning user-systemd service's cgroup v2 CPUWeight, not irreversible
 nice/SCHED_IDLE changes. The default-off feature offers `politeMode=static` (candidate weight20)
