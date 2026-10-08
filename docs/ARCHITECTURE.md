@@ -2,28 +2,7 @@
 
 ## Overview
 
-```mermaid
-flowchart LR
-    subgraph Client
-        OC["ShuraCode<br/>(OpenCode engine, offline)"]
-    end
-    subgraph Tools["MCP servers (stdio)"]
-        PW["Playwright MCP<br/>headless Chromium"]
-        SX["mcp-searxng"]
-    end
-    SXN[("SearXNG<br/>Docker, 127.0.0.1:8888")]
-    GW["AI Gateway<br/>:8080 (systemd user service)"]
-    LS["llama-server<br/>:8090 (spawned on demand)"]
-    subgraph HW["Hardware split"]
-        GPU["GPU 12 GB: attention, dense layers,<br/>MTP head, 24 hot experts / layer,<br/>turbo3 KV cache"]
-        CPU["CPU RAM: cold experts of<br/>the first 26 layers, prompt cache"]
-    end
-    OC -- "OpenAI API" --> GW --> LS
-    LS --- GPU
-    LS --- CPU
-    OC -- stdio --> PW
-    OC -- stdio --> SX --> SXN
-```
+![Shura architecture overview: client, gateway, llama-server, GPU and RAM split, and the MCP servers](img/architecture-overview.svg)
 
 ## The gateway
 
@@ -50,7 +29,7 @@ stateDiagram-v2
     UNLOADED --> LOADING: request
     LOADING --> READY: /health 200 (+ restore saved slot)
     LOADING --> UNLOADED: load failed (retry on next request)
-    LOADING --> ERROR: 3 failed loads
+    LOADING --> ERROR: crash limit reached (crashRestartMaxAttempts)
     READY --> READY: text↔vision switch (save → restart)
     READY --> UNLOADED: idle / unload / ai-off (save slot)
     READY --> MEMORY_PRESSURE: low RAM (save slot)

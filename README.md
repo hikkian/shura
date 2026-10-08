@@ -123,15 +123,7 @@ and the ideas that did not work, is in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md
 
 ## How it works
 
-```mermaid
-flowchart LR
-    OC["ShuraCode<br/>(offline)"] -- OpenAI API --> GW["AI Gateway :8080"]
-    GW -- spawns / proxies --> LS["llama-server :8090"]
-    LS --- GPU["GPU: attention, MTP head,<br/>hot experts per layer, turbo3 KV"]
-    LS --- CPU["RAM: cold experts, prompt cache"]
-    OC -- MCP --> PW["Playwright"]
-    OC -- MCP --> SX["SearXNG (Docker)"]
-```
+![How Shura works: ShuraCode, the AI Gateway, llama-server, GPU and RAM, and two MCP tools](docs/img/how-it-works.svg)
 
 The experts of the first 26 layers stay in system RAM and the CPU computes the cold ones on 6 threads at
 reduced priority; the most-routed ones stay in VRAM, chosen by the routing profile. The built-in MTP head
