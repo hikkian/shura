@@ -5,11 +5,11 @@
   <img alt="Shura · شورى" src="assets/logo-wordmark-light.png" width="520">
 </picture>
 
-### A 35B coding model at 200k context on one 12 GB GPU, without taking over your desktop
+### A 35B coding model on one gaming GPU, on a PC you keep using
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Verified](https://img.shields.io/badge/verified-NVIDIA%20%2B%20Linux-76B900)
-![Experimental](https://img.shields.io/badge/experimental-AMD%20%C2%B7%20Intel%20%C2%B7%20Apple%20%C2%B7%20Windows%20%C2%B7%20CPU-orange)
+![Measured on](https://img.shields.io/badge/measured%20on-RX%207800%20XT%2016%20GB%20%C2%B7%20ROCm%207.2.4%20%C2%B7%20Linux-ED1C24)
+![Also measured](https://img.shields.io/badge/earlier-RTX%204070%20SUPER%2012%20GB%20(2026--09)-76B900)
 ![Python](https://img.shields.io/badge/gateway-stdlib%20Python-3776AB)
 [![CI](https://github.com/hikkian/shura/actions/workflows/ci.yml/badge.svg)](https://github.com/hikkian/shura/actions/workflows/ci.yml)
 
@@ -25,177 +25,177 @@ English · [Русский](README.ru.md)
 
 ## What is Shura
 
-Mixture-of-Experts models like Qwen3.6-35B-A3B are a great fit for local coding: 35B parameters of
-knowledge, but only ~3B are active per token. The catch is size. The model weighs **18 GB**, a good
-consumer GPU has **12 GB**, and a coding agent wants **200k tokens of context** on top of that.
+A 35B Mixture-of-Experts coding model runs on an ordinary home PC with one gaming graphics card. No
+server, no cloud. And while the model works, the computer stays yours: the browser, video, a call and
+the IDE keep running on the same GPU without stutter.
 
-Shura is a tuned, measured and packaged setup that makes this work on a normal desktop PC:
+How that is done, in one breath (the working build; the [Status](#status-preparing-10) section says what is in
+`main` today): the model's **hot experts live in VRAM** and the rest are computed from
+system RAM; a **governor inside the inference server** watches free VRAM every 200 ms and gives memory
+back to the desktop the moment the desktop needs it; when it has to stop, it **checkpoints and continues
+the same answer** after a restart; the **KV cache is compressed** so a 200k-token window fits; the
+model's own **MTP head** drafts tokens; a small **gateway** loads the model on demand, keeps sessions in
+RAM and protects your SSD; **ShuraCode**, an offline coding agent, sits on top. The engine is our fork of
+llama.cpp, [hikkian/llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura).
 
-- the **hot experts live in VRAM**, the rest in system RAM and are computed by the CPU at low priority;
-- the **KV cache is compressed** (TurboQuant) so the freed VRAM goes to more hot experts;
-- the **model's own MTP head** drafts tokens for speculative decoding (+32% decode);
-- a small **gateway** loads the model on demand, keeps sessions in RAM and protects your SSD;
-- **ShuraCode**, an offline coding agent, sits on top.
-
-The goal is not a benchmark record. It is a coding assistant you can leave running while you keep
-using the browser, the IDE, messengers and calls on the same machine.
-
-| At a glance | |
+| At a glance (working build, measured 2026-10-24/25) | |
 |---|---|
-| Model | [Tiel-Coder-35B-A3B-MTP](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP), `UD-IQ4_XS`, 18 GB |
-| Hardware tested | RTX 4070 SUPER 12 GB · Ryzen 5 5600 · 32 GB DDR4-3200 · Fedora 44 (one machine) |
-| Context | 200k window, benchmarked with **~187k tokens actually filled** |
-| Decode speed at 187k | **38–39 tok/s** on a quiet desktop, **34–37** on a busy one ([details](#results)); ~50–54 up to 64k |
-| Returning to a session | 1.9 s between sessions, ~13 s after a full model reload |
-| Desktop latency while generating | p99 0.1–0.3 ms (idle: 0.1–0.5 ms) |
+| Models | [Tiel-Coder-35B-A3B](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) (APEX-I-MiniPlus quant, ~14 GB, with its MTP head); Occamy-1.0 as the second model |
+| Hardware | AMD RX 7800 XT 16 GB · Ryzen 5 5600 · 32 GB DDR4-3200 · Fedora 44, KDE on Wayland · ROCm 7.2.4 |
+| Context | 200k window; decode **75 tok/s** on a short prompt, **71** at 28k, **49** at 100k filled (Tiel) |
+| The desktop comes first | the model keeps 1.5 GiB of VRAM free for the desktop; when the desktop grabs +400 MiB mid-answer, the model gives it back in **0.24 s** and keeps streaming |
+| Coming back to a session | a 100k-token session is restored in **0.5 s** instead of 156 s of re-reading |
+| Stability | memory flat (0.01 GiB/h) and 0 GPU page faults over 170 long requests up to 180k tokens |
 | Everything offline | inference, web search, browser automation |
 
 > [!IMPORTANT]
-> These numbers come from **one machine**. Other GPUs, CPUs and memory speeds will differ, and the
-> setup needs re-tuning there. See [Tested environment and limits](#tested-environment-and-limits).
+> These numbers come from **one machine** and from the **working build** that is being prepared for 1.0
+> (see [Status](#status-preparing-10)). Other GPUs, CPUs and memory speeds will differ, and the setup
+> needs re-tuning there. Raw measurements and the method are published with the 1.0 benchmark set.
 
-## What is new here
+## Status: preparing 1.0
 
-Most of the speed comes from other people's excellent work (credited below). This repository's own
-contribution is finding what actually matters on a 12 GB card, making it reliable, and making it
-coexist with a working desktop:
+This README describes the project as it is measured today. Not all of it is in the published `main`
+branch yet. To be exact:
 
-| | What | Why it matters |
+| | In the published `main` today | Measured on the working build, lands in 1.0 |
 |---|---|---|
-| **Measured recipe** | A reproducible tuning path from stock llama.cpp (26.1 tok/s) to 38.3 tok/s at real 187k context, including every idea that failed | Most popular tricks did not transfer to 12 GB at 200k; the failures are documented too |
-| **Decode-traced routing profile** | Which experts to keep in VRAM is decided from tokens *generated* in agent sessions, not from prompts | A profile built from long prompts is *worse* for decode than a tiny synthetic one |
-| **Session continuity on hybrid models** | Persistent context checkpoints in slot save/restore (based on the upstream fix for [llama.cpp #25913](https://github.com/ggml-org/llama.cpp/issues/25913), plus an integrity hash) | After a model unload, a 187k session resumes by re-reading ~30 tokens instead of ~290 s (opt-in) |
-| **SSD-wear-aware gateway** | Sessions stay in RAM; one file is written only when the model unloads | Saving after every response would write an estimated 135–640 GB/day |
-| **Desktop-aware VRAM guard** | When free VRAM gets tight, the session is parked in RAM and the model yields to the desktop (opt-in) | The desktop's GPU memory is not constant (see [what we learned](#what-we-learned)) |
-| **Hardware-aware installer** | Picks the quant that fits your RAM/VRAM from real GGUF headers, builds for your GPU, measures layouts | One command; written for Fedora, Ubuntu/Debian and Arch |
-| **ShuraCode** | An offline agent with permanent memory, a read-only Plan mode and self-tested engine updates | Lives in [its own repository](https://github.com/hikkian/shuracode) |
+| Engine | thecodacus `perf` fork of llama.cpp with the MoE expert cache and TurboQuant KV, plus our patches (TurboQuant fix, persistent slot checkpoints); **NVIDIA/CUDA** | our fork [llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura) built with **ROCm/HIP for AMD**; the VRAM governor, elastic expert cache, pause-and-continue, page-fault fix in the MoE matmul path (these patches are in the working branch, not yet in the public fork) |
+| Memory | VRAM guard that parks the session in RAM under pressure (opt-in); prompt cache in RAM; the session is written to disk only when the model unloads | governor keeps ≥ 1.5 GiB free by construction; RAM budget that counts honest free memory and loads the model without evicting your browser from the page cache; lighter fallback layouts instead of refusing to load |
+| Sessions | slot save/restore with persistent context checkpoints (opt-in) | checkpoint on pause, restart, and the **same answer continues**; automatic switch between a short-context and a 200k layout keeping the slot |
+| Gateway, installer, ShuraCode | on-demand loading, idle unload, SSD-wear-aware saving, hardware planner, `shura` CLI | the same, plus desk-need signals (full-screen app, game) that raise the VRAM reserve before the desktop asks |
+| Numbers | 2026-09 on an RTX 4070 SUPER 12 GB: 38–39 tok/s at 187k filled context ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) | 2026-10 on an RX 7800 XT 16 GB: the table above and [Results](#results) |
 
-> [!NOTE]
-> **Built on other people's work.** [**thecodacus**](https://github.com/thecodacus) wrote the llama.cpp
-> `perf` fork with the MoE expert cache and TurboQuant, and his benchmarks showed this was possible.
-> **wilky2005** fixed TurboQuant for this model family. **peculiar-ragdoll** made Tiel-Coder.
-> [**llama.cpp**](https://github.com/ggml-org/llama.cpp) is the foundation and
-> [**OpenCode**](https://github.com/anomalyco/opencode) is the engine under ShuraCode.
-> Full list: [Acknowledgements](#acknowledgements). What is ours and what is borrowed is stated in the
-> table above and in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+What this README does **not** claim: a side-by-side number against upstream llama.cpp of the same day
+(that measurement is planned for the 1.0 benchmark set), desktop smoothness as a number (the earlier
+metric turned out to be insensitive; a better one is in the works), and anything about hardware we have
+not run ourselves.
 
 ## Results
 
-Decode speed, **filled context** (restored from a saved slot before every run, median of 3–5 runs of
-200 tokens), final configuration with 24 expert slots on a quiet desktop:
+All numbers: working build, one machine (RX 7800 XT 16 GB, Ryzen 5 5600, 32 GB DDR4, ROCm 7.2.4), with a
+live KDE desktop holding 1.3–1.6 GiB of VRAM during the runs. Speeds are server-side, wall-clock tokens
+per second of real requests through the gateway (not `llama-bench`), averaged over three alternating
+pairs against the previous build; MTP speculative decoding is on in the short layout.
 
-| Filled context | 4k | 16k | 32k | 64k | 128k | 187k |
-|---|---:|---:|---:|---:|---:|---:|
-| Decode tok/s | 53.9 | 53.2 | 50.8 | 49.4–51.5 | 42.4 | **38.6–39.2** |
+**Speed** (2026-10-24)
 
-How the speed was reached (mean decode tok/s over 5 requests at ~187k):
+| | short prompt | 28k filled | 100k filled |
+|---|---:|---:|---:|
+| Tiel-Coder-35B-A3B, decode tok/s | **75.4** | **70.7** | **48.6** |
+| Occamy-1.0, decode tok/s | 64.4 | 62.2 | 45–47 |
 
-| Step | Mean tok/s |
+The 100k numbers come from the long-context layout (200k window, more experts on the CPU, no MTP:
+measured, speculative decoding does not pay off there). Switching between the short and the long layout
+keeps the session and takes 20–28 s.
+
+**The desktop comes first** (2026-10-25)
+
+| Event during an answer | What happened |
+|---|---|
+| Desktop takes +400 MiB of VRAM while the model decodes | free VRAM is back above 1.5 GiB after **0.24 s**; the longest gap between tokens was 51 ms |
+| The same during a 100k-token prefill | back above 1.5 GiB after **0.29 s**, prefill continues |
+| Desktop takes more than the model can give back | the model checkpoints its slot (0.6 s), exits, is restarted by the gateway in a lighter layout, restores the slot (22 ms) and **continues the same answer** |
+| 44-minute soak: 171 requests from 0.2k to 28k tokens plus 25 desktop jumps of 100–450 MiB | 15 cache shrinks, 12 regrowths, no pause needed, the server's buffer pool never grew after warm-up |
+
+The mechanism is an elastic expert cache: the hot experts in VRAM are copies of experts that also live in
+RAM, so giving them back costs speed, never correctness. The governor runs inside `llama-server`, polls
+the card every 200 ms and resizes the cache between compute steps.
+
+**Sessions survive** (2026-10-17, 2026-10-25)
+
+| | Time |
 |---|---:|
-| Stock llama.cpp, default settings | 26.1 |
-| + `--load-mode none` (no mmap) | 29.7 |
-| + perf fork with the MoE expert cache (16 slots) | 35.9 |
-| + patched TurboQuant `turbo3` KV, which leaves room for 24 slots | **38.3** |
+| Back to a 98.5k-token session from a RAM snapshot | **0.54 s** (0.63 s from NVMe) |
+| The same without a snapshot: re-reading the context | 156 s |
+| Pause mid-answer, restart, restore, continue | checkpoint 0.6 s, restore 22 ms, no duplicated or missing text at the seam |
 
-The MTP head is on in all rows (~85% of drafts accepted). Every measurement, including the methodology
-and the ideas that did not work, is in **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**.
+**It runs for days** (2026-10-24)
 
-| Session resume at 187k | Time |
-|---|---:|
-| Cold prefill | 264 s |
-| Back to a session after other sessions (RAM prompt cache) | **1.9 s** |
-| After a full model unload + reload (slot restored from disk) | **13 s** |
-| …and the next prompt rewrites the previous turn, as agents do: without checkpoints | ~290 s (full re-read) |
-| …the same with persistent checkpoints (opt-in) | **~1 s restore + ~30 new tokens** |
+| | Result |
+|---|---|
+| Host memory of `llama-server` under a steady replay (ROCm 7.2.4) | heap growth 0.01 GiB/h; on ROCm 7.1.1 the same run grew 4.5 GiB/h, which is why the build moved to 7.2.4 |
+| 40-minute long-session hammer: 170 requests, prompts up to 180,300 tokens, cache resizes on every request | 0 GPU page faults, 0 watchdog stops, 0 errors. An out-of-bounds read in the MoE matmul path that caused page faults on long sessions was found and fixed on the way |
 
-| Desktop impact while generating | |
-|---|---:|
-| UI scheduler latency p99 | 0.1–0.3 ms |
-| Free RAM with a browser, IDE and messenger open | ~12.5 GB of 32 GB |
-| CPU threads used by the model | 6 of 12, at lower priority |
+**The agent** (2026-10-24)
 
-> [!WARNING]
-> **The caveat that matters: VRAM is shared with your desktop.** 24 expert slots take about 10.9 GB of
-> the 12 GB card. On a desktop that also runs a browser, a messenger and a video call, free VRAM can drop
-> below 150 MiB (the desktop's GPU memory moves by ±270 MiB; the lock screen alone takes ~350 MiB). On such a
-> machine the stable setting today is **12–16 slots and 34–37 tok/s** at 187k. One busy CPU core costs
-> another 6–7%. A cache that resizes itself at runtime is in development (see [Status](#status)).
+ShuraCode on Tiel, run the way the product runs (serve mode through the gateway, short layout), on the
+dev split of our agentic task set: **73 of 111 runs solved (66 %)**: bug fixes 86 %, tests-only tasks
+100 %, implement 41 %, refactor 36 %. The harness is in [`bench/agentic-eval`](bench/agentic-eval); the task set used
+here (224 verifiable tasks in 56 families) is published with 1.0.
+
+**Quality gate.** Every change to kernels or layouts is accepted only if the KL divergence of the output
+distribution to the reference layout stays within the gate (0.0385 on a fixed corpus) and the top-1 token
+agreement does not drop; levers that failed the gate are off. The method and the full tables are
+published with the 1.0 benchmark set; the September measurements on the 12 GB card are in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## How it works
 
-```mermaid
-flowchart LR
-    OC["ShuraCode<br/>(offline)"] -- OpenAI API --> GW["AI Gateway :8080"]
-    GW -- spawns / proxies --> LS["llama-server :8090"]
-    LS --- GPU["GPU: attention, MTP head,<br/>hot experts per layer, turbo3 KV"]
-    LS --- CPU["RAM: cold experts, prompt cache"]
-    OC -- MCP --> PW["Playwright"]
-    OC -- MCP --> SX["SearXNG (Docker)"]
-```
+![How Shura works: ShuraCode, the AI Gateway, llama-server, GPU and RAM, and two MCP tools](docs/img/how-it-works.svg)
 
-The experts of the first 26 layers stay in system RAM and the CPU computes the cold ones on 6 threads at
-reduced priority; the most-routed ones stay in VRAM, chosen by the routing profile. The built-in MTP head
-drafts one token ahead. TurboQuant shrinks the KV cache enough for 24 hot-expert slots instead of 16. The
-gateway starts the model on demand, survives crashes, switches text/vision automatically and keeps session
-state in RAM. Design and endpoints: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+The experts of the first layers stay in system RAM and the CPU computes the cold ones on 6 threads; the
+most-routed experts of every layer sit in VRAM, chosen by a routing profile traced from generated tokens,
+and the two halves are merged exactly, so the output is the same as without the cache. The KV cache is
+compressed (TurboQuant) so that a 200k window fits next to the weights. The model's own MTP head drafts
+tokens for speculative decoding. The gateway starts the model on demand, survives crashes, switches
+text/vision automatically, keeps the prompt cache in RAM and parks the session in RAM when the desktop
+needs the VRAM. In the working build the size of the expert cache is no longer fixed: the governor in
+`llama-server` sizes it to whatever VRAM the desktop is not using, down to zero (see
+[Status](#status-preparing-10)). Design and endpoints: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## What we learned
 
-- **The expert cache is the biggest lever, and too many slots fail silently.** Oversubscribed VRAM does not
-  raise an error, it slows down run over run, and a config can load fine and still run out of memory
-  mid-generation at full context.
+- **A fixed VRAM split cannot be both fast and safe.** The desktop's GPU memory swings by hundreds of
+  MiB (calls, video, the lock screen, a new tab). The answer is not a bigger reserve but a cache that
+  shrinks in a quarter of a second and grows back when the desktop is quiet.
+- **The expert cache is the biggest lever, and too many slots fail silently.** Oversubscribed VRAM does
+  not raise an error, it slows down run over run.
 - **Prompt experts ≠ generation experts.** A routing profile must be traced from generated tokens.
 - **TurboQuant is not a speedup by itself.** Its value is turning saved KV VRAM into more expert slots.
-  It also needs [a fix](docs/TURBOQUANT-FIX.md) on head_dim-256 models, which otherwise crash or silently
-  return wrong answers.
-- **CPU threads beyond the physical cores add nothing.** The CPU side is memory-bandwidth bound.
+  It also needs [a fix](docs/TURBOQUANT-FIX.md) on head_dim-256 models.
 - **Hybrid models need context checkpoints, and slot save/restore does not keep them.** Without them any
   change in the prompt prefix forces a full re-read.
-- **The desktop is not constant.** Its GPU memory swings by hundreds of MiB (calls, video, the lock screen)
-  and one busy CPU core costs 6–7% of decode speed. A fixed split cannot be both fast and safe.
+- **`MemAvailable` lies about your browser.** Loading 14 GB of weights through the page cache pushes the
+  browser into swap while the kernel still reports plenty of "available" memory. The model has to load
+  without touching the page cache and count only honest free memory.
+- **Speculative decoding does not always pay.** With many experts on the CPU, verifying a draft costs
+  almost as much as generating the tokens; in the long-context layout MTP is off, by measurement.
+- **A GPU page fault is usually a bug, not the driver.** Ours was an out-of-bounds read in the MoE
+  matmul path, visible only on long, growing sessions.
 
 <details>
 <summary><b>Ideas that did not work here</b> (all measured)</summary>
 
-All experts on CPU with a large expert cache · host-register and expert-prefetch env vars (they hurt with
-the cache on) · larger `ubatch` · quantized MTP draft cache · a separate 100k "normal" profile with more
-slots (not faster at equal depth) · more than 24 expert slots at 200k context (performance degrades). See
-[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+All experts on CPU with a large expert cache · n-gram drafting on top of MTP · fusing the small kernels of
+a decode step (a few percent at most) · a separate 100k "normal" profile with more slots · more than 24
+expert slots at 200k context on the 12 GB card · Vulkan for this stack (the compressed KV cache produced
+garbage and MTP accepted nothing). Details: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 </details>
 
-## Status
-
-| Part | State |
-|---|---|
-| Tuned llama.cpp build, routing profile, gateway, installer, ShuraCode | **Works**; used by the author on the test machine |
-| Persistent context checkpoints (`slotSaveCheckpoints`) | Implemented and accepted in tests; **opt-in**, off by default |
-| VRAM guard (`vramGuard`): park the session in RAM under VRAM pressure | Implemented and accepted in tests; **opt-in**, off by default |
-| Elastic expert cache that resizes itself at runtime | **In development.** A CUDA virtual-memory prototype can return VRAM to the card in milliseconds; quality validation is not finished and it is not part of a release |
-| Universal installer (`shura install`) for AMD, Intel, Apple, Windows and CPU-only machines | **Experimental, not yet run on that hardware.** Unit-tested and exercised against fake servers; see [what is verified](#what-is-verified-and-what-is-not) |
-| Faster attention at 187k (`scripts/build-llama.sh --attention-decode`) | Implemented and accepted in tests on the author's machine; **opt-in**, off by default. At 187k the attention kernel is 17% faster and generation about 5% faster, quality unchanged (see [BENCHMARKS](docs/BENCHMARKS.md)) |
-
 ## Quick start
 
-On Fedora, Ubuntu/Debian or Arch with an NVIDIA GPU and its driver installed:
+On Fedora, Ubuntu/Debian or Arch with an NVIDIA GPU and its driver installed (the published installer
+path; the AMD/ROCm path used for the numbers above arrives with 1.0):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hikkian/shura/main/setup.sh | bash
 # or: git clone https://github.com/hikkian/shura.git && cd shura && ./setup.sh
 ```
 
-The installer picks the Tiel-Coder quant that fits your RAM and VRAM (the planner supports 16 GB RAM),
-builds llama.cpp for your GPU, measures a few layouts on your card and installs everything. It asks before
-each `sudo` step. Options (`--quick`, `--quant`, `--model`, `--no-search`) and the list of everything it
-changes: **[docs/INSTALLER.md](docs/INSTALLER.md)**. Manual setup: **[docs/INSTALL.md](docs/INSTALL.md)**.
+The installer picks the Tiel-Coder quant that fits your RAM and VRAM, builds llama.cpp for your GPU,
+measures a few layouts on your card and installs everything. It asks before each `sudo` step. Options
+(`--quick`, `--quant`, `--model`, `--no-search`) and the list of everything it changes:
+**[docs/INSTALLER.md](docs/INSTALLER.md)**. Manual setup: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## Daily use
 
 Everything starts with the desktop session; nothing needs to be launched by hand.
 
 - **App menu → Shura.** Pick a project folder and ShuraCode opens there in its own window. Right-click the
-  icon for *Load model now* / *Unload model*. Works on any desktop with any common terminal
-  (`SHURA_TERMINAL` chooses one).
+  icon for *Load model now* / *Unload model*. Works with one of the supported terminals
+  (`SHURA_TERMINAL` chooses one; only Ghostty has been tested).
 - **Terminal:** `cd` into a project and type `shura`. The model starts loading in the background.
 
 ```
@@ -212,6 +212,20 @@ start.
 `/forget` `/memory` `/test` `/commit`, a read-only **Plan** mode next to **Build** (Tab), and a live model
 status in the footer. It is our customization layer on top of the OpenCode engine, in its own repository:
 **[hikkian/shuracode](https://github.com/hikkian/shuracode)**; the installer sets it up.
+
+## Will it run on my computer?
+
+- **Backend.** By default the installer uses Vulkan (it works on NVIDIA, AMD and Intel) and falls back to the CPU if that
+  fails. Another backend can be chosen with `--backend`.
+- **Memory.** The catalog model (35B-A3B, MoE) needs about 20 GiB of memory on the CPU alone. A machine with 16 GB of RAM and no
+  graphics card will not fit, and the installer says why. A graphics card with 6 GB of memory and 8 GB of RAM will not fit
+  either. A graphics card with 8 GB of memory and 32 GB of RAM fits: some layers stay in RAM (a hybrid layout).
+- **Speed.** Before the first run the installer does not promise a number. The prediction is an estimate and can differ a
+  lot from reality; for MoE models on Vulkan it is not calibrated yet. Trust the measurement on your machine, which the
+  installer runs itself.
+- **If it did not work**, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+- **Other machines.** What has been verified is in the table below; how to join the pilot programme:
+  [CONTRIBUTING-hardware.md](CONTRIBUTING-hardware.md).
 
 ## Run it on your hardware
 
@@ -234,7 +248,7 @@ itself, without compiling anything and without root.
 first; a dropped download **resumes**; every file is verified (size and SHA-256); it runs the real server with the planned
 settings to **prove** they work; if the machine runs out of memory it plans again with more room left free and retries; and
 if nothing works it leaves a report without personal data and keeps the downloads, so the next run does not start over.
-`shura uninstall` removes everything it put on your disk.
+`shura uninstall` removes the Shura home folder (engines, models, logs, state). The `setup.sh` install also writes files outside it ([INSTALLER.md](docs/INSTALLER.md)); uninstall leaves those.
 
 > [!NOTE]
 > Where it can run (Vulkan on Linux, Metal on Apple Silicon, CUDA on Windows with NVIDIA), `shura install` also tries a
@@ -251,24 +265,24 @@ if nothing works it leaves a report without personal data and keeps the download
 ### What is verified, and what is not
 
 > [!WARNING]
-> **Only one machine has ever run Shura for real** (RTX 4070 SUPER 12 GB, Ryzen 5 5600, 32 GB DDR4, Fedora 44). Everything
-> else below is written, tested in software and believed to work, but **nobody has run it on that hardware yet**. You may
-> be the first, and your result is the most useful thing you can send.
+> **Two machines have run Shura for real, both the author's:** an RX 7800 XT 16 GB (today, the working build) and an
+> RTX 4070 SUPER 12 GB (until 2026-10). Everything else below is written, tested in software and believed to work, but
+> **nobody has run it on that hardware yet**. You may be the first, and your result is the most useful thing you can send.
 
 | Your machine | How it is installed | State |
 |---|---|---|
-| NVIDIA, Linux, 12 GB VRAM + 32 GB RAM | `setup.sh` (our CUDA fork) | **Verified** on the author's machine |
+| AMD RX 7800 XT 16 GB, Linux, ROCm | working build (1.0) | **Verified** on the author's machine; not yet in the published installer |
+| NVIDIA, Linux, 12 GB VRAM + 32 GB RAM | `setup.sh` (CUDA fork) | **Verified** on the author's previous card (2026-09) |
 | NVIDIA, Linux, other sizes (8, 16, 24 GB; 16 GB RAM) | `setup.sh` | **Unverified.** The plan is computed from a model fitted to one machine |
-| AMD (ROCm or Vulkan), Intel (SYCL, Vulkan, OpenVINO) | `shura install` | **Unverified on real GPUs** |
+| Other AMD cards (ROCm or Vulkan), Intel (SYCL, Vulkan, OpenVINO) | `shura install` | **Unverified on real GPUs** |
 | Apple Silicon (Metal) | `shura install` | **Unverified** |
 | Windows (any GPU, or CPU) | `shura install` | **Unverified**; only unit tests and CI runners |
 | CPU-only, including many-channel servers | `shura install` | **Unverified**; speed predictions are least certain here |
 
 What is checked automatically on every commit (CI): unit tests on Linux, macOS and Windows; the real llama.cpp build
-is downloaded and run on a 19 MB model (the CPU build on Linux and Windows, the Metal build on macOS, inside a CI virtual machine); the Vulkan build runs on a software driver (experimental); the
-flags `shura install` passes to `llama-server` were checked against the real `--help` of the pinned release (b11301).
+is downloaded and run on a 19 MB model (the CPU build on Linux and Windows, the Metal build on macOS, inside a CI virtual machine); the Vulkan build runs on a software driver (experimental). The flags `shura install` passes to `llama-server` were checked against the real `--help` of the pinned release (b11301); no CI step repeats that check.
 
-What **no one has checked**: a real GPU other than the author's; loading the real 17 GB model on other hardware; the speed
+What **no one has checked**: a real GPU other than the author's two; loading the real model on other hardware; the speed
 predictions (estimates, fitted to one machine, shown as a range, and the plan is tested by really starting the server);
 Windows start/stop of the server; a load slower than 15 minutes (the installer gives up waiting).
 
@@ -292,43 +306,41 @@ How the decision is made: **[docs/HARDWARE.md](docs/HARDWARE.md)**. To add your 
 ## Tested environment and limits
 
 > [!NOTE]
-> Everything here was developed and tested on **one machine**. Anything outside this list is supported by
+> Everything here was developed and tested on **one machine at a time**. Anything outside this list is supported by
 > design but **untested**. Reports and fixes are welcome.
 
-| | Tested |
-|---|---|
-| OS | Fedora 44, kernel 7.2, x86_64 |
-| Desktop | KDE Plasma on Wayland (earlier measurements: GNOME Shell 50) |
-| Terminal | Ghostty 1.3 |
-| GPU / driver | NVIDIA RTX 4070 SUPER 12 GB, driver 615.71 (RPM Fusion), CUDA 13.4 |
-| CPU / RAM | AMD Ryzen 5 5600, 32 GB DDR4-3200 |
-| Software | ShuraCode 0.1 (OpenCode 1.18 engine), Docker 29, Python 3.14, Node 24 |
+| | Today (working build) | Until 2026-10 (published `main`) |
+|---|---|---|
+| OS | Fedora 44, kernel 7.2, x86_64 | Fedora 44 |
+| Desktop | KDE Plasma on Wayland | KDE Plasma on Wayland (earlier: GNOME Shell 50) |
+| GPU / driver | AMD RX 7800 XT 16 GB, ROCm 7.2.4 (installed next to the system's 7.1.1) | NVIDIA RTX 4070 SUPER 12 GB, driver 615.71, CUDA 13.4 |
+| CPU / RAM | AMD Ryzen 5 5600, 32 GB DDR4-3200 | the same |
+| Software | ShuraCode 0.1 (OpenCode 1.18 engine), Python 3.14, Node 24 | the same, Docker 29 |
 
 **What this is not:**
-- It is a 35B-A3B-class model at 4-bit. Expect a capable local coding assistant, not a frontier model.
-- Linux and NVIDIA only. The expert cache and TurboQuant in the llama.cpp fork are written in CUDA.
+- It is a 35B-A3B-class model at 3–4 bits. Expect a capable local coding assistant, not a frontier model.
+- Tested on Linux only. The expert cache, the governor and the compressed KV cache live in the CUDA/HIP backend of the
+  fork; Intel and Apple get upstream llama.cpp without them.
 - Not validated on other hardware: other distributions (the installer's package steps were checked in
-  Ubuntu 24.04, Debian 12 and Arch containers only; a full fresh install has not been run there), XFCE and
-  tiling WMs, GNOME since the switch to KDE, terminals other than Ghostty (dry-run only), the
-  `kdialog`/`yad` dialogs, and GPUs other than a 12 GB card.
+  Ubuntu 24.04, Debian 12, Arch and Fedora 44 containers only; a full fresh install has not been run there), XFCE and
+  tiling WMs, terminals other than Ghostty (dry-run only), the `kdialog`/`yad` dialogs, and GPUs other than the author's two.
 
 <details>
-<summary><b>AMD and Intel GPUs: how to port Shura</b></summary>
+<summary><b>Intel GPUs and other AMD cards: how to port Shura</b></summary>
 
-AMD and Intel are not supported out of the box. You can port it yourself or with an AI coding agent
-(ShuraCode can do this work too). Upstream llama.cpp already runs on AMD (ROCm/HIP, Vulkan) and Intel
-(SYCL, Vulkan). Only two CUDA-specific features are missing:
+AMD is now the author's main machine (ROCm/HIP), but only one card has been run. Other AMD cards should work with the
+same build; please send a hardware report. Intel is not supported out of the box. You can port it yourself or with an AI
+coding agent (ShuraCode can do this work too). Upstream llama.cpp already runs on Intel (SYCL, Vulkan). Two features
+of the fork are missing there:
 
 1. **Works today, slower:** build upstream llama.cpp for your backend and use the same layout ideas: the
    first layers' experts in RAM (`--n-cpu-moe`), `q8_0`/`q4_0` KV cache and MTP. The gateway, ShuraCode and
-   the rest of this repository do not depend on CUDA.
-2. **Full speed:** port the fork's expert-cache and `turbo3` CUDA kernels. For AMD, llama.cpp already builds
-   its CUDA backend through HIP, so the kernels may compile for ROCm with modest changes; the usual
-   obstacles are the 64-wide wavefront and inline PTX. For Intel, rewrite them for SYCL or Vulkan. Then
+   the rest of this repository do not depend on the fork.
+2. **Full speed:** port the fork's expert-cache and compressed-KV kernels to SYCL or Vulkan. Then
    re-run the benchmarks in `bench/` and the correctness probes, because silent output corruption is the
    failure mode to watch for (see [docs/TURBOQUANT-FIX.md](docs/TURBOQUANT-FIX.md)).
 
-Pull requests with measured results on non-NVIDIA cards are very welcome.
+Pull requests with measured results on other cards are very welcome.
 
 </details>
 
@@ -340,11 +352,11 @@ installer/   hardware planner, GGUF header reader, model download, auto-tune
 tests/       installer and gateway unit tests + distro package test (containers)
 gateway/     ai_gateway.py - on-demand llama-server manager + OpenAI-compatible proxy (stdlib only)
 config/      example configs + agentic MoE routing profile for Tiel-Coder
-patches/     TurboQuant head_dim-256 fix and persistent slot checkpoints for the perf fork
+patches/     patches for the llama.cpp fork (TurboQuant head_dim-256 fix, persistent slot checkpoints, ...)
 scripts/     shura (daily CLI), build-llama.sh, install.sh, capture-moe-trace.sh
 desktop/     app-menu launcher template
 assets/      logo (light/dark), app icons, social preview, source artwork
-bench/       deep-context benchmark, depth sweep, session-cache test, correctness probes
+bench/       agentic-eval task set and harness, deep-context benchmark, depth sweep, correctness probes
 systemd/     user service unit
 searxng/     private SearXNG settings template
 docs/        benchmarks, architecture, harness comparison, TurboQuant fix, install, troubleshooting
@@ -354,7 +366,7 @@ docs/        benchmarks, architecture, harness comparison, TurboQuant fix, insta
 
 | | |
 |---|---|
-| [BENCHMARKS.md](docs/BENCHMARKS.md) | Every measurement: build tuning, MTP, threads, routing profiles, prefill, desktop impact, dead ends |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) | The September measurements on the 12 GB card: build tuning, MTP, threads, routing profiles, prefill, dead ends |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Gateway state machine, endpoints, KV cache and SSD-wear design |
 | [TURBOQUANT-FIX.md](docs/TURBOQUANT-FIX.md) | Why TurboQuant crashes or corrupts output on this model family, and the fix |
 | [HARNESS-COMPARISON.md](docs/HARNESS-COMPARISON.md) | OpenCode vs Pi vs Pithagoras vs DeepSeek Harness, tested hands-on |
@@ -365,8 +377,9 @@ docs/        benchmarks, architecture, harness comparison, TurboQuant fix, insta
 
 ## Acknowledgements
 
-- [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) and the
-  [thecodacus/llama.cpp](https://github.com/thecodacus/llama.cpp) `perf` fork (MoE expert cache, TurboQuant)
+- [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp), the foundation of everything here, and the
+  [thecodacus/llama.cpp](https://github.com/thecodacus/llama.cpp) `perf` fork (MoE expert cache, TurboQuant), from which
+  [our fork](https://github.com/hikkian/llama.cpp-shura) descends
 - **wilky2005** for the TurboQuant fix ([thecodacus/llama.cpp#12](https://github.com/thecodacus/llama.cpp/pull/12))
 - The authors of the upstream fix for persistent context checkpoints
   ([llama.cpp #25913](https://github.com/ggml-org/llama.cpp/issues/25913),

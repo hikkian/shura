@@ -1,5 +1,11 @@
 # Benchmarks
 
+> [!NOTE]
+> **Previous configuration.** Everything on this page was measured in September 2026 on the author's earlier
+> machine: an NVIDIA RTX 4070 SUPER 12 GB with the CUDA build of the `perf` fork. Since October the project is
+> developed and measured on an AMD RX 7800 XT 16 GB with ROCm 7.2.4 and our own fork; those numbers are in the
+> [README](../README.md#results) until the 1.0 benchmark set (raw data, method and charts) is published.
+
 All numbers were measured on one machine, in one continuous session, with the scripts in
 [`bench/`](../bench). Nothing here is copied from other people's reports.
 
@@ -332,7 +338,7 @@ The opt-in gateway guardian passed an isolated 187k pressure/save/restore test. 
 
 The isolated server recovered after its PID was killed, and a restarted gateway recovered its lease and answered a request. Final correctness was9/9; 83 unit tests, compileall, ShellCheck and diff checks passed. Peak model process was10532MiB, minimum card free569MiB, p99 UI lag0.076ms, maximum lag3.36ms, GPU73°C and CPU Tctl52.5°C. Disk swap stayed0 and no zram stop condition occurred. A 1GiB reserve initially rejected the save safely; a512MiB extra reservation in the prototype/example passed while retaining the configured1.5GiB free-RAM floor.
 
-A runner race and one continuation missing a middle exchange were classified as harness issues; the latter's `cache_n=0` was excluded from product results. Two transient NVML failures were recorded and recovered through the safe fallback. NVMe field7 increased359383040 bytes system-wide over the phase; attribution is unavailable and the amount is below2GB. No live gateway/config/binary was changed. Machine-readable evidence: [`summary.json`](../bench/results/elastic-vram-part-a-20260930/summary.json) (local ignored result).
+A runner race and one continuation missing a middle exchange were classified as harness issues; the latter's `cache_n=0` was excluded from product results. Two transient NVML failures were recorded and recovered through the safe fallback. NVMe field7 increased359383040 bytes system-wide over the phase; attribution is unavailable and the amount is below2GB. No live gateway/config/binary was changed. Machine-readable evidence: `summary.json` (the raw file is published with the 1.0 benchmark set) (local ignored result).
 
 
 ## Opt-in attention decode (2026-10-01)
