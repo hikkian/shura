@@ -124,6 +124,15 @@ dev split of our agentic task set: **73 of 111 runs solved (66 %)**: bug fixes 8
 100 %, implement 41 %, refactor 36 %. The harness is in [`bench/agentic-eval`](bench/agentic-eval); the task set used
 here (224 verifiable tasks in 56 families) is published with 1.0.
 
+**Choosing the models** (2026-10-28)
+
+The same agent and the same 56 tasks × 2 runs for four local models on the same card. Tiel stays the default: the
+fastest, and the best at fixes and tests. Sage-A1.5 becomes the second model, picked with `/model` for bigger
+implement and refactor work, where it solves clearly more at about twice the time. Occamy matched Tiel without
+adding anything and is no longer shipped; Gemma 4 is kept for a later general-purpose role, not for code.
+
+<p align="center"><img src="docs/img/models-agentic.png" alt="Four local models on 112 agentic coding runs: Sage 72 %, Tiel 68 %, Occamy 67 %, Gemma 56 %, with the split by task type" width="100%"></p>
+
 **Quality gate.** Every change to kernels or layouts is accepted only if the KL divergence of the output
 distribution to the reference layout stays within the gate (0.0385 on a fixed corpus) and the top-1 token
 agreement does not drop; levers that failed the gate are off. The method and the full tables are
