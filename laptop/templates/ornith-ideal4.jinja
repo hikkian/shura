@@ -110,6 +110,7 @@
 {%- for message in _msgs[::-1] %}
     {%- if not _lang.done and message.role == 'user' %}
         {%- set _raw = render_content(message.content, false) | trim %}
+        {%- if _raw.startswith('<context>') and '</context>' in _raw %}{%- set _raw = _raw.split('</context>')[-1] | trim %}{%- endif %}
         {%- if not (_raw.startswith('<tool_response>') and _raw.endswith('</tool_response>')) %}
             {%- set _line = ((_raw.split('```')[0] | trim).split('\n')[0])[:300] %}
             {%- set _k = namespace(t='', first='') %}

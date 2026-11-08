@@ -176,7 +176,12 @@ RU_REM = "Итоговое сообщение пользователю пиши 
 KZ_REM = "Қорытынды хабарламаны пайдаланушыға бірінші жолдан бастап толығымен қазақ тілінде жаз."
 MIX_LINE = "Write everything addressed to the user (short notes between steps and the final answer) in the language of the user's own words in their latest message, not the language of code, logs or tool output."
 _tail3 = LANG_BLOCK[LANG_BLOCK.index("{%- if _lang.v == 'mixed' %}"):]
-LANG_BLOCK4 = LANG_BLOCK.replace("(effort v3)", "(effort v4)").replace(_tail3, (
+_RAW_LINE = "        {%- set _raw = render_content(message.content, false) | trim %}\n"
+assert _RAW_LINE in LANG_BLOCK
+# ShuraCode/opencode put an English <context>…</context> environment block in front of the user's words: skip it.
+_RAW_CTX = _RAW_LINE + ("        {%- if _raw.startswith('<context>') and '</context>' in _raw %}"
+                        "{%- set _raw = _raw.split('</context>')[-1] | trim %}{%- endif %}\n")
+LANG_BLOCK4 = LANG_BLOCK.replace(_RAW_LINE, _RAW_CTX).replace("(effort v3)", "(effort v4)").replace(_tail3, (
     "{%- set _lline = '' %}\n"
     "{%- if _lang.v == 'mixed' %}\n"
     "    {%- set _lline = " + j(MIX_LINE) + " %}\n"

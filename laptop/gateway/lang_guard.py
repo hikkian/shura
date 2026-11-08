@@ -47,6 +47,8 @@ def detect_language(messages):
         raw = _text(m.get("content")).strip()
         if raw.startswith("<tool_response>") and raw.endswith("</tool_response>"):
             continue
+        if raw.startswith("<context>") and "</context>" in raw:  # ShuraCode's English environment block
+            raw = raw.split("</context>")[-1].strip()
         line = raw.split("```")[0].strip().split("\n")[0][:300]
         words = [w for w in line.split(" ") if not any(c in w for c in "_./(=`") and not (w == w.upper() and w != w.lower())]
         kept = " ".join(words)
