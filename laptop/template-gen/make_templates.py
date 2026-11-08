@@ -68,15 +68,17 @@ IDEAL3.update({
             "re-run the tests, read your diff; " + EX4 + "; " + IMG4 + "; "
             "(2) adversarial self-review: assume your work still contains at least one bug, broken example or missed requirement "
             "and hunt for it like a strict reviewer: compare the result with the request word by word, try inputs designed to "
-            "break it, re-read every file you changed in full (not only the diff); fix what you find and repeat the checks "
-            "until a full pass finds nothing. Start a review subagent only if the user asks for one. "
+            "break it, re-read every file you changed in full (not only the diff); fix every real defect you find (wrong "
+            "behavior, missed requirement, failing example) and re-check what you changed. At most two review rounds: stop "
+            "as soon as a round finds no real defect; do not keep polishing details that already match the request. "
+            "Then write the final answer. Start a review subagent only if the user asks for one. "
             "State only what you verified, and say plainly what you could not verify."),
 })
 REMIND3 = {
     "medium": "Before the final answer: run the tests and every code example you wrote, exactly as written in the file.",
     "high": "[effort: high] Before the final answer: re-check every requirement, re-run tests/code, read your diff, run every example exactly as written in the file (self-contained, no errors), compare with the mockup if there is one.",
     "xhigh": "[effort: xhigh] Before the final answer: re-check every requirement, test implied edge cases, re-run tests/code, read your diff, run every example exactly as written in the file (self-contained, no errors), compare with the mockup if there is one.",
-    "max": "[effort: max] Before the final answer: full verification pass (requirements, edge cases, tests, diff, every example run exactly as written in the file, mockup comparison), then an adversarial self-review: assume a bug or missed requirement remains and hunt for it (request word by word, breaking inputs, every changed file re-read in full); fix and repeat until a full pass finds nothing.",
+    "max": "[effort: max] Before the final answer: full verification pass (requirements, edge cases, tests, diff, every example run exactly as written in the file, mockup comparison), then an adversarial self-review: assume a bug or missed requirement remains and hunt for it (request word by word, breaking inputs, every changed file re-read in full); fix real defects and re-check what you changed; at most two review rounds, stop when a round finds no real defect, then write the final answer.",
 }
 # IsValorum "stock" wording (kept for the wording arm); 'max' is mapped onto its high line
 STOCK = {
