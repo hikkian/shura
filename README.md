@@ -40,7 +40,7 @@ llama.cpp, [hikkian/llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura)
 
 | At a glance (working build, measured 2026-10-24/25) | |
 |---|---|
-| Models | [Tiel-Coder-35B-A3B](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) (APEX-I-MiniPlus quant, ~14 GB, with its MTP head); Occamy-1.0 as the second model |
+| Models | [Tiel-Coder-35B-A3B](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) (APEX-I-MiniPlus quant, ~14 GB, with its MTP head); Sage-A1.5 (same architecture) as the second model for harder tasks |
 | Hardware | AMD RX 7800 XT 16 GB · Ryzen 5 5600 · 32 GB DDR4-3200 · Fedora 44, KDE on Wayland · ROCm 7.2.4 |
 | Context | 200k window; decode **75 tok/s** on a short prompt, **71** at 28k, **49** at 100k filled (Tiel) |
 | The desktop comes first | the model keeps 1.5 GiB of VRAM free for the desktop; when the desktop grabs +400 MiB mid-answer, the model gives it back in **0.24 s** and keeps streaming |
