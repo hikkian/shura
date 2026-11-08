@@ -1,0 +1,126 @@
+import hashlib, os, re, unittest
+
+ANS = open(os.environ["ANSWER_FILE"], encoding="utf-8", errors="replace").read()
+HASHES = {
+ "README.md": "552de6fa9dcfd89b53c194c8f0ea8f72e83049787dd25ccef75219d0e45d171d",
+ "shopcore/__init__.py": "103bcfceff78184561ac2e852cdeef561e8b4890fa948984c167cc2dc400f134",
+ "shopcore/api/__init__.py": "98a860b21b22caba135fbfeff41cac8dd9c3b14a8f4ddb0b516465e9baa92247",
+ "shopcore/api/cart_api.py": "bffe8b2453890d835a770b1e0c60452949263cdb34aab2a79e0e3326139c2e66",
+ "shopcore/api/customers_api.py": "2ab1db5f61dce17acb16e6cad3a44cb2ff8c28c23a1e809049e9c05c4a090bc3",
+ "shopcore/api/errors.py": "96a18a88c4705509d420b6b52a287ff50a7581963e5e9bf2c4cbb0663878d39f",
+ "shopcore/api/health.py": "c49f9a3a8d0418c7b973543839de61a4909a3d28ba5278b387f06da954c92451",
+ "shopcore/api/orders_api.py": "f3f4d1a2593855f389b23fb2b08117551809351bab146f92a6a8839e8fd860d0",
+ "shopcore/api/payments_api.py": "3338d32152b95678cfca14e31baf0ba5ac8a8997981ecae3204d916f7b194a99",
+ "shopcore/api/products_api.py": "2dc0cef4f8a75381ac08ef414ab0a843b33ce5d2472aeef3fd478ab8f83b4b17",
+ "shopcore/api/reviews_api.py": "61aafd4e7952c4cf270bb65488b9bc4b72884d67732173a9ca44258f53929741",
+ "shopcore/api/router.py": "cce0bcda56c38686e7d366ce1313bf72d40f7688689bf96168c2331ac369ec0b",
+ "shopcore/api/schemas.py": "fc5087d15a6bbfba326806ba80f3f67d11c2e771759f2348561ef664f4b52864",
+ "shopcore/app.py": "6c4a87f222dd3b0335d626f3f09a13408d4ad54416cbe7b1f7b95b3944ba917e",
+ "shopcore/config/__init__.py": "7771bc1dbb3a1df70695ee29f7f0cd340513c979b9f505ae1fef75c789ad44d2",
+ "shopcore/config/discount_rules.py": "abc2ab2c48b2306899b05a7b488de39b39f349e78912b82435ce5ce09bafade3",
+ "shopcore/config/feature_flags.py": "ee8f2c8363c0bb95679bcc43c18b7aedc0b9a3ce3df4f6d84ae978a5964b6eb0",
+ "shopcore/config/logging_config.py": "a85fb922c210a390249c1b7ccd4470533bd27366ee13a115f5ef986f7f6e40fb",
+ "shopcore/config/settings.py": "aed29df3e3ea6e7c73a10218500ecaddd2d9b72f1af61c291965d1710bdeaf7b",
+ "shopcore/config/tax_rates.py": "4be6d32f16170100484b19e5c0169ecbe0432613d396cba83e6eef2e3f04bf8c",
+ "shopcore/models/__init__.py": "ec92c8a944f2ba1c16e4224280cacc51419db2f28e9ea91b2e7fd6084111101a",
+ "shopcore/models/address.py": "f1d923c7520c2f955cceac1c2d241086993eda63cb2fdf36f2a0a57c90203d70",
+ "shopcore/models/cart.py": "a1e662807119b568a192d985984d41292b5aa1aa477f35ee427f7d30f9159182",
+ "shopcore/models/cart_item.py": "500a124b97ab0a11cdfeb2c8a9f21be9e22ca8bb0d0421ec040b77510dd35561",
+ "shopcore/models/category.py": "93f858082c76e12761a0f5fced3bfe28630e38b37b1517415c2ecfb37b611c04",
+ "shopcore/models/coupon.py": "49c32473b1c8447505af018fdb07f4ff9665a5b1d631f221ae50b9bf5afca912",
+ "shopcore/models/customer.py": "cbcbee2a4a62245687bc1e89e06f7742a61cf2f4da5bc0ccbb5480a8631b21ad",
+ "shopcore/models/inventory_item.py": "10b0186305f571b5f091e08620d2019c84d53c6b270a114ca558820b7e69a3f7",
+ "shopcore/models/invoice.py": "560caac3584250119eba6a608530fd0a4dc10259372794a2b247fd60f59b7d50",
+ "shopcore/models/loyalty_account.py": "7bf458ec9fe79291f33b2e304e8494c2a97adcc3803dddc418167c7655606411",
+ "shopcore/models/order.py": "2eed3d73b180eabc9d06bb9058fb3a309eb9be2163f0d091ff08077c856b91d9",
+ "shopcore/models/order_item.py": "468c49c4379238a45269dd9864d6d4435164baf1e92592116ac5801206b6b88c",
+ "shopcore/models/payment.py": "486c53248d79c5a7e5617c7f40baf1b86f08c0cfa757ddc5e34fcceedcb60f37",
+ "shopcore/models/product.py": "e4e656a30f7590c6d189b878210c888baeda37a3d43b70d3c0352c71d1ef3a0d",
+ "shopcore/models/review.py": "a045471f7531d98f7241789cdc5aa6e0b2768e2647bc8c43c43790dd0d4deb84",
+ "shopcore/models/shipment.py": "e9d5d6268507662dfc490bfbd39bff0779a15f839fe7d226762a023cdeb77500",
+ "shopcore/payments/__init__.py": "ac5beeea71008f411fa5c90e36bee0402a27141bfb4cab86e16679c5fdf2e8a2",
+ "shopcore/payments/errors.py": "ecf473f4a446491af8804fcc7da8c482493106c2542f81fa4111de37ddb78af4",
+ "shopcore/payments/failure_handler.py": "fccb181bd6263e9e6a2a68446dc658564f7e96072c01a4d22d0d470c47cc3a31",
+ "shopcore/payments/gateway.py": "aa816fec1655cab1dfbf10389eb86a086683aa7286a0e038c1a87ceada65d999",
+ "shopcore/payments/retry_policy.py": "17eb719925c49c3123db956fb5f96064a1738026b16a4e0f05c711257f97a3fc",
+ "shopcore/repositories/__init__.py": "980a5ef383d98e2f195a1fbe4f120ee8b00ab04e55f15a0cbe37c1c606b27b1d",
+ "shopcore/repositories/base.py": "00bb44b278082d33cdea1e1a98939abc36d7aba4a7ed762bf269b1712ff38eaf",
+ "shopcore/repositories/cart_repo.py": "cd87ee641bd138c13778cffe0702d9de0c6f3db854332b75a2120b66470003d2",
+ "shopcore/repositories/category_repo.py": "b7436d7c1f9d8e5fc6b4fc6160643a387dc99ce6ea82d152c90a72c18defe497",
+ "shopcore/repositories/coupon_repo.py": "12f0f2d8790b72331e2be04d7b87d82a38fabd90f03c1388412bb0810669dfc2",
+ "shopcore/repositories/customer_repo.py": "7e30503dd951d82f69214522190ac71af752e1ef21a1b5b5505a868f545db8eb",
+ "shopcore/repositories/inventory_repo.py": "97ee04fb945a56faa433efb28416b873fbaafeb36a243fe510fa613bb0506450",
+ "shopcore/repositories/order_repo.py": "d76b23a2aca717e1a196089d29c92b442abb75e37a0408ce3c3f8a17cfbdc00b",
+ "shopcore/repositories/payment_repo.py": "b305bf5555a41526df2362ad4b0d63c4ee75ff5337137050bb9bf1db5b1cc447",
+ "shopcore/repositories/product_repo.py": "95343320672c29e98f07b74346e73114a26d22dfac4b3a708ceddc165a8f0f8c",
+ "shopcore/repositories/review_repo.py": "77407978c0f82248f036656b02c4e961d969e72eb4f6d9a3572171d2ef345d95",
+ "shopcore/repositories/shipment_repo.py": "dbcd02af214833de08b97765d6e3ae9f4136b03b344aefc7df480c1526e58698",
+ "shopcore/services/__init__.py": "c64d20435a7beb8ea851185885a7ff67490340855eb6de65ef4825007656bedb",
+ "shopcore/services/cart_service.py": "15d77a0f3378f08da8701d24fce242f0ce3dd952c79799b1eaabef34af888d0a",
+ "shopcore/services/catalog_service.py": "01fd1085948aa9ca5e725de64e6a37f9fe0005ddc2620dc5558e5de3be66c1a0",
+ "shopcore/services/coupon_service.py": "a20edbfaa79b33d6a8fdb03b591189c71f095dc3e353316d1165466e8ed98279",
+ "shopcore/services/discount_service.py": "a0a358bf3f53bf04ba7a812247d43c561827b51b33da798fcd5f19fa782b5cf2",
+ "shopcore/services/inventory_service.py": "c1e783b9926cebab289beb025843b02e2fc97880253906d1eceab102d8807ad9",
+ "shopcore/services/invoice_service.py": "0b59b1c97436448e9816ce0cdcd8494396998f915ef0916101be6361f1318031",
+ "shopcore/services/loyalty_service.py": "b358777778e7636c6b11d406a183ea1b7dbf5f5c558bcd1b5dca46048991b6fa",
+ "shopcore/services/notification_service.py": "c6b2c4efa3a31991d3b2f5e0bbdad383173550a3de95105c7e85c770bed0a45f",
+ "shopcore/services/order_service.py": "ffc514ee8c4ce64116e018367b65f7bf61823eba0e8de929904f3f7346bab9b5",
+ "shopcore/services/payment_service.py": "4b54d5338add58ba96daea4dd08896f881342d5e611744410a871b0ac1c6dae5",
+ "shopcore/services/pricing_service.py": "438c4945c3f8158aadbc3023611216e0cd036e4cbddc965ae05dc2a4cee25036",
+ "shopcore/services/refund_service.py": "52f3c8b436f9debdec120c777862f9575efc2dae362145c177b70b071900a66b",
+ "shopcore/services/review_service.py": "0acbfe499de8de55e25cd0d2b9849be714f41200a8104272ab4b4e3c1f99641b",
+ "shopcore/services/shipping_service.py": "902c2986fd82eb269b4eb8cc7457993831700e1ef26ed43a90d89ea814e6e079",
+ "shopcore/services/tax_service.py": "2a6f0c4682ea18b5cd4698987a0d90a2dadcb5ec1d3ab0832b1d95f767a7910f",
+ "shopcore/tasks/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "shopcore/tasks/cleanup.py": "2863cad9791d26fdd02ff6ac2b015fc056c94874d45f7dacb7cb31b1e425dfa4",
+ "shopcore/tasks/retry_payments.py": "2d793ff6561057fea718fe436e522e1e58ab5392ae5cdbcb529c2a2b50122524",
+ "shopcore/tasks/scheduler.py": "8830436ffecfff0279166d45ee5f4a0d8d349d08bae14be7a507c3484bd839ec",
+ "shopcore/utils/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "shopcore/utils/dates.py": "53a3c2209d473f82ee4ea6f8db9c97a7fd0fe21d7b7fe4355f02a799576b6fd2",
+ "shopcore/utils/ids.py": "67bcb6aa429a1c7b0d54220ae801f877f9326963049c015a38d47275f737bfc7",
+ "shopcore/utils/logging_utils.py": "48e138edbb5fa298d92c4ddac00fda9fee023480b4a7857b2fc1df9d61b11d06",
+ "shopcore/utils/money.py": "4229e5dbd81637dd6fba767d61a8c9027b94a4a9d700fd733f75c4718c09d575",
+ "shopcore/utils/text.py": "4d189ab20c04d608004c96a52646cc068a6a2c661bc47e0dc0ef4b14dcc2f63d",
+ "shopcore/utils/validators.py": "f8d422630bfd3fbb84fef7fef34cab8d828acf06c6def99b65657aa863e992d3",
+ "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+ "tests/test_flow.py": "ba60566ffb964a872be35801b459a1e8478637a3041cc6201afd65fe165a5c5e"
+}
+
+
+def snapshot():
+    cur = {}
+    for root, ds, fs in os.walk("."):
+        ds[:] = [d for d in ds if d not in ("__pycache__", ".git")]
+        for f in fs:
+            if f in ("hidden_test.py",) or f.endswith(".pyc"):
+                continue
+            p = os.path.join(root, f)
+            with open(p, "rb") as fh:
+                cur[os.path.relpath(p, ".")] = hashlib.sha256(fh.read()).hexdigest()
+    return cur
+
+
+class H(unittest.TestCase):
+    def test_no_edits(self):
+        self.assertEqual(snapshot(), HASHES)
+
+    def test_final_price(self):
+        self.assertRegex(ANS, r"calculate_final_price")
+        self.assertRegex(ANS, r"pricing_service")
+
+    def test_discount_rules_location(self):
+        self.assertRegex(ANS, r"discount_rules")
+
+    def test_payment_failure(self):
+        self.assertRegex(ANS, r"failure_handler|handle_payment_failure")
+        self.assertRegex(ANS, r"payment_failed|release|резерв|уведомл|notif|retry|повтор|статус|status")
+
+    def test_not_wrong_final_price_owner(self):
+        # итоговую цену не считает cart_preview_total / items_total
+        m = re.search(r"(итогов|final)[^\n]{0,80}(cart_preview_total|items_total)", ANS, re.I)
+        self.assertIsNone(m)
+
+    def test_architecture_described(self):
+        self.assertGreater(len(ANS), 600)
+        layers = sum(1 for w in (r"api", r"services|сервис", r"repositor|репозитор", r"models|модел", r"payments|плат[её]ж", r"config|конфиг") if re.search(w, ANS, re.I))
+        self.assertGreaterEqual(layers, 4)

@@ -1,0 +1,1 @@
+Реализуй функцию parse_duration в timeutil.py строго по докстрингу. Напиши к ней тесты в tests/test_timeutil.py и прогони их.

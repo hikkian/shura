@@ -1,0 +1,12 @@
+--- /home/hikkian/Desktop/AI/bench/template/shuracode-launcher.bak-20261108	2026-11-08 15:07:43.242642445 +0500
++++ /home/hikkian/.local/share/shura/shuracode/bin/shuracode	2026-11-08 15:07:43.269851353 +0500
+@@ -25,6 +25,9 @@
+     OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+   # The plugin sets the window title itself ("ShuraCode · <session>").
+   export OPENCODE_DISABLE_TERMINAL_TITLE=1
++  # per-step output cap: the engine default is 32000; each model's limit.output still applies (min of the two),
++  # so this only lets a model that asks for more (effort max: long thinking + a file write in one step) have it
++  export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-65536}"
+   # Do not pick up another agent's global rules and skills (~/.claude/CLAUDE.md, ~/.claude/skills).
+   export OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
+   # The engine (Bun) unpacks libopentui.so (5-14 MB) into $TMPDIR on every start and never removes it.

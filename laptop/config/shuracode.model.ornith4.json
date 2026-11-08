@@ -1,0 +1,42 @@
+{
+  "ornith4": {
+    "name": "Ornith-1.5 35B-A3B effort v4 (test)",
+    "attachment": true,
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "limit": {
+      "context": 200000,
+      "output": 65536
+    },
+    "variants": {
+      "fast": {
+        "reasoningEffort": "none"
+      },
+      "low": {
+        "reasoningEffort": "low"
+      },
+      "medium": {
+        "reasoningEffort": "medium"
+      },
+      "high": {
+        "reasoningEffort": "high"
+      },
+      "xhigh": {
+        "reasoningEffort": "xhigh"
+      },
+      "max": {
+        "reasoningEffort": "max"
+      }
+    },
+    "options": {
+      "reasoningEffort": "medium"
+    }
+  }
+}

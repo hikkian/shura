@@ -1,0 +1,401 @@
+diff --git a/gateway/ai_gateway.py b/gateway/ai_gateway.py
+index 6e01e4c..8cc3d8c 100755
+--- a/gateway/ai_gateway.py
++++ b/gateway/ai_gateway.py
+@@ -31,6 +31,7 @@ from pathlib import Path
+ sys.path.insert(0, str(Path(__file__).resolve().parent))
+ from gpu_nvml import NVML
+ from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
++import lang_guard
+ 
+ CFG_DIR = Path(os.environ.get("AI_GATEWAY_CONFIG", Path(__file__).resolve().parent.parent / "config"))
+ STATE_DIR = Path(os.path.expanduser(os.environ.get("AI_GATEWAY_STATE", "~/.local/state/ai-gateway")))
+@@ -149,6 +150,8 @@ class State:
+         self.last_yield_reason = ""
+         self.last_yield_at = None
+         self.ram_checkpoint = None
++        self.slot_kind = ""   # kind of the prompt now in the slot (see request_kind); "" = legacy/unknown
++        self.want_kind = ""   # kind the next load should restore
+         self.last_ram_poll = 0.0
+         self.vram_resume_min_gb = 0.0
+         self.preload_vram_gb = 0.0
+@@ -216,8 +219,48 @@ def model_config(model_id, vision):
+     return mc
+ 
+ 
+-def slot_filename(model_id, vision):
+-    return f"{model_id}-{'vision' if vision else 'text'}.bin"
++def slot_filename(model_id, vision, kind=None):
++    """One saved session per prompt kind, so a request of another kind (a benchmark, another client) never
++    replaces the agent's saved prompt."""
++    kind = st.slot_kind if kind is None else kind
++    return f"{model_id}-{'vision' if vision else 'text'}{'-' + kind if kind else ''}.bin"
++
++
++KIND_FILE = Path.home() / ".local/state/ai-gateway/last-agent-kind"
++MAX_KIND_FILES = 4
++
++
++def request_kind(obj):
++    """Prompt kind: hash of the tools and the system prompt (already free of per-project text, see hoist_project_context). Requests of one kind share
++    their long prefix (tools + system), so they can reuse each other's cached state."""
++    msgs = obj.get("messages") or []
++    sys0 = msgs[0].get("content") if msgs and msgs[0].get("role") == "system" else ""
++    sys0 = sys0 if isinstance(sys0, str) else json.dumps(sys0)
++    tools = json.dumps(obj.get("tools") or [], sort_keys=True, ensure_ascii=False)
++    if not sys0 and tools == "[]":
++        return ""
++    return hashlib.sha256((tools + "|" + sys0).encode()).hexdigest()[:10]
++
++
++def prune_kind_files(model_id, vision):
++    files = sorted(SLOT_DIR.glob(f"{model_id}-{'vision' if vision else 'text'}-*.bin"),
++                   key=lambda f: f.stat().st_mtime, reverse=True)
++    for f in files[MAX_KIND_FILES:]:
++        f.unlink(missing_ok=True)
++
++
++def switch_slot_kind_locked(kind):
++    """The loaded slot holds another kind of prompt: park it on disk and restore this kind's saved state."""
++    if not kind or kind == st.slot_kind:
++        return
++    if st.slot_kind:
++        save_slot_locked()  # keep the current kind's session before another kind overwrites the slot
++    if not (SLOT_DIR / slot_filename(st.model_id, st.vision, kind)).exists():
++        return
++    st.want_kind = kind
++    if restore_slot_locked() != "":  # a partial restore must not be reused: start this request from empty
++        st.skip_disk_restore = False
++        llama_call("POST", "/slots/0?action=erase", {}, timeout=30)
+ 
+ 
+ def llama_call(method, path, body=None, timeout=10):
+@@ -466,6 +509,7 @@ def save_slot_locked(ram_only=False):
+             if code != 200 or not res or res.get("n_saved") != n or not target.is_file():
+                 raise RuntimeError(f"slot save failed: HTTP {code}")
+             os.replace(target, SLOT_DIR / name)
++            prune_kind_files(st.model_id, st.vision)
+             log(f"Saved slot ({n} prompt tokens) atomically -> {name}")
+             return True
+         root = prepare_ram_slot_dir()
+@@ -521,7 +565,7 @@ def restore_slot_locked():
+     if st.skip_disk_restore and not from_ram:
+         st.skip_disk_restore = False
+         return ""
+-    disk = SLOT_DIR / slot_filename(st.model_id, st.vision)
++    disk = SLOT_DIR / slot_filename(st.model_id, st.vision, st.want_kind)
+     if not from_ram and not disk.exists():
+         return ""
+     root = RAM_SLOT_DIR if st.ram_backend else SLOT_DIR
+@@ -544,7 +588,8 @@ def restore_slot_locked():
+             event("checkpoint_restored", f"Restored {res['n_restored']} RAM tokens; " +
+                   ("checkpoint removed" if cleaned else "checkpoint cleanup failed"))
+         else:
+-            log(f"Restored slot from disk ({res['n_restored']} tokens)")
++            st.slot_kind = st.want_kind
++            log(f"Restored slot from disk ({res['n_restored']} tokens, kind {st.want_kind or 'legacy'})")
+         return ""
+     except Exception as e:  # noqa: BLE001 - partially restored backends must be discarded safely.
+         event("checkpoint_restore_failed", f"RAM/disk session unusable; prompt will be re-read: {e}", fallback=True)
+@@ -672,6 +717,90 @@ def backend_port_in_use():
+         return False
+ 
+ 
++GLOBAL_INSTR = (str(Path.home() / ".config/shuracode"), str(Path.home() / ".local/share/shuracode"))
++ENV_RE = re.compile(r"You are powered by the model named[^\n]*\n(?:[^\n]*\n)??<env>.*?</env>\n?", re.S)
++INSTR_RE = re.compile(r"Instructions from: (\S+)\n.*?(?=\nInstructions from: |\n<mcp_instructions>|\Z)", re.S)
++
++
++def hoist_project_context(req):
++    """Move the per-project part of an agent system prompt (<env>: folder, date; project AGENTS.md) into the first
++    user message. The system block (tools + prompt) is then identical in every project, and the server's context
++    checkpoint at the first user message lets a new chat reuse it instead of re-reading ~9k tokens (~16 s).
++    The model sees the same text, only in a different place. Returns True if changed."""
++    msgs = req.get("messages") or []
++    if len(msgs) < 2 or msgs[0].get("role") != "system" or not isinstance(msgs[0].get("content"), str):
++        return False
++    sysmsg = msgs[0]["content"]
++    if "<env>" not in sysmsg:
++        return False
++    moved = [m.group(0).strip() for m in ENV_RE.finditer(sysmsg)]
++    sysmsg = ENV_RE.sub("", sysmsg)
++    for m in list(INSTR_RE.finditer(sysmsg)):
++        if not m.group(1).startswith(GLOBAL_INSTR):
++            moved.append(m.group(0).strip())
++            sysmsg = sysmsg.replace(m.group(0), "", 1)
++    first = next((m for m in msgs[1:] if m.get("role") == "user"), None)
++    if not moved or first is None:
++        return False
++    block = "<context>\n" + "\n\n".join(moved) + "\n</context>\n\n"
++    c = first.get("content")
++    if isinstance(c, str):
++        first["content"] = block + c
++    elif isinstance(c, list):
++        first["content"] = [{"type": "text", "text": block.rstrip()}] + c
++    else:
++        return False
++    msgs[0]["content"] = sysmsg.rstrip() + "\n"
++    return True
++
++
++DUMP_FLAG = Path.home() / ".cache/ai-gateway-dump"
++
++
++# Thinking budget per ShuraCode effort level (reasoning_effort after the camelCase rename). llama-server (shura.cpp)
++# enforces it in the sampler: after N thinking tokens it forces `reasoning_budget_message` + "\n</think>" and the
++# answer/tool call starts (common/reasoning-budget.cpp). It is a sampling parameter, NOT part of the prompt, so the
++# cached prefix and the saved slots are unaffected. -1 = unlimited. Per model: "effortBudgets" in model-launch.json,
++# e.g. {"low": 2048, "medium": 8192, "high": 16384, "xhigh": 32768, "max": -1}; "none" (fast) has no thinking.
++BUDGET_MESSAGE = ("\n\nConsidering the limited time by the user, "
++                  "I have to give the solution based on the thinking directly now.")  # Qwen3 docs' early-stop text
++
++
++def apply_effort_budget(obj, model_id):
++    """Add reasoning_budget_tokens (+ message) for the request's reasoning_effort, unless the client set one."""
++    mc = M["models"].get(model_id) or {}
++    budgets = mc.get("effortBudgets") or {}
++    effort = obj.get("reasoning_effort")
++    if not budgets or not isinstance(effort, str) or effort not in budgets or "reasoning_budget_tokens" in obj:
++        return False
++    obj["reasoning_budget_tokens"] = int(budgets[effort])
++    obj.setdefault("reasoning_budget_message", mc.get("reasoningBudgetMessage", BUDGET_MESSAGE))
++    return True
++
++
++def local_title(req):
++    """Chat title from the last user message: first line, at most 50 characters, cut at a word boundary."""
++    text = ""
++    for msg in reversed(req.get("messages", [])):
++        if msg.get("role") != "user":
++            continue
++        c = msg.get("content")
++        text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if isinstance(p, dict))
++        if text.strip() and not text.startswith("Generate a title for this conversation"):
++            break
++    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
++    line = re.sub(r"\s+", " ", re.sub(r"[`*#>_]+", "", line)).strip(" .,:;-")
++    if len(line) > 50:
++        line = line[:50].rsplit(" ", 1)[0].rstrip(" .,:;-") + "…"
++    return line or "Новый чат"
++
++
++def effective_vision(model_id, vision):
++    """alwaysVision: keep the mmproj loaded for text requests too, so an image never forces a reload (costs only the mmproj's RAM)."""
++    mc = M["models"].get(model_id, {})
++    return bool(vision or (mc.get("alwaysVision") and mc.get("mmprojPath")))
++
++
+ def start_llama(model_id, vision, fresh=False):
+     with st.lock:
+         if (st.proc and st.proc.poll() is None and st.status == "READY"
+@@ -845,6 +974,11 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None):
+             elif st.memory_pressure and ram >= G["ramFreeMinGBToLoad"]:
+                 st.memory_pressure = False
+                 st.status = "UNLOADED"
++        # A request that was already waiting for the lock can reload the model right after a pressure stop.
++        # Then the model is READY but the flag would block every request forever: clear it (real pressure
++        # trips the sustain check above again).
++        if st.memory_pressure and st.status == "READY":
++            st.memory_pressure = False
+         st.monitor_healthy = True
+ 
+ 
+@@ -871,6 +1005,7 @@ def monitor(stop=None):
+ 
+ def acquire_model(model_id, vision):
+     """Reserve the request before checking/loading, closing the ready-to-proxy unload race."""
++    vision = effective_vision(model_id, vision)
+     deadline = time.monotonic() + G["vramReloadWaitSeconds"]
+     while True:
+         with st.lock:
+@@ -1052,6 +1187,26 @@ class Handler(BaseHTTPRequestHandler):
+         self.end_headers()
+         self.wfile.write(body)
+ 
++    def send_local_completion(self, req, content):
++        """Answer an OpenAI chat request without the model (stream or not)."""
++        cid, now, model = "chatcmpl-local", int(time.time()), req.get("model", "local")
++        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
++        if not req.get("stream"):
++            return self.send_json(200, {"id": cid, "object": "chat.completion", "created": now, "model": model, "usage": usage,
++                                        "choices": [{"index": 0, "finish_reason": "stop",
++                                                     "message": {"role": "assistant", "content": content}}]})
++        base = {"id": cid, "object": "chat.completion.chunk", "created": now, "model": model}
++        chunks = [dict(base, choices=[{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": None}]),
++                  dict(base, choices=[{"index": 0, "delta": {}, "finish_reason": "stop"}])]
++        if (req.get("stream_options") or {}).get("include_usage"):
++            chunks.append(dict(base, choices=[], usage=usage))
++        out = b"".join(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n" for c in chunks) + b"data: [DONE]\n\n"
++        self.send_response(200)
++        self.send_header("Content-Type", "text/event-stream")
++        self.send_header("Content-Length", str(len(out)))
++        self.end_headers()
++        self.wfile.write(out)
++
+     def guardian_endpoint(self, path):
+         if path == "/guardian/status":
+             self.send_json(200, status_snapshot())
+@@ -1130,6 +1285,11 @@ class Handler(BaseHTTPRequestHandler):
+ 
+         if path.startswith("/guardian/"):
+             return self.guardian_endpoint(path)
++        # Health checks (benchmarks, monitors, clients) must not load the default model: answer here.
++        if path in ("/health", "/v1/health") and self.command == "GET":
++            snap = status_snapshot()
++            return self.send_json(200, {"status": "ok", "gateway": "ok", "model": snap.get("model"),
++                                        "model_status": snap.get("status")})
+ 
+         st.last_request = time.time()
+         if GAME.enabled and (GAME.active or not GAME.ready):
+@@ -1152,14 +1312,77 @@ class Handler(BaseHTTPRequestHandler):
+             # The agent's AI-SDK client (ShuraCode / OpenCode) sends camelCase "reasoningEffort"; llama-server only reads "reasoning_effort".
+             if '"reasoningEffort"' in text:
+                 body = re.sub(r'"reasoningEffort"\s*:', '"reasoning_effort":', text).encode()
++                text = body.decode("utf-8", errors="replace")
++            # The agent's chat-title call is answered here from the user's own words: with one slot, a model call
++            # would evict the cached session/prompt and delay the real answer by a few seconds.
++            if "You are a title generator" in text[:400]:
++                try:
++                    return self.send_local_completion(json.loads(body), local_title(json.loads(body)))
++                except (ValueError, TypeError, AttributeError):
++                    pass
++            if "<env>" in text[:40000] and path.endswith("/chat/completions"):
++                try:
++                    obj = json.loads(body)
++                    if hoist_project_context(obj):
++                        body = json.dumps(obj, ensure_ascii=False).encode()
++                except (ValueError, TypeError, AttributeError):
++                    pass
++            if '"reasoning_effort"' in text and path.endswith("/chat/completions"):
++                try:
++                    obj = json.loads(body)
++                    if apply_effort_budget(obj, model_id):
++                        body = json.dumps(obj, ensure_ascii=False).encode()
++                except (ValueError, TypeError, AttributeError):
++                    pass
+             body = apply_terse(body, path, model_id)
++            if DUMP_FLAG.exists():  # debug: `touch ~/.cache/ai-gateway-dump` to keep the last requests
++                n = int(time.time() * 1000) % 10 ** 8
++                (DUMP_FLAG.parent / f"ai-gateway-req-{n}.json").write_bytes(body)
+ 
++        self.lang_guard = None
++        if body and path.endswith("/chat/completions") and (M["models"].get(model_id) or {}).get("langGuard"):
++            try:
++                req = json.loads(body)
++                lang = lang_guard.guard_for(req, path, M["models"][model_id]) if req.get("stream") else ""
++                if lang:
++                    self.lang_guard = lang_guard.StreamGuard(lang, lambda text, r=req, lg=lang: llama_rewrite(r, text, lg))
++            except (ValueError, TypeError, AttributeError):
++                self.lang_guard = None
++
++        kind = ""
++        if self.headers.get("X-Shura-Warm"):  # `shura` starts the agent: restore the agent's last session
++            try:
++                kind = KIND_FILE.read_text().strip()
++            except OSError:
++                pass
++        elif body and path.endswith("/chat/completions"):
++            try:
++                kind = request_kind(json.loads(body))
++            except (ValueError, TypeError, AttributeError):
++                kind = ""
++            if kind and '"You are ShuraCode' in text[:400]:
++                try:
++                    KIND_FILE.write_text(kind)
++                except OSError:
++                    pass
++        with st.lock:
++            st.want_kind = kind
+         err = acquire_model(model_id, vision)
++        if not err and kind and not self.headers.get("X-Shura-Warm"):
++            with st.lock:
++                if st.busy == 1:
++                    try:
++                        switch_slot_kind_locked(kind)
++                    except Exception as e:  # noqa: BLE001 - a failed switch only costs a re-read
++                        log(f"slot kind switch failed: {e}")
++                st.slot_kind = kind
+         if err:
+             return self.send_json(503, {"error": f"Could not start model '{model_id}'", "reason": err}, G["gameRetrySeconds"] if GAME.enabled and GAME.active else None)
+ 
+         try:
+-            if GAME.enabled:
++            if self.headers.get("X-Shura-Warm"):  # `shura warm`: load only; a real request would evict the restored session
++                self.send_json(200, {"ok": True, "model": model_id})
++            elif GAME.enabled:
+                 self.proxy_game(body)
+             else:
+                 self.proxy(body)
+@@ -1194,12 +1417,19 @@ class Handler(BaseHTTPRequestHandler):
+             self.send_header("Transfer-Encoding", "chunked") if chunked else self.send_header("Content-Length", length)
+             self.end_headers()
+             sent = True
++            guard = getattr(self, "lang_guard", None) if chunked else None
+             while self.command != "HEAD":
+                 data = reply.read1(65536)
+                 if not data:
+                     break
++                if guard:
++                    data = guard.feed(data)
++                    if not data:
++                        continue
+                 self.wfile.write((f"{len(data):X}\r\n".encode() + data + b"\r\n") if chunked else data)
+                 self.wfile.flush()
++            if guard:
++                self.write_guard_tail(guard)
+             if chunked:
+                 if lease["cancel"].is_set():
+                     raise ConnectionAbortedError("game drain timeout")
+@@ -1248,21 +1478,52 @@ class Handler(BaseHTTPRequestHandler):
+                 return
+             self.send_header("Transfer-Encoding", "chunked")
+             self.end_headers()
++            guard = getattr(self, "lang_guard", None)
+             while True:
+                 chunk = r.read1(65536)
+                 if not chunk:
+                     break
++                if guard:
++                    chunk = guard.feed(chunk)
++                    if not chunk:
++                        continue
+                 self.wfile.write(f"{len(chunk):X}\r\n".encode() + chunk + b"\r\n")
+                 self.wfile.flush()
++            if guard:
++                self.write_guard_tail(guard)
+             self.wfile.write(b"0\r\n\r\n")
+         except (BrokenPipeError, ConnectionResetError):
+             pass  # client went away; closing upstream makes llama-server abort the generation
+         finally:
+             conn.close()
+ 
++    def write_guard_tail(self, guard):
++        tail = guard.finish_bytes()
++        if guard.rewritten:
++            log(f"language guard: final answer rewritten into {guard.lang} ({len(guard.text)} chars)")
++        if tail:
++            self.wfile.write(f"{len(tail):X}\r\n".encode() + tail + b"\r\n")
++            self.wfile.flush()
++
+     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = handle_any
+ 
+ 
++def llama_rewrite(req, text, lang):
++    """Language guard: ask the loaded model (same prompt prefix, KV cache reused) to rewrite its final answer."""
++    conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=900)
++    try:
++        body = json.dumps(lang_guard.rewrite_request(req, text, lang), ensure_ascii=False).encode()
++        conn.request("POST", "/v1/chat/completions", body=body, headers={"Content-Type": "application/json"})
++        r = conn.getresponse()
++        if r.status != 200:
++            log(f"language guard: rewrite failed, HTTP {r.status}")
++            return None
++        msg = (json.loads(r.read()).get("choices") or [{}])[0].get("message") or {}
++        return (msg.get("content") or "").strip() or None
++    finally:
++        conn.close()
++
++
+ def shutdown(signum, _frame):
+     log(f"Signal {signum}: saving active slot and stopping llama-server")
+     with st.lock:
