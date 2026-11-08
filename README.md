@@ -53,6 +53,31 @@ llama.cpp, [hikkian/llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura)
 > (see [Status](#status-preparing-10)). Other GPUs, CPUs and memory speeds will differ, and the setup
 > needs re-tuning there. Raw measurements and the method are published with the 1.0 benchmark set.
 
+## Where it's going: a model that grows with you
+
+Today every local model starts from zero. A new one comes out, you switch, and everything the old one
+learned from working with you is gone. Shura is meant to work the other way: **one model, on your own
+PC, for years, and it keeps getting better at your work**, mostly at how it reasons and solves your tasks,
+not just at remembering facts.
+
+It grows in four layers, from cheap to hard:
+
+| Layer | What changes | Status |
+|---|---|---|
+| Memory | facts, decisions and context you confirmed, each with a source you can inspect, fix, export or delete | built, off by default, lands in 1.0 |
+| Rules | when you correct the same thing twice, Shura suggests a rule; you say yes or no; it is switched on only if it does better on your own tasks | in progress, lands in 1.0 |
+| More thinking on hard tasks | several attempts, your tests pick the one that works | planned |
+| Weights | a small LoRA adapter trained on what you confirmed, on top of the same quantized model you run every day | research; a first pilot on a small model is next |
+
+The rules we hold to: nothing gets worse (every change is measured on your tasks before and after, and
+rolled back if anything regresses); it learns only from what you confirmed, from the conversation, never
+from watching you; everything stays local; it is gentle with the SSD and the desktop; and when a better
+base model fits your card, your memory, rules and examples move with you. We publish the numbers either
+way, including when an idea does not work.
+
+The longer story and the progress live on the blog:
+[I'm building a local LLM that actually gets better the longer I use it](https://hikkian.github.io/blog/local-llm-that-gets-better.html).
+
 ## Status: preparing 1.0
 
 This README describes the project as it is measured today. Not all of it is in the published `main`
