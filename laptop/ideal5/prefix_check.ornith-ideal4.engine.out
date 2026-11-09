@@ -1,0 +1,159 @@
+== prefix_check template=/home/hikkian/Desktop/AI/bench/template/gen7/ornith-ideal4.jinja mode=engine ==
+llama-server 127.0.0.1:8093 ready (CPU, model=stories15M-q4_0.gguf, chat-template-file=/home/hikkian/Desktop/AI/bench/template/gen7/ornith-ideal4.jinja)
+dialog 1 [ru-en-switch] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=991 len(k+1)=1244: FAIL first differing byte 325 (char 325)
+      k    before='ive what you already know, and do not plan beyond that step.'
+      k    after ='\n\nЯзык общения: русский. Всё, что ты пишешь пользователю, — '
+      k+1  before='ive what you already know, and do not plan beyond that step.'
+      k+1  after ='<|im_end|>\n<|im_start|>user\nВ /home/user/proj/app/services/c'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1244 len(k+1)=1969: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1969 len(k+1)=2492: PASS
+  dialog 1 summary: 2 pass, 1 fail
+dialog 2 [en-ru-switch] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=535 len(k+1)=1562: FAIL first differing byte 325 (char 325)
+      k    before='ive what you already know, and do not plan beyond that step.'
+      k    after ='<|im_end|>\n<|im_start|>user\nThe pagination helper in /home/u'
+      k+1  before='ive what you already know, and do not plan beyond that step.'
+      k+1  after ='\n\nЯзык общения: русский. Всё, что ты пишешь пользователю, — '
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1562 len(k+1)=2198: FAIL first differing byte 1791 (char 1440)
+      k    before='ия на ноль, и добавь проверку с понятной ошибкой ValueError.'
+      k    after ='\n\nИтоговое сообщение пользователю пиши целиком на русском яз'
+      k+1  before='ия на ноль, и добавь проверку с понятной ошибкой ValueError.'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nНужна проверка в на'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=2198 len(k+1)=2764: FAIL first differing byte 2639 (char 2076)
+      k    before='pi/test_pagination.py добавь кейсы для total=0 и per_page=0.'
+      k    after ='\n\nИтоговое сообщение пользователю пиши целиком на русском яз'
+      k+1  before='pi/test_pagination.py добавь кейсы для total=0 и per_page=0.'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nДва новых кейса: to'
+  dialog 2 summary: 0 pass, 3 fail
+dialog 3 [tools-high-en] kwargs={'reasoning_effort': 'high'} tools=yes assistant_turns=8
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=4171 len(k+1)=4792: FAIL first differing byte 3907 (char 3907)
+      k    before='Find the cause, fix it, and run the tests before you finish.'
+      k    after ='\n\n[effort: high] Before the final answer: re-check every req'
+      k+1  before='Find the cause, fix it, and run the tests before you finish.'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nStart with the deco'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=4792 len(k+1)=5560: FAIL first differing byte 4529 (char 4529)
+      k    before='                 time.sleep(base_delay)\n...\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='                 time.sleep(base_delay)\n...\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nThe sleep is a cons'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=5560 len(k+1)=6385: FAIL first differing byte 5297 (char 5297)
+      k    before='ls[1:])]\n    assert gaps[1] > gaps[0] * 1.5\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='ls[1:])]\n    assert gaps[1] > gaps[0] * 1.5\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nThe test compares g'
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=6385 len(k+1)=7441: FAIL first differing byte 6122 (char 6122)
+      k    before='py:9:    @retry(attempts=2, base_delay=1.0)\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='py:9:    @retry(attempts=2, base_delay=1.0)\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nclient.py and sync.'
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=7441 len(k+1)=8013: FAIL first differing byte 7178 (char 7178)
+      k    before='9 lines to /home/user/proj/app/net/retry.py\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='9 lines to /home/user/proj/app/net/retry.py\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nRun the retry tests'
+  turn 6 asst=#12 k=msgs[:12] k+1=msgs[:14] len(k)=8013 len(k+1)=9337: FAIL first differing byte 7750 (char 7750)
+      k    before='t_backoff_grows\n1 failed, 2 passed in 0.31s\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='t_backoff_grows\n1 failed, 2 passed in 0.31s\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nThe decorator now s'
+  turn 7 asst=#14 k=msgs[:14] k+1=msgs[:16] len(k)=9337 len(k+1)=9756: FAIL first differing byte 9074 (char 9074)
+      k    before='ines to /home/user/proj/tests/test_retry.py\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='ines to /home/user/proj/tests/test_retry.py\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nFinal run of the re'
+  turn 8 asst=#16 k=msgs[:16] k+1=msgs[:18] len(k)=9756 len(k+1)=10383: FAIL first differing byte 9493 (char 9493)
+      k    before='>user\n<tool_response>\n...\n3 passed in 0.02s\n</tool_response>'
+      k    after ='\n[effort: high] Before the final answer: re-check every requ'
+      k+1  before='>user\n<tool_response>\n...\n3 passed in 0.02s\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nAll three tests pas'
+  dialog 3 summary: 0 pass, 8 fail
+dialog 4 [tools-max-ru] kwargs={'reasoning_effort': 'max'} tools=yes assistant_turns=5
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=5959 len(k+1)=6506: FAIL first differing byte 5703 (char 5352)
+      k    before='я и так, и так, а tests/parsers/test_csv_loader.py проходил.'
+      k    after ='\n\n[effort: max] Before the final answer: full verification p'
+      k+1  before='я и так, и так, а tests/parsers/test_csv_loader.py проходил.'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nСначала посмотрю те'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=6506 len(k+1)=7193: FAIL first differing byte 6382 (char 5900)
+      k    before='  return [row for row in csv.DictReader(f)]\n</tool_response>'
+      k    after ='\n[effort: max] Before the final answer: full verification pa'
+      k+1  before='  return [row for row in csv.DictReader(f)]\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nПричина в open(path'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=7193 len(k+1)=8279: FAIL first differing byte 7171 (char 6587)
+      k    before='est_cp1251_file\n1 failed, 4 passed in 0.44s\n</tool_response>'
+      k    after ='\n[effort: max] Before the final answer: full verification pa'
+      k+1  before='est_cp1251_file\n1 failed, 4 passed in 0.44s\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nНужны две кодировки'
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=8279 len(k+1)=8689: FAIL first differing byte 8431 (char 7673)
+      k    before='o /home/user/proj/app/parsers/csv_loader.py\n</tool_response>'
+      k    after ='\n[effort: max] Before the final answer: full verification pa'
+      k+1  before='o /home/user/proj/app/parsers/csv_loader.py\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nЗапускаю тесты парс'
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=8689 len(k+1)=9287: FAIL first differing byte 8906 (char 8083)
+      k    before='ser\n<tool_response>\n.....\n5 passed in 0.41s\n</tool_response>'
+      k    after ='\n[effort: max] Before the final answer: full verification pa'
+      k+1  before='ser\n<tool_response>\n.....\n5 passed in 0.41s\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nВсе пять тестов про'
+  dialog 4 summary: 0 pass, 5 fail
+dialog 5 [thinking-off-en] kwargs={'enable_thinking': False} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=398 len(k+1)=943: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=943 len(k+1)=1259: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1259 len(k+1)=1615: PASS
+  dialog 5 summary: 3 pass, 0 fail
+dialog 6 [context-xhigh-ru] kwargs={'reasoning_effort': 'xhigh'} tools=yes assistant_turns=6
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=4876 len(k+1)=5578: FAIL first differing byte 4864 (char 4506)
+      k    before='ле даты стоит None, и пустые даты выводились пустой ячейкой.'
+      k    after ='\n\n[effort: xhigh] Before the final answer: re-check every re'
+      k+1  before='ле даты стоит None, и пустые даты выводились пустой ячейкой.'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nСначала открою xlsx'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=5578 len(k+1)=6262: FAIL first differing byte 5672 (char 5209)
+      k    before=', f"{created:%Y-%m-%d}"])\n    wb.save(path)\n</tool_response>'
+      k    after ='\n[effort: xhigh] Before the final answer: re-check every req'
+      k+1  before=', f"{created:%Y-%m-%d}"])\n    wb.save(path)\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nОшибка в f"{created'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=6262 len(k+1)=6807: FAIL first differing byte 6482 (char 5893)
+      k    before='e_is_empty_cell\n1 failed, 4 passed in 0.58s\n</tool_response>'
+      k    after ='\n[effort: xhigh] Before the final answer: re-check every req'
+      k+1  before='e_is_empty_cell\n1 failed, 4 passed in 0.58s\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nЕсть ли такая же ст'
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=6807 len(k+1)=7732: FAIL first differing byte 7104 (char 6438)
+      k    before='ut.write(f"{row[\'created_on\']:%Y-%m-%d}\\n")\n</tool_response>'
+      k    after ='\n[effort: xhigh] Before the final answer: re-check every req'
+      k+1  before='ut.write(f"{row[\'created_on\']:%Y-%m-%d}\\n")\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nНашлась та же строк'
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=7732 len(k+1)=8155: FAIL first differing byte 8180 (char 7363)
+      k    before='o /home/user/proj/app/export/xlsx_writer.py\n</tool_response>'
+      k    after ='\n[effort: xhigh] Before the final answer: re-check every req'
+      k+1  before='o /home/user/proj/app/export/xlsx_writer.py\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nЗапускаю тесты эксп'
+  turn 6 asst=#12 k=msgs[:12] k+1=msgs[:14] len(k)=8155 len(k+1)=8729: FAIL first differing byte 8685 (char 7786)
+      k    before='ser\n<tool_response>\n.....\n5 passed in 0.57s\n</tool_response>'
+      k    after ='\n[effort: xhigh] Before the final answer: re-check every req'
+      k+1  before='ser\n<tool_response>\n.....\n5 passed in 0.57s\n</tool_response>'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nВсе пять тестов про'
+  dialog 6 summary: 0 pass, 6 fail
+dialog 7 [long-mixed-kz-en-ru] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=4
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=987 len(k+1)=1656: FAIL first differing byte 327 (char 327)
+      k    before='e what you already know, and do not plan beyond that step.\n\n'
+      k    after ='Қарым-қатынас тілі: қазақ тілі. Пайдаланушыға жазатын барлық'
+      k+1  before='e what you already know, and do not plan beyond that step.\n\n'
+      k+1  after ='Write everything addressed to the user (short notes between '
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1656 len(k+1)=2394: FAIL first differing byte 327 (char 327)
+      k    before='e what you already know, and do not plan beyond that step.\n\n'
+      k    after ='Write everything addressed to the user (short notes between '
+      k+1  before='e what you already know, and do not plan beyond that step.\n\n'
+      k+1  after ='Язык общения: русский. Всё, что ты пишешь пользователю, — ко'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=2394 len(k+1)=3068: FAIL first differing byte 2896 (char 2272)
+      k    before=' и со строкой только из знаков препинания. Ответь по-русски.'
+      k    after ='\n\nИтоговое сообщение пользователю пиши целиком на русском яз'
+      k+1  before=' и со строкой только из знаков препинания. Ответь по-русски.'
+      k+1  after ='<|im_end|>\n<|im_start|>assistant\n<think>\nFor an empty string'
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=3068 len(k+1)=3165: FAIL first differing byte 325 (char 325)
+      k    before='ive what you already know, and do not plan beyond that step.'
+      k    after ='\n\nЯзык общения: русский. Всё, что ты пишешь пользователю, — '
+      k+1  before='ive what you already know, and do not plan beyond that step.'
+      k+1  after ='<|im_end|>\n<|im_start|>user\nМенің slugify функциям /home/use'
+  dialog 7 summary: 0 pass, 4 fail
+engine vs jinja2 renders differing: 0 of 64
+turns checked: 32  render errors: 0
+breaks: 27

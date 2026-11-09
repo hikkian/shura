@@ -1,0 +1,120 @@
+== prefix_check template=/home/hikkian/Desktop/AI/bench/template/ornith.jinja mode=jinja2 ==
+dialog 1 [ru-en-switch] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=377 len(k+1)=825: FAIL first differing byte 424 (char 369)
+      k    before=' чтобы она возвращала None.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before=' чтобы она возвращала None.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Причина в `get_user_cache`: она делает `_store[key]` напряму'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=825 len(k+1)=1297: FAIL first differing byte 967 (char 817)
+      k    before=' existing tests still pass.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before=' existing tests still pass.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Added the test to `tests/test_cache.py`:\n```python\nfrom app.'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1297 len(k+1)=1646: FAIL first differing byte 1439 (char 1289)
+      k    before='hich other files import it.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before='hich other files import it.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Renamed `_store` to `_user_cache` in `app/services/cache.py`'
+  dialog 1 summary: 0 pass, 3 fail
+dialog 2 [en-ru-switch] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=373 len(k+1)=795: FAIL first differing byte 365 (char 365)
+      k    before='ould return 1 page instead.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before='ould return 1 page instead.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='The fix is a ceiling division with a minimum of one page:\n``'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=795 len(k+1)=1256: FAIL first differing byte 863 (char 787)
+      k    before='онятной ошибкой ValueError.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before='онятной ошибкой ValueError.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Добавил проверку в `app/api/pagination.py`, до деления:\n```p'
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1256 len(k+1)=1657: FAIL first differing byte 1429 (char 1248)
+      k    before='ы для total=0 и per_page=0.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before='ы для total=0 и per_page=0.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Добавлю два кейса в `tests/api/test_pagination.py`:\n```pytho'
+  dialog 2 summary: 0 pass, 3 fail
+dialog 3 [tools-high-en] kwargs={'reasoning_effort': 'high'} tools=yes assistant_turns=8
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=2797 len(k+1)=3419: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=3419 len(k+1)=4187: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=4187 len(k+1)=5012: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=5012 len(k+1)=6068: PASS
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=6068 len(k+1)=6640: PASS
+  turn 6 asst=#12 k=msgs[:12] k+1=msgs[:14] len(k)=6640 len(k+1)=7964: PASS
+  turn 7 asst=#14 k=msgs[:14] k+1=msgs[:16] len(k)=7964 len(k+1)=8383: PASS
+  turn 8 asst=#16 k=msgs[:16] k+1=msgs[:18] len(k)=8383 len(k+1)=7678: FAIL first differing byte 2789 (char 2789)
+      k    before='he tests before you finish.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\nStart with the decorator and its test. I need to see'
+      k+1  before='he tests before you finish.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ="I'll read the decorator first.\n\n<tool_call>\n<function=read_f"
+  dialog 3 summary: 7 pass, 1 fail
+dialog 4 [tools-max-ru] kwargs={'reasoning_effort': 'max'} tools=yes assistant_turns=5
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=2846 len(k+1)=3394: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=3394 len(k+1)=4081: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=4081 len(k+1)=5167: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=5167 len(k+1)=5577: PASS
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=5577 len(k+1)=5295: FAIL first differing byte 2916 (char 2840)
+      k    before='t_csv_loader.py проходил.<|im_end|>\n<|im_start|>assistant\n<t'
+      k    after ='hink>\nСначала посмотрю текущий загрузчик. Ошибка говорит о т'
+      k+1  before='t_csv_loader.py проходил.<|im_end|>\n<|im_start|>assistant\n<t'
+      k+1  after ='ool_call>\n<function=read_file>\n<parameter=path>\n/home/user/p'
+  dialog 4 summary: 4 pass, 1 fail
+dialog 5 [thinking-off-en] kwargs={'enable_thinking': False} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=398 len(k+1)=924: FAIL first differing byte 379 (char 379)
+      k    before='ow do I fix the Dockerfile?<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n\n</think>\n\n'
+      k+1  before='ow do I fix the Dockerfile?<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Docker caches each layer, and a `COPY . .` before `pip insta'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=924 len(k+1)=1221: FAIL first differing byte 905 (char 905)
+      k    before=' folder in /home/user/proj?<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n\n</think>\n\n'
+      k+1  before=' folder in /home/user/proj?<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Yes. A local `.venv` copied into the image is large and can '
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1221 len(k+1)=1558: FAIL first differing byte 1202 (char 1202)
+      k    before=' the build is reproducible?<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n\n</think>\n\n'
+      k+1  before=' the build is reproducible?<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Pin the image by digest. Run `docker buildx imagetools inspe'
+  dialog 5 summary: 0 pass, 3 fail
+dialog 6 [context-xhigh-ru] kwargs={'reasoning_effort': 'xhigh'} tools=yes assistant_turns=6
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=2877 len(k+1)=3580: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=3580 len(k+1)=4264: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=4264 len(k+1)=4809: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=4809 len(k+1)=5734: PASS
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=5734 len(k+1)=6157: PASS
+  turn 6 asst=#12 k=msgs[:12] k+1=msgs[:14] len(k)=6157 len(k+1)=5725: FAIL first differing byte 2954 (char 2871)
+      k    before='ыводились пустой ячейкой.<|im_end|>\n<|im_start|>assistant\n<t'
+      k    after ='hink>\nСначала открою xlsx_writer.py: нужно понять, как пишут'
+      k+1  before='ыводились пустой ячейкой.<|im_end|>\n<|im_start|>assistant\n<t'
+      k+1  after ='ool_call>\n<function=read_file>\n<parameter=path>\n/home/user/p'
+  dialog 6 summary: 5 pass, 1 fail
+dialog 7 [long-mixed-kz-en-ru] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=4
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=356 len(k+1)=888: FAIL first differing byte 419 (char 348)
+      k    before='зетуге көмектесе аласың ба?<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before='зетуге көмектесе аласың ба?<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Иә, көмектесе аламын. Себебі `slugify` функциясындағы регуля'
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=888 len(k+1)=1409: FAIL first differing byte 1085 (char 880)
+      k    before=' a quick check in the REPL.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before=' a quick check in the REPL.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Yes. In Python 3 `re` patterns are Unicode-aware for `str`, '
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1409 len(k+1)=1829: FAIL first differing byte 1750 (char 1401)
+      k    before='епинания. Ответь по-русски.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before='епинания. Ответь по-русски.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ="Для пустой строки результат будет `''`: регулярные выражения"
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=1829 len(k+1)=2213: FAIL first differing byte 2382 (char 1821)
+      k    before=', какие тесты там уже есть.<|im_end|>\n<|im_start|>assistant\n'
+      k    after ='<think>\n'
+      k+1  before=', какие тесты там уже есть.<|im_end|>\n<|im_start|>assistant\n'
+      k+1  after ='Вот тест, который стоит добавить в `tests/utils/test_slug.py'
+  dialog 7 summary: 0 pass, 4 fail
+turns checked: 32  render errors: 0
+breaks: 16
+exit=1
+
+#### engine mode
+== prefix_check template=/home/hikkian/Desktop/AI/bench/template/ornith.jinja mode=engine ==
+ERROR: RuntimeError: refusing to start llama-server: MemAvailable is 2.49 GiB, policy keeps >= 4 GiB free
+breaks: incomplete (run aborted)
+exit=2

@@ -1,0 +1,49 @@
+== prefix_check template=/home/hikkian/Desktop/AI/bench/template/gen8/ornith-ideal5.jinja mode=jinja2 ==
+dialog 1 [ru-en-switch] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=898 len(k+1)=1603: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1603 len(k+1)=2328: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=2328 len(k+1)=2851: PASS
+  dialog 1 summary: 3 pass, 0 fail
+dialog 2 [en-ru-switch] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=894 len(k+1)=1469: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1469 len(k+1)=2105: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=2105 len(k+1)=2671: PASS
+  dialog 2 summary: 3 pass, 0 fail
+dialog 3 [tools-high-en] kwargs={'reasoning_effort': 'high'} tools=yes assistant_turns=8
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=4204 len(k+1)=4826: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=4826 len(k+1)=5594: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=5594 len(k+1)=6419: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=6419 len(k+1)=7475: PASS
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=7475 len(k+1)=8047: PASS
+  turn 6 asst=#12 k=msgs[:12] k+1=msgs[:14] len(k)=8047 len(k+1)=9371: PASS
+  turn 7 asst=#14 k=msgs[:14] k+1=msgs[:16] len(k)=9371 len(k+1)=9790: PASS
+  turn 8 asst=#16 k=msgs[:16] k+1=msgs[:18] len(k)=9790 len(k+1)=10416: PASS
+  dialog 3 summary: 8 pass, 0 fail
+dialog 4 [tools-max-ru] kwargs={'reasoning_effort': 'max'} tools=yes assistant_turns=5
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=5220 len(k+1)=5768: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=5768 len(k+1)=6455: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=6455 len(k+1)=7541: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=7541 len(k+1)=7951: PASS
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=7951 len(k+1)=8548: PASS
+  dialog 4 summary: 5 pass, 0 fail
+dialog 5 [thinking-off-en] kwargs={'enable_thinking': False} tools=no assistant_turns=3
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=757 len(k+1)=1302: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1302 len(k+1)=1618: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=1618 len(k+1)=1974: PASS
+  dialog 5 summary: 3 pass, 0 fail
+dialog 6 [context-xhigh-ru] kwargs={'reasoning_effort': 'xhigh'} tools=yes assistant_turns=6
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=4432 len(k+1)=5135: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=5135 len(k+1)=5819: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=5819 len(k+1)=6364: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=6364 len(k+1)=7289: PASS
+  turn 5 asst=#10 k=msgs[:10] k+1=msgs[:12] len(k)=7289 len(k+1)=7712: PASS
+  turn 6 asst=#12 k=msgs[:12] k+1=msgs[:14] len(k)=7712 len(k+1)=8285: PASS
+  dialog 6 summary: 6 pass, 0 fail
+dialog 7 [long-mixed-kz-en-ru] kwargs={'reasoning_effort': 'low'} tools=no assistant_turns=4
+  turn 1 asst=#2 k=msgs[:2] k+1=msgs[:4] len(k)=877 len(k+1)=1613: PASS
+  turn 2 asst=#4 k=msgs[:4] k+1=msgs[:6] len(k)=1613 len(k+1)=2301: PASS
+  turn 3 asst=#6 k=msgs[:6] k+1=msgs[:8] len(k)=2301 len(k+1)=2975: PASS
+  turn 4 asst=#8 k=msgs[:8] k+1=msgs[:10] len(k)=2975 len(k+1)=3524: PASS
+  dialog 7 summary: 4 pass, 0 fail
+turns checked: 32  render errors: 0
+breaks: 0
