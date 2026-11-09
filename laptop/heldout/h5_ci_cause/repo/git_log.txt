@@ -1,0 +1,53 @@
+commit c71b0aa
+Author: alice <alice@example.com>
+Date:   2025-03-12 09:12:00 +0000
+
+    docs: update README badges
+
+commit 3be5f10
+Author: bob <bob@example.com>
+Date:   2025-03-12 11:05:00 +0000
+
+    fix: retry on registry timeout in deploy script
+
+commit d4e8b17
+Author: carol <carol@example.com>
+Date:   2025-03-12 16:48:00 +0000
+
+    chore: cleanup requirements.txt
+
+ requirements.txt | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+-pytest==8.1.1
+-tzdata==2023.3
++pytest>=8.1
+-freezegun==1.2.2
++freezegun>=1.2
+
+commit 9a2e6d4
+Author: dan <dan@example.com>
+Date:   2025-03-12 18:20:00 +0000
+
+    feat: invoice pdf footer
+
+commit f0c9a2e
+Author: erin <erin@example.com>
+Date:   2025-03-13 10:02:00 +0000
+
+    refactor: billing rounding via Decimal
+
+ billing/rounding.py | 41 +++++++++++++++++++------------
+ tests/test_rounding.py | 12 ++++++++++
+ 2 files changed, 38 insertions(+), 15 deletions(-)
+
+commit 5c1d3b9
+Author: erin <erin@example.com>
+Date:   2025-03-13 11:30:00 +0000
+
+    revert: refactor: billing rounding via Decimal
+
+ billing/rounding.py | 41 +++++++++++++++++++------------
+ tests/test_rounding.py | 12 ----------
+ 2 files changed, 15 insertions(+), 38 deletions(-)
+

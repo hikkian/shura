@@ -1,0 +1,5 @@
+[project]
+name = "envconf"
+version = "0.3.1"
+description = "Typed settings from environment variables"
+requires-python = ">=3.9"

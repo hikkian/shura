@@ -1,0 +1,53 @@
+--- a/shura-report/bench.sh	2026-11-09 06:30:20.831703929 +0500
++++ b/shura-report/bench.sh	2026-11-09 06:30:20.835772281 +0500
+@@ -5,6 +5,7 @@
+ E=/home/hikkian/Desktop/AI/shuracode-prompt/eval
+ H=/home/hikkian/Desktop/AI/shura-report
+ A=$1; T=$2; R=$3
++TD=$E/tasks/$T; [ -d "$TD" ] || TD=$E/tasks_heldout/$T   # task dir: tasks/ first, then tasks_heldout/
+ # deferral switch: lets a queued script skip an arm that will be re-run later in a better order
+ [ -f "$H/SKIP_$A" ] && exit 0
+ if [ -x "$H/HOOK_$A" ]; then mv "$H/HOOK_$A" "$H/HOOK_$A.ran"; "$H/HOOK_$A.ran" > "$H/HOOK_$A.log" 2>&1; fi  # one-shot setup before an arm
+@@ -18,17 +19,17 @@
+ NT=""; case $A in *_notask) NT=",\"tools\":{\"task\":false},\"permission\":{\"task\":\"deny\"}";; esac
+ [ -n "$SM" ] && export OPENCODE_CONFIG_CONTENT="{\"small_model\":\"$SM\"$NT}"
+ rm -rf "$W"; mkdir -p "$W/proj" "$W/mem" "$W/xdg"
+-cp -r "$E/tasks/$T/repo/." "$W/proj/"
++cp -r "$TD/repo/." "$W/proj/"
+ cd "$W/proj" && git init -q && git add -A && git -c user.email=e@e -c user.name=e commit -qm init
+-PROMPT="$(cat "$E/tasks/$T/prompt.txt")"
+-ATT=(); [ -f "$E/tasks/$T/attach.png" ] && ATT=(-f "$E/tasks/$T/attach.png")
++PROMPT="$(cat "$TD/prompt.txt")"
++ATT=(); [ -f "$TD/attach.png" ] && ATT=(-f "$TD/attach.png")
+ # /guardian/status, NOT /health: the gateway forwards /health to the DEFAULT model (tiel-coder) and reloads it
+ gw_ready() { # wait until the gateway would accept a request (not paused for memory, not disabled); max 30 min
+   [ "$A" = codex ] && return 0
+   for i in $(seq 360); do curl -s -m 5 127.0.0.1:8080/guardian/status | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if not d['memory_pressure'] and not d['multimedia_lock'] and d['override']!='OFF' and not d['game_mode']['active'] else 1)" && return 0; sleep 5; done; }
+ for attempt in 1 2 3; do
+ gw_ready
+-rm -rf "$W/proj" "$W/xdg" "$W/mem"; mkdir -p "$W/proj" "$W/mem" "$W/xdg"; cp -r "$E/tasks/$T/repo/." "$W/proj/"
++rm -rf "$W/proj" "$W/xdg" "$W/mem"; mkdir -p "$W/proj" "$W/mem" "$W/xdg"; cp -r "$TD/repo/." "$W/proj/"
+ cd "$W/proj" && git init -q && git add -A && git -c user.email=e@e -c user.name=e commit -qm init
+ t0=$(date +%s)
+ case $A in
+@@ -44,7 +45,7 @@
+            /home/hikkian/.local/bin/shuracode run --auto --format json "$PROMPT" "${ATT[@]}" > "$W/events.jsonl" 2> "$W/stderr.txt" ;;
+   codex) CI=1 timeout 1500 codex exec --json --skip-git-repo-check --ephemeral -C "$W/proj" -s workspace-write \
+            -c sandbox_workspace_write.network_access=true -m gpt-6-luna -c model_reasoning_effort=xhigh -o "$W/last.txt" \
+-           $([ -f "$E/tasks/$T/attach.png" ] && echo "-i $E/tasks/$T/attach.png") -- "$PROMPT" \
++           $([ -f "$TD/attach.png" ] && echo "-i $TD/attach.png") -- "$PROMPT" \
+            > "$W/events.jsonl" 2> "$W/stderr.txt" < /dev/null ;;
+ esac
+ rc=$?; t1=$(date +%s)
+--- a/shura-report/score2.py	2026-11-09 06:30:20.831755967 +0500
++++ b/shura-report/score2.py	2026-11-09 06:30:20.836780395 +0500
+@@ -41,7 +41,8 @@
+ chk = os.path.join(W, "check")
+ shutil.rmtree(chk, ignore_errors=True)
+ shutil.copytree(proj, chk, ignore=shutil.ignore_patterns(".git"))
+-shutil.copy(os.path.join(E, "tasks", T, "hidden_test.py"), chk)
++TD = next((d for d in (os.path.join(E, "tasks", T), os.path.join(E, "tasks_heldout", T)) if os.path.isdir(d)), os.path.join(E, "tasks", T))
++shutil.copy(os.path.join(TD, "hidden_test.py"), chk)
+ # visible tests: the ORIGINAL shipped test files must pass against the agent's code
+ for f in subprocess.run(["git", "ls-files", "tests", "test"], cwd=proj, capture_output=True, text=True).stdout.split():
+     orig = subprocess.run(["git", "show", "HEAD:" + f], cwd=proj, capture_output=True).stdout
