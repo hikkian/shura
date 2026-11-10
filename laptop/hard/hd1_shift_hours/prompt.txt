@@ -1,0 +1,1 @@
+Расчёт часов работы магазина в sched/ иногда выдаёт неверные ответы. Почини open_minutes и is_open так, как описано в README, и допиши next_change(schedule, instant). Тесты в tests/, прогони их.

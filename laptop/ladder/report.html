@@ -1,0 +1,200 @@
+<title>Лесенка режимов ShuraCode</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* layout: one narrow reading column; the ladder chart is the centre piece, Luna comparison below it */
+:root {
+  --bg:#f2f4f5; --panel:#ffffff; --ink:#14212b; --ink2:#4a5863; --line:#d6dde1; --ours:#1f5fbf; --ours-soft:#bcd2f1; --luna:#3a4651; --warn:#a4380f;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f161b; --panel:#17212a; --ink:#e7edf1; --ink2:#9fb0bc; --line:#2c3a45; --ours:#6ea3f0; --ours-soft:#27405f; --luna:#b8c4cd; --warn:#f08a5d; color-scheme:dark } }
+:root[data-theme="dark"] { --bg:#0f161b; --panel:#17212a; --ink:#e7edf1; --ink2:#9fb0bc; --line:#2c3a45; --ours:#6ea3f0; --ours-soft:#27405f; --luna:#b8c4cd; --warn:#f08a5d; color-scheme:dark }
+body { background:var(--bg); color:var(--ink); font:16px/1.55 var(--sans); padding-block:28px 56px;
+  padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); }
+main { max-width:820px; margin:0 auto; display:grid; gap:28px; }
+h1 { font-size:clamp(26px,5vw,38px); line-height:1.12; margin:0 0 8px; font-weight:600; letter-spacing:-.01em; text-wrap:balance }
+h2 { font-size:20px; margin:0 0 10px; font-weight:600; text-wrap:balance }
+p { margin:0 0 10px; max-width:68ch }
+.lead { color:var(--ink2); font-size:17px; max-width:62ch }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:20px clamp(14px,3vw,24px) }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-top:18px }
+.kpi { border-left:3px solid var(--ours); padding:2px 0 2px 12px }
+.kpi b { display:block; font:500 26px/1.1 var(--mono) }
+.kpi span { color:var(--ink2); font-size:14px }
+.lrow { display:grid; grid-template-columns:64px 1fr 52px; gap:6px 12px; align-items:center; padding:9px 0; border-top:1px solid var(--line) }
+.lrow:first-of-type { border-top:0 }
+.lname { font:500 15px var(--mono) } .lval { font:500 15px var(--mono); text-align:right }
+.lmeta { grid-column:2 / 4; display:flex; gap:14px; flex-wrap:wrap; color:var(--ink2); font-size:13px }
+.track { position:relative; height:22px; background:color-mix(in srgb,var(--line) 55%,transparent); border-radius:3px }
+.bar { position:absolute; inset:0 auto 0 0; background:var(--ours); border-radius:3px 0 0 3px }
+.tick { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--ink); transform:translateX(-1px) }
+.dot { position:absolute; top:50%; width:9px; height:9px; border-radius:50%; background:var(--panel); border:2px solid var(--ink); transform:translate(-50%,-50%) }
+.legend { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--ink2); margin:0 0 6px }
+.legend i { display:inline-block; vertical-align:-2px; margin-right:6px }
+.sw-dot { width:9px; height:9px; border-radius:50%; background:var(--panel); border:2px solid var(--ink) }
+.sw-tick { width:2px; height:14px; background:var(--ink) }
+.sw-luna,.sw-ours { width:12px; height:12px; border-radius:2px } .sw-luna { background:var(--luna) } .sw-ours { background:var(--ours) }
+.vrow { padding:8px 0; border-top:1px solid var(--line) } .vrow:first-of-type { border-top:0 }
+.vname { font-size:14px; margin-bottom:4px }
+.vb { display:grid; grid-template-columns:1fr 46px; gap:10px; align-items:center; margin:3px 0 }
+.vt { position:relative; height:18px; background:color-mix(in srgb,var(--line) 55%,transparent); border-radius:3px }
+.vt b { position:absolute; inset:0 auto 0 0; border-radius:3px 0 0 3px } .vb.luna b { background:var(--luna) } .vb.ours b { background:var(--ours) }
+.vb span { font:500 13px var(--mono); text-align:right }
+.tablewrap { overflow-x:auto } table { border-collapse:collapse; width:100%; min-width:520px; font-size:14px }
+th,td { padding:7px 10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top } th { font-weight:600; color:var(--ink2); font-size:13px }
+td.n,th.n { text-align:right; font-variant-numeric:tabular-nums } td.n { font-family:var(--mono) }
+ul.plain { margin:0; padding-left:20px; display:grid; gap:6px; max-width:70ch }
+.note { color:var(--ink2); font-size:14px }
+.warn { color:var(--warn) }
+code { font:13px var(--mono) }
+@media (max-width:520px) { .lrow { grid-template-columns:54px 1fr 46px } }
+</style>
+<main>
+
+<header>
+  <h1>Лесенка режимов ShuraCode на ноутбуке</h1>
+  <p class="lead">ShuraCode работает целиком локально, на модели Ornith-1.5 35B-A3B. Здесь показано, как каждый из шести режимов усилия справляется с тяжёлыми задачами, и как это выглядит рядом с платной моделью Luna (Codex).</p>
+  <div class="kpis">
+    <div class="kpi"><b>86%</b><span>max на тяжёлых задачах, против 50% у fast</span></div>
+    <div class="kpi"><b>0 из 32</b><span>разрывов кэша контекста между ходами (было 27 из 32)</span></div>
+    <div class="kpi"><b>99%</b><span>у Luna (облако) на тех же тяжёлых задачах; наш лучший режим 86%</span></div>
+  </div>
+</header>
+
+<section class="panel" aria-labelledby="h-ladder">
+  <h2 id="h-ladder">Результат растёт с режимом, но середина лесенки в пределах шума</h2>
+  <p>Шесть задач на рассуждение, которые модель раньше не видела, а скрытые тесты были написаны до запуска и не менялись. Столбец показывает среднюю долю пройденных проверок.</p>
+  <div class="legend"><span><i class="sw-dot"></i>результат отдельного повтора</span><span><i class="sw-tick"></i>среднее со всеми шестью задачами</span></div>
+  <div class="lrow">
+  <div class="lname">fast</div>
+  <div class="track" role="img" aria-label="fast: 50% без hd5, 50% со всеми">
+    <b class="bar" style="width:50.4%"></b>
+    <i class="tick" style="left:49.7%" title="со всеми шестью задачами: 50%"></i>
+    <i class="dot" style="left:50.4%" title="повтор 1: 50%"></i>
+  </div>
+  <div class="lval">50%</div>
+  <div class="lmeta"><span>6 прогонов</span><span>таймаутов 2</span><span>медиана 13 мин</span></div>
+</div>
+<div class="lrow">
+  <div class="lname">low</div>
+  <div class="track" role="img" aria-label="low: 72% без hd5, 60% со всеми">
+    <b class="bar" style="width:71.8%"></b>
+    <i class="tick" style="left:59.8%" title="со всеми шестью задачами: 60%"></i>
+    <i class="dot" style="left:71.8%" title="повтор 1: 72%"></i>
+  </div>
+  <div class="lval">72%</div>
+  <div class="lmeta"><span>6 прогонов</span><span>таймаутов 2</span><span>медиана 16 мин</span></div>
+</div>
+<div class="lrow">
+  <div class="lname">medium</div>
+  <div class="track" role="img" aria-label="medium: 74% без hd5, 77% со всеми">
+    <b class="bar" style="width:74.3%"></b>
+    <i class="tick" style="left:76.7%" title="со всеми шестью задачами: 77%"></i>
+    <i class="dot" style="left:96.7%" title="повтор 1: 97%"></i><i class="dot" style="left:51.9%" title="повтор 2: 52%"></i>
+  </div>
+  <div class="lval">74%</div>
+  <div class="lmeta"><span>12 прогонов</span><span>таймаутов 4</span><span>медиана 17 мин</span></div>
+</div>
+<div class="lrow">
+  <div class="lname">high</div>
+  <div class="track" role="img" aria-label="high: 77% без hd5, 66% со всеми">
+    <b class="bar" style="width:76.6%"></b>
+    <i class="tick" style="left:66.4%" title="со всеми шестью задачами: 66%"></i>
+    <i class="dot" style="left:85.2%" title="повтор 1: 85%"></i><i class="dot" style="left:68.0%" title="повтор 2: 68%"></i>
+  </div>
+  <div class="lval">77%</div>
+  <div class="lmeta"><span>12 прогонов</span><span>таймаутов 4</span><span>медиана 20 мин</span></div>
+</div>
+<div class="lrow">
+  <div class="lname">xhigh</div>
+  <div class="track" role="img" aria-label="xhigh: 79% без hd5, 81% со всеми">
+    <b class="bar" style="width:79.2%"></b>
+    <i class="tick" style="left:80.6%" title="со всеми шестью задачами: 81%"></i>
+    <i class="dot" style="left:71.6%" title="повтор 1: 72%"></i><i class="dot" style="left:91.7%" title="повтор 2: 92%"></i>
+  </div>
+  <div class="lval">79%</div>
+  <div class="lmeta"><span>9 прогонов</span><span>таймаутов 2</span><span>медиана 20 мин</span></div>
+</div>
+<div class="lrow">
+  <div class="lname">max</div>
+  <div class="track" role="img" aria-label="max: 86% без hd5, 85% со всеми">
+    <b class="bar" style="width:85.6%"></b>
+    <i class="tick" style="left:84.6%" title="со всеми шестью задачами: 85%"></i>
+    <i class="dot" style="left:85.0%" title="повтор 1: 85%"></i><i class="dot" style="left:86.5%" title="повтор 2: 87%"></i>
+  </div>
+  <div class="lval">86%</div>
+  <div class="lmeta"><span>9 прогонов</span><span>таймаутов 2</span><span>медиана 30 мин</span></div>
+</div>
+  <p class="note" style="margin-top:12px">Столбец считан без задачи hd5 (применение патча): в любом режиме она упирается в лимит времени и ничего не различает. Решение исключить её принято после первых результатов, поэтому метка показывает и вариант со всеми шестью задачами. Разброс между повторами у одного режима достигает 36 процентных пунктов, поэтому крупные разрывы (fast против остальных, max против high) надёжны, а соседние ступени середины лесенки по этим данным различить нельзя.</p>
+</section>
+
+<section class="panel" aria-labelledby="h-luna">
+  <h2 id="h-luna">Рядом с Luna (Codex): новые задачи по пяти темам</h2>
+  <div class="legend"><span><i class="sw-luna"></i>Luna</span><span><i class="sw-ours"></i>ShuraCode (ornith5, xhigh)</span></div>
+  <div class="vrow"><div class="vname">Скидка в корзине</div>
+  <div class="vbars"><div class="vb luna"><div class="vt"><b style="width:77.8%"></b></div><span>78%</span></div>
+  <div class="vb ours"><div class="vt"><b style="width:66.7%"></b></div><span>67%</span></div></div></div>
+<div class="vrow"><div class="vname">Пул задач на JS</div>
+  <div class="vbars"><div class="vb luna"><div class="vt"><b style="width:100.0%"></b></div><span>100%</span></div>
+  <div class="vb ours"><div class="vt"><b style="width:100.0%"></b></div><span>100%</span></div></div></div>
+<div class="vrow"><div class="vname">README и конфигурация</div>
+  <div class="vbars"><div class="vb luna"><div class="vt"><b style="width:88.9%"></b></div><span>89%</span></div>
+  <div class="vb ours"><div class="vt"><b style="width:100.0%"></b></div><span>100%</span></div></div></div>
+<div class="vrow"><div class="vname">Страница счёта по макету</div>
+  <div class="vbars"><div class="vb luna"><div class="vt"><b style="width:88.9%"></b></div><span>89%</span></div>
+  <div class="vb ours"><div class="vt"><b style="width:48.1%"></b></div><span>48%</span></div></div></div>
+<div class="vrow"><div class="vname">Причина красного CI</div>
+  <div class="vbars"><div class="vb luna"><div class="vt"><b style="width:100.0%"></b></div><span>100%</span></div>
+  <div class="vb ours"><div class="vt"><b style="width:77.8%"></b></div><span>78%</span></div></div></div>
+  <p style="margin-top:12px">В среднем Luna 91%, мы 79%. Главный разрыв в задаче с макетом: наша модель теряет цифры при чтении мелкого текста с картинки. На старом наборе из 19 задач Luna прошла 55 из 57. Скорость сравнивать надо с оговоркой: Luna работает в облаке, а мы полностью локально на ноутбуке без интернета, поэтому на новых задачах медиана 1,5 мин против 5,3 мин. На домашнем ПК с видеокартой RX 7800 XT генерация будет заметно быстрее, чем на ноутбуке.</p>
+</section>
+
+<section class="panel" aria-labelledby="h-tmpl">
+  <h2 id="h-tmpl">Какие подсказки лучше: выбор шаблона</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Вариант</th><th class="n">Прогонов</th><th class="n">Прошло целиком</th><th class="n">Доля проверок</th><th class="n">Таймаутов</th><th class="n">Медиана</th></tr></thead>
+    <tbody><tr><td>Sharp (оригинальный шаблон Tiel)</td><td class=n>15</td><td class=n>6</td><td class=n>80%</td><td class=n>1</td><td class=n>3,1 мин</td></tr>
+<tr><td>ideal4</td><td class=n>15</td><td class=n>7</td><td class=n>81%</td><td class=n>5</td><td class=n>7,9 мин</td></tr>
+<tr><td>ideal5 (выбран)</td><td class=n>15</td><td class=n>8</td><td class=n>79%</td><td class=n>2</td><td class=n>5,3 мин</td></tr>
+<tr><td>ideal6 (отвергнут)</td><td class=n>15</td><td class=n>4</td><td class=n>67%</td><td class=n>2</td><td class=n>4,9 мин</td></tr>
+<tr><td>ideal7 (отвергнут)</td><td class=n>12</td><td class=n>4</td><td class=n>78%</td><td class=n>1</td><td class=n>4,9 мин</td></tr>
+<tr><td>Luna (Codex)</td><td class=n>15</td><td class=n>5</td><td class=n>91%</td><td class=n>0</td><td class=n>1,5 мин</td></tr></tbody></table></div>
+  <p class="note" style="margin-top:10px">Пять новых задач на xhigh. Выбран ideal5: не хуже других по качеству, стабилен по кэшу и без правил, подогнанных под отдельные задачи. Две попытки добавить правила (ideal6, ideal7) показали худший результат и отвергнуты. ideal7 прогонялся на четырёх задачах из пяти.</p>
+</section>
+
+<section class="panel" aria-labelledby="h-fix">
+  <h2 id="h-fix">Что исправили за эти дни</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Проблема</th><th>Было</th><th>Стало</th></tr></thead>
+    <tbody>
+      <tr><td>Язык ответа</td><td>не работал на реальных запросах: служебный блок скрывал слова пользователя</td><td>ответ на языке вопроса во всех прогонах, закончившихся в срок (13 из 13)</td></tr>
+      <tr><td>Кэш контекста</td><td>ломался в 27 ходах из 32</td><td>0 разрывов из 32</td></tr>
+      <tr><td>Зависания по 120 с</td><td>15 из 16 зависаний вызывала команда <code>pkill -f</code>, убивавшая собственную оболочку</td><td>причина устранена в самом инструменте для любых моделей</td></tr>
+      <tr><td>Мелкие цифры на картинке</td><td>12-значный номер модель переписывала с потерянной цифрой в каждом прогоне</td><td>плагин сам читает текст с картинки и добавляет его к сообщению: номер верный 3 из 3, доля проверок 48% → 74%</td></tr>
+      <tr><td>Нагрев процессора</td><td>пики до 97 °C</td><td>65–75 °C при лимите мощности 45 Вт</td></tr>
+    </tbody></table></div>
+</section>
+
+<section class="panel" aria-labelledby="h-pic">
+  <h2 id="h-pic">Картинки: где ошибалась модель и как это починили</h2>
+  <p>На задаче «сверстай страницу счёта по макету» наша модель теряла цифру в мелком номере внизу страницы. Проверка показала, что глаз у модели в порядке: при прямой просьбе переписать страницу все проверенные зрительные блоки читали номер верно. Цифра терялась позже, когда модель переписывала число в код. Поэтому ShuraCode теперь сам считывает текст с прикреплённой картинки программой распознавания и кладёт его рядом с картинкой. Саму картинку модель по-прежнему видит целиком.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Вариант</th><th class="n">Доля проверок</th><th class="n">Номер верный</th><th class="n">Медиана</th></tr></thead>
+    <tbody><tr><td>Как было</td><td class=n>48%</td><td class=n>0 из 3</td><td class=n>20 мин</td></tr>
+<tr><td>С автоматическим чтением текста с картинки (OCR), xhigh</td><td class=n>74%</td><td class=n>3 из 3</td><td class=n>5,8 мин</td></tr>
+<tr><td>То же, режим medium</td><td class=n>74%</td><td class=n>3 из 3</td><td class=n>3,7 мин</td></tr>
+<tr><td>То же, режим high</td><td class=n>59%</td><td class=n>3 из 3</td><td class=n>6,8 мин</td></tr></tbody></table></div>
+  <p class="note" style="margin-top:10px">Задача h4, по три прогона. Оставшиеся ошибки уже не про цифры, а про детали вёрстки: слишком светлая шапка, пропущенная строка итогов или значок статуса. Qwen3.6 быстрее (2 минуты), но иногда сохраняет страницу не в ту папку, поэтому заменой нашей модели не стала.</p>
+</section>
+
+<section class="panel" aria-labelledby="h-open">
+  <h2 id="h-open">Что не решено</h2>
+  <ul class="plain">
+    <li><b>Мелкий текст на картинках.</b> Модель теряет цифру в двенадцатизначном номере. Несжатая версия зрительного блока не помогла, это предел самой модели.</li>
+    <li><b>Границы условия.</b> Если в задаче сказано «не округлять молча», все варианты ошибаются одинаково.</li>
+    <li><b>Время.</b> Тяжёлые задачи занимают 15–30 минут на ноутбуке. Это цена полностью локальной работы; основной резерв ускорения даёт более мощное железо.</li>
+    <li><b>Шум измерения.</b> Один и тот же режим на тех же задачах даёт результаты, различающиеся на десятки пунктов. Различить соседние ступени середины лесенки можно только на большем числе прогонов.</li>
+  </ul>
+</section>
+</main>

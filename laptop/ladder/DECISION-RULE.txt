@@ -1,0 +1,5 @@
+Written 2026-11-09 ~18:00, BEFORE the ornith7 test runs (frozen).
+Test: ornith7 (ideal7 template + step caps + safe pkill + Q8_0 projector) on h1,h3,h4,h5 x3 reps at xhigh.
+Reference ornith5 on the same 4 tasks x3: 5/12 passed, 2 timeouts (h1 0, h3 3, h4 0, h5 2).
+Rule: the effort ladder runs on ornith7 if ornith7 passes >= 5 of 12 AND has <= 2 timeouts; otherwise on ornith5.
+No other criterion; no re-run to "get a better number".

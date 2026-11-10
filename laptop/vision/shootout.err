@@ -1,0 +1,145 @@
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 20, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 16, in ask
+    r = json.load(urllib.request.urlopen(req, timeout=900))
+                  ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib64/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib64/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib64/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 20, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 16, in ask
+    r = json.load(urllib.request.urlopen(req, timeout=900))
+                  ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib64/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib64/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib64/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 20, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 16, in ask
+    r = json.load(urllib.request.urlopen(req, timeout=900))
+                  ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib64/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib64/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib64/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 20, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 16, in ask
+    r = json.load(urllib.request.urlopen(req, timeout=900))
+                  ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib64/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib64/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib64/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 20, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 16, in ask
+    r = json.load(urllib.request.urlopen(req, timeout=900))
+                  ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib64/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib64/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib64/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib64/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 26, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 15, in ask
+    req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+          ^^^^^^
+UnboundLocalError: cannot access local variable 'urllib' where it is not associated with a value
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 26, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 15, in ask
+    req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+          ^^^^^^
+UnboundLocalError: cannot access local variable 'urllib' where it is not associated with a value
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 26, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 15, in ask
+    req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+          ^^^^^^
+UnboundLocalError: cannot access local variable 'urllib' where it is not associated with a value
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 26, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 15, in ask
+    req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+          ^^^^^^
+UnboundLocalError: cannot access local variable 'urllib' where it is not associated with a value
+Traceback (most recent call last):
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 26, in <module>
+    t = ask(); norm = re.sub(r"[  ]", " ", t)
+  File "/home/hikkian/Desktop/AI/mgmt-report/vision/shootout.py", line 15, in ask
+    req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+          ^^^^^^
+UnboundLocalError: cannot access local variable 'urllib' where it is not associated with a value

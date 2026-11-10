@@ -1,0 +1,11 @@
+--- /home/hikkian/Desktop/AI/shura-report/bench.sh.bak-timeout-env	2026-11-10 13:37:58.291506900 +0500
++++ /home/hikkian/Desktop/AI/shura-report/bench.sh	2026-11-10 13:37:58.308364004 +0500
+@@ -34,7 +34,7 @@
+ t0=$(date +%s)
+ case $A in
+   arm_*) AM=$(echo "$A" | cut -d_ -f2); AV=$(echo "$A" | cut -d_ -f3)
+-         TO=1500; [ "$AV" = max ] && TO=3000  # max = full verification + subagent review, ~20 min typical
++         TO=${BENCH_TIMEOUT:-1500}; [ "$AV" = max ] && TO=${BENCH_TIMEOUT:-3000}  # BENCH_TIMEOUT overrides both (equal limit for all levels); max = full verification + subagent review, ~20 min typical
+          XDG_DATA_HOME="$W/xdg" SHURACODE_MEMORY_DIR="$W/mem" timeout $TO \
+            /home/hikkian/.local/bin/shuracode run --auto -m tiel-local/$AM --variant $AV --format json "$PROMPT" "${ATT[@]}" > "$W/events.jsonl" 2> "$W/stderr.txt" ;;
+   qwens) XDG_DATA_HOME="$W/xdg" SHURACODE_MEMORY_DIR="$W/mem" timeout 1500 \
