@@ -1,0 +1,110 @@
+--- lang_guard.py.orig	2026-11-10 18:54:32.391871989 +0500
++++ lang_guard.py	2026-11-10 18:56:59.766081235 +0500
+@@ -15,6 +15,7 @@
+ CY = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ")
+ KZ = set("әғқңөұүһіӘҒҚҢӨҰҮҺІ")
+ LA = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
++HOLD_CHARS = 2500       # typo mode holds the final answer only up to this length (about 12 s of generation); longer answers stream on
+ DECIDE_LETTERS = 60     # prose letters needed to decide that a streamed answer starts in the right language
+ MIN_LETTERS = 40        # shorter answers are never rewritten
+ LATIN_SHARE = 0.7       # rewrite when the prose is at least this Latin
+@@ -86,8 +87,9 @@
+ class StreamGuard:
+     """Feed raw SSE bytes from llama-server; get the bytes to send to the client. `rewrite(text) -> str|None`."""
+ 
+-    def __init__(self, lang, rewrite):
+-        self.lang, self.rewrite = lang, rewrite
++    def __init__(self, lang, rewrite, typo=None, check_lang=True):
++        # typo: optional fix(text)->text (typo_fix.make_fixer): then the whole final answer is held until the stream ends
++        self.lang, self.rewrite, self.typo, self.check_lang = lang, rewrite, typo, check_lang
+         self.buf = b""            # incomplete SSE line data
+         self.held = []            # (event_bytes, parsed_or_None) held back while deciding
+         self.text = ""
+@@ -95,6 +97,7 @@
+         self.finish = None
+         self.passing = False
+         self.rewritten = False
++        self.typo_fixed = False
+ 
+     def _events(self, data):
+         self.buf += data
+@@ -132,6 +135,11 @@
+             if self.tool_calls:
+                 self._release(out)
+                 continue
++            if self.typo:
++                if len(self.text) > HOLD_CHARS:
++                    self.typo = None   # too long to hold: stream it, no typo check
++                    self._release(out)
++                continue          # typo mode: hold the answer up to HOLD_CHARS (tool calls release it above)
+             c, l = prose_letters(self.text)
+             if c + l >= DECIDE_LETTERS and l < (c + l) * LATIN_SHARE:
+                 self._release(out)
+@@ -147,28 +155,37 @@
+         if self.passing:
+             return self.buf
+         events = self.held
+-        if (not self.tool_calls and self.finish == "stop" and wrong_language(self.text)):
+-            new = None
+-            try:
+-                new = self.rewrite(self.text)
+-            except Exception:  # noqa: BLE001 - the original answer is still better than no answer
++        final = self.text
++        if not self.tool_calls and self.finish == "stop":
++            if self.check_lang and wrong_language(self.text):
+                 new = None
+-            if new and not wrong_language(new):
+-                self.rewritten = True
+-                out, done = [], False
+-                for ev, obj in events:
+-                    ch = ((obj or {}).get("choices") or [{}])[0] if obj else {}
+-                    delta = ch.get("delta") or {}
+-                    if delta.get("content"):
+-                        if done:
+-                            delta["content"] = ""
+-                            if not ch.get("finish_reason"):
+-                                continue
+-                        else:
+-                            delta["content"], done = new, True
+-                        ev = ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode()
+-                    out.append(ev)
+-                return b"".join(out) + self.buf
++                try:
++                    new = self.rewrite(self.text)
++                except Exception:  # noqa: BLE001 - the original answer is still better than no answer
++                    new = None
++                if new and not wrong_language(new):
++                    self.rewritten = True
++                    final = new
++            if self.typo and not wrong_language(final):
++                fixed = self.typo(final)
++                if fixed and fixed != final:
++                    self.typo_fixed = True
++                    final = fixed
++        if final != self.text:
++            out, done = [], False
++            for ev, obj in events:
++                ch = ((obj or {}).get("choices") or [{}])[0] if obj else {}
++                delta = ch.get("delta") or {}
++                if delta.get("content"):
++                    if done:
++                        delta["content"] = ""
++                        if not ch.get("finish_reason"):
++                            continue
++                    else:
++                        delta["content"], done = final, True
++                    ev = ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode()
++                out.append(ev)
++            return b"".join(out) + self.buf
+         return b"".join(ev for ev, _ in events) + self.buf
+ 
+ 
+@@ -188,7 +205,7 @@
+ 
+ def guard_for(req, path, model_cfg):
+     """Return the target language if this request should be guarded, else ''."""
+-    if not model_cfg.get("langGuard") or not path.endswith("/chat/completions") or not isinstance(req, dict):
++    if not (model_cfg.get("langGuard") or model_cfg.get("typoGuard")) or not path.endswith("/chat/completions") or not isinstance(req, dict):
+         return ""
+     lang = detect_language(req.get("messages"))
+     return lang if lang in REWRITE else ""

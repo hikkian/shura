@@ -1,0 +1,62 @@
+--- ai_gateway.py.orig	2026-11-10 18:54:32.392871995 +0500
++++ ai_gateway.py.new	2026-11-10 18:56:59.766757288 +0500
+@@ -32,6 +32,7 @@
+ from gpu_nvml import NVML
+ from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
+ import lang_guard
++import typo_fix
+ 
+ CFG_DIR = Path(os.environ.get("AI_GATEWAY_CONFIG", Path(__file__).resolve().parent.parent / "config"))
+ STATE_DIR = Path(os.path.expanduser(os.environ.get("AI_GATEWAY_STATE", "~/.local/state/ai-gateway")))
+@@ -1358,12 +1359,15 @@
+                 (DUMP_FLAG.parent / f"ai-gateway-req-{n}.json").write_bytes(body)
+ 
+         self.lang_guard = None
+-        if body and path.endswith("/chat/completions") and (M["models"].get(model_id) or {}).get("langGuard"):
++        if body and path.endswith("/chat/completions") and ((M["models"].get(model_id) or {}).get("langGuard") or (M["models"].get(model_id) or {}).get("typoGuard")):
+             try:
+                 req = json.loads(body)
+                 lang = lang_guard.guard_for(req, path, M["models"][model_id]) if req.get("stream") else ""
+                 if lang:
+-                    self.lang_guard = lang_guard.StreamGuard(lang, lambda text, r=req, lg=lang: llama_rewrite(r, text, lg))
++                    mc = M["models"][model_id]
++                    typo = typo_fix.make_fixer(req, llama_ask) if (mc.get("typoGuard") and lang == "Russian") else None
++                    self.lang_guard = lang_guard.StreamGuard(lang, lambda text, r=req, lg=lang: llama_rewrite(r, text, lg),
++                                                             typo=typo, check_lang=bool(mc.get("langGuard")))
+             except (ValueError, TypeError, AttributeError):
+                 self.lang_guard = None
+ 
+@@ -1519,6 +1523,8 @@
+         tail = guard.finish_bytes()
+         if guard.rewritten:
+             log(f"language guard: final answer rewritten into {guard.lang} ({len(guard.text)} chars)")
++        if getattr(guard, "typo_fixed", False):
++            log(f"typo guard: corrected words in a Russian final answer ({len(guard.text)} chars)")
+         if tail:
+             self.wfile.write(f"{len(tail):X}\r\n".encode() + tail + b"\r\n")
+             self.wfile.flush()
+@@ -1526,6 +1532,24 @@
+     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = handle_any
+ 
+ 
++typo_fix.LOG = lambda m: log(m)
++
++
++def llama_ask(request):
++    """Typo guard: one short non-streaming request to the loaded model (prompt prefix unchanged -> KV cache reused). Returns the content or None."""
++    conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=300)
++    try:
++        conn.request("POST", "/v1/chat/completions", body=json.dumps(request, ensure_ascii=False).encode(), headers={"Content-Type": "application/json"})
++        r = conn.getresponse()
++        if r.status != 200:
++            log(f"typo guard: request failed, HTTP {r.status}")
++            return None
++        msg = (json.loads(r.read()).get("choices") or [{}])[0].get("message") or {}
++        return (msg.get("content") or "").strip() or None
++    finally:
++        conn.close()
++
++
+ def llama_rewrite(req, text, lang):
+     """Language guard: ask the loaded model (same prompt prefix, KV cache reused) to rewrite its final answer."""
+     conn = http.client.HTTPConnection(G["llamaHost"], G["llamaPort"], timeout=900)
