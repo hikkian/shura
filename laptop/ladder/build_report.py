@@ -20,22 +20,27 @@ def sec(x):
     return (f"{m:.1f}".replace(".", ",") + " мин") if m < 10 else f"{round(m)} мин"
 def e(s): return html.escape(str(s))
 
-def ladder_rows():
-    out = []
-    for m in MODES:
-        a = LAD[m]["without_hd5"]; b = LAD[m]["all_hd1_hd6"]
-        reps = a.get("rep_means") or {}
-        dots = "".join(f'<i class="dot" style="left:{100*v:.1f}%" title="повтор {k}: {100*v:.0f}%"></i>' for k, v in reps.items())
-        out.append(f'''<div class="lrow">
-  <div class="lname">{RU[m]}</div>
-  <div class="track" role="img" aria-label="{RU[m]}: {pc(a['mean_frac'])} без hd5, {pc(b['mean_frac'])} со всеми">
+ORDER = [("fast", "fast", ""), ("low", "low", ""), ("medium", "medium", ""), ("high", "xhigh", "прежний xhigh"), ("max", "max", "")]
+def _row(shown, src, note, removed=False):
+    a = LAD[src]["without_hd5"]; b = LAD[src]["all_hd1_hd6"]
+    reps = a.get("rep_means") or {}
+    dots = "".join(f'<i class="dot" style="left:{100*v:.1f}%" title="повтор {k}: {100*v:.0f}%"></i>' for k, v in reps.items())
+    cls = " removed" if removed else ""
+    nm = e(shown) + (f'<small>{e(note)}</small>' if note else "")
+    return f'''<div class="lrow{cls}">
+  <div class="lname">{nm}</div>
+  <div class="track" role="img" aria-label="{e(shown)}: {pc(a['mean_frac'])} без hd5, {pc(b['mean_frac'])} со всеми">
     <b class="bar" style="width:{100*a['mean_frac']:.1f}%"></b>
     <i class="tick" style="left:{100*b['mean_frac']:.1f}%" title="со всеми шестью задачами: {pc(b['mean_frac'])}"></i>
     {dots}
   </div>
   <div class="lval">{pc(a['mean_frac'])}</div>
   <div class="lmeta"><span>{b['n']} прогонов</span><span>таймаутов {b['timeouts']}</span><span>медиана {sec(b['median_secs'])}</span></div>
-</div>''')
+</div>'''
+def ladder_rows():
+    out = [_row(shown, src, note) for shown, src, note in ORDER]
+    out.append('<div class="lsep">Снят с продакшена: прежний режим high (бюджет 16 384 токенов). Не дал выигрыша над medium, а времени тратил больше.</div>')
+    out.append(_row("high (старый)", "high", "", removed=True))
     return "\n".join(out)
 
 def versus_rows():
@@ -123,7 +128,9 @@ p {{ margin:0 0 10px; max-width:68ch }}
 .kpi span {{ color:var(--ink2); font-size:14px }}
 .lrow {{ display:grid; grid-template-columns:64px 1fr 52px; gap:6px 12px; align-items:center; padding:9px 0; border-top:1px solid var(--line) }}
 .lrow:first-of-type {{ border-top:0 }}
-.lname {{ font:500 15px var(--mono) }} .lval {{ font:500 15px var(--mono); text-align:right }}
+.lname {{ font:500 15px var(--mono) }} .lname small {{ display:block; font:400 11px var(--sans); color:var(--ink2) }}
+.lsep {{ margin:10px 0 2px; padding-top:10px; border-top:1px dashed var(--line); font-size:13px; color:var(--ink2) }}
+.removed {{ opacity:.62 }} .lval {{ font:500 15px var(--mono); text-align:right }}
 .lmeta {{ grid-column:2 / 4; display:flex; gap:14px; flex-wrap:wrap; color:var(--ink2); font-size:13px }}
 .track {{ position:relative; height:22px; background:color-mix(in srgb,var(--line) 55%,transparent); border-radius:3px }}
 .bar {{ position:absolute; inset:0 auto 0 0; background:var(--ours); border-radius:3px 0 0 3px }}
@@ -153,20 +160,20 @@ code {{ font:13px var(--mono) }}
 {BANNER}
 <header>
   <h1>Лесенка режимов ShuraCode на ноутбуке</h1>
-  <p class="lead">ShuraCode работает целиком локально, на модели Ornith-1.5 35B-A3B. Здесь показано, как каждый из шести режимов усилия справляется с тяжёлыми задачами, и как это выглядит рядом с платной моделью Luna (Codex).</p>
+  <p class="lead">ShuraCode работает целиком локально, на модели Ornith-1.5 35B-A3B. Здесь показано, как каждый из пяти режимов усилия справляется с тяжёлыми задачами, и как это выглядит рядом с платной моделью Luna (Codex).</p>
   <div class="kpis">
-    <div class="kpi"><b>{pc(lm['mean_frac'])}</b><span>max на тяжёлых задачах, против {pc(lf['mean_frac'])} у fast</span></div>
+    <div class="kpi"><b>{pc(lm['mean_frac'])}</b><span>max на тяжёлых задачах, против {pc(lf['mean_frac'])} у fast; пять режимов идут вверх</span></div>
     <div class="kpi"><b>0 из 32</b><span>разрывов кэша контекста между ходами (было 27 из 32)</span></div>
     <div class="kpi"><b>{pc(luna_hd.get('mean_frac'))}</b><span>у Luna (облако) на тех же тяжёлых задачах; наш лучший режим {pc(lm['mean_frac'])}</span></div>
   </div>
 </header>
 
 <section class="panel" aria-labelledby="h-ladder">
-  <h2 id="h-ladder">Результат растёт с режимом, но середина лесенки в пределах шума</h2>
+  <h2 id="h-ladder">Пять режимов: чем выше, тем лучше на тяжёлых задачах</h2>
   <p>Шесть задач на рассуждение, которые модель раньше не видела, а скрытые тесты были написаны до запуска и не менялись. Столбец показывает среднюю долю пройденных проверок.</p>
   <div class="legend"><span><i class="sw-dot"></i>результат отдельного повтора</span><span><i class="sw-tick"></i>среднее со всеми шестью задачами</span></div>
   {ladder_rows()}
-  <p class="note" style="margin-top:12px">Столбец считан без задачи hd5 (применение патча): в любом режиме она упирается в лимит времени и ничего не различает. Решение исключить её принято после первых результатов, поэтому метка показывает и вариант со всеми шестью задачами. Разброс между повторами у одного режима достигает {100*spread:.0f} процентных пунктов, поэтому крупные разрывы (fast против остальных, max против high) надёжны, а соседние ступени середины лесенки по этим данным различить нельзя.</p>
+  <p class="note" style="margin-top:12px">Режим high в продукте теперь равен тому, что мы мерили как xhigh (бюджет мыслей 32 768 токенов и расширенные проверки), старый high убран. Это решение принято после просмотра результатов, поэтому ниже оставлена его строка. Столбец считан без задачи hd5 (применение патча): в любом режиме она упирается в лимит времени и ничего не различает. Решение исключить её принято после первых результатов, поэтому метка показывает и вариант со всеми шестью задачами. Разброс между повторами у одного режима достигает {100*spread:.0f} процентных пунктов, поэтому крупные разрывы (fast против остальных, max против medium) надёжны, а соседние ступени (medium, high) по этим данным различить нельзя, хотя средние идут строго вверх.</p>
 </section>
 
 <section class="panel" aria-labelledby="h-luna">

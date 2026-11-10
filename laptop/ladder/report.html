@@ -24,7 +24,9 @@ p { margin:0 0 10px; max-width:68ch }
 .kpi span { color:var(--ink2); font-size:14px }
 .lrow { display:grid; grid-template-columns:64px 1fr 52px; gap:6px 12px; align-items:center; padding:9px 0; border-top:1px solid var(--line) }
 .lrow:first-of-type { border-top:0 }
-.lname { font:500 15px var(--mono) } .lval { font:500 15px var(--mono); text-align:right }
+.lname { font:500 15px var(--mono) } .lname small { display:block; font:400 11px var(--sans); color:var(--ink2) }
+.lsep { margin:10px 0 2px; padding-top:10px; border-top:1px dashed var(--line); font-size:13px; color:var(--ink2) }
+.removed { opacity:.62 } .lval { font:500 15px var(--mono); text-align:right }
 .lmeta { grid-column:2 / 4; display:flex; gap:14px; flex-wrap:wrap; color:var(--ink2); font-size:13px }
 .track { position:relative; height:22px; background:color-mix(in srgb,var(--line) 55%,transparent); border-radius:3px }
 .bar { position:absolute; inset:0 auto 0 0; background:var(--ours); border-radius:3px 0 0 3px }
@@ -54,16 +56,16 @@ code { font:13px var(--mono) }
 
 <header>
   <h1>Лесенка режимов ShuraCode на ноутбуке</h1>
-  <p class="lead">ShuraCode работает целиком локально, на модели Ornith-1.5 35B-A3B. Здесь показано, как каждый из шести режимов усилия справляется с тяжёлыми задачами, и как это выглядит рядом с платной моделью Luna (Codex).</p>
+  <p class="lead">ShuraCode работает целиком локально, на модели Ornith-1.5 35B-A3B. Здесь показано, как каждый из пяти режимов усилия справляется с тяжёлыми задачами, и как это выглядит рядом с платной моделью Luna (Codex).</p>
   <div class="kpis">
-    <div class="kpi"><b>86%</b><span>max на тяжёлых задачах, против 50% у fast</span></div>
+    <div class="kpi"><b>86%</b><span>max на тяжёлых задачах, против 50% у fast; пять режимов идут вверх</span></div>
     <div class="kpi"><b>0 из 32</b><span>разрывов кэша контекста между ходами (было 27 из 32)</span></div>
     <div class="kpi"><b>99%</b><span>у Luna (облако) на тех же тяжёлых задачах; наш лучший режим 86%</span></div>
   </div>
 </header>
 
 <section class="panel" aria-labelledby="h-ladder">
-  <h2 id="h-ladder">Результат растёт с режимом, но середина лесенки в пределах шума</h2>
+  <h2 id="h-ladder">Пять режимов: чем выше, тем лучше на тяжёлых задачах</h2>
   <p>Шесть задач на рассуждение, которые модель раньше не видела, а скрытые тесты были написаны до запуска и не менялись. Столбец показывает среднюю долю пройденных проверок.</p>
   <div class="legend"><span><i class="sw-dot"></i>результат отдельного повтора</span><span><i class="sw-tick"></i>среднее со всеми шестью задачами</span></div>
   <div class="lrow">
@@ -97,18 +99,8 @@ code { font:13px var(--mono) }
   <div class="lmeta"><span>12 прогонов</span><span>таймаутов 4</span><span>медиана 17 мин</span></div>
 </div>
 <div class="lrow">
-  <div class="lname">high</div>
-  <div class="track" role="img" aria-label="high: 77% без hd5, 66% со всеми">
-    <b class="bar" style="width:76.6%"></b>
-    <i class="tick" style="left:66.4%" title="со всеми шестью задачами: 66%"></i>
-    <i class="dot" style="left:85.2%" title="повтор 1: 85%"></i><i class="dot" style="left:68.0%" title="повтор 2: 68%"></i>
-  </div>
-  <div class="lval">77%</div>
-  <div class="lmeta"><span>12 прогонов</span><span>таймаутов 4</span><span>медиана 20 мин</span></div>
-</div>
-<div class="lrow">
-  <div class="lname">xhigh</div>
-  <div class="track" role="img" aria-label="xhigh: 79% без hd5, 81% со всеми">
+  <div class="lname">high<small>прежний xhigh</small></div>
+  <div class="track" role="img" aria-label="high: 79% без hd5, 81% со всеми">
     <b class="bar" style="width:79.2%"></b>
     <i class="tick" style="left:80.6%" title="со всеми шестью задачами: 81%"></i>
     <i class="dot" style="left:71.6%" title="повтор 1: 72%"></i><i class="dot" style="left:91.7%" title="повтор 2: 92%"></i>
@@ -126,7 +118,18 @@ code { font:13px var(--mono) }
   <div class="lval">86%</div>
   <div class="lmeta"><span>9 прогонов</span><span>таймаутов 2</span><span>медиана 30 мин</span></div>
 </div>
-  <p class="note" style="margin-top:12px">Столбец считан без задачи hd5 (применение патча): в любом режиме она упирается в лимит времени и ничего не различает. Решение исключить её принято после первых результатов, поэтому метка показывает и вариант со всеми шестью задачами. Разброс между повторами у одного режима достигает 36 процентных пунктов, поэтому крупные разрывы (fast против остальных, max против high) надёжны, а соседние ступени середины лесенки по этим данным различить нельзя.</p>
+<div class="lsep">Снят с продакшена: прежний режим high (бюджет 16 384 токенов). Не дал выигрыша над medium, а времени тратил больше.</div>
+<div class="lrow removed">
+  <div class="lname">high (старый)</div>
+  <div class="track" role="img" aria-label="high (старый): 77% без hd5, 66% со всеми">
+    <b class="bar" style="width:76.6%"></b>
+    <i class="tick" style="left:66.4%" title="со всеми шестью задачами: 66%"></i>
+    <i class="dot" style="left:85.2%" title="повтор 1: 85%"></i><i class="dot" style="left:68.0%" title="повтор 2: 68%"></i>
+  </div>
+  <div class="lval">77%</div>
+  <div class="lmeta"><span>12 прогонов</span><span>таймаутов 4</span><span>медиана 20 мин</span></div>
+</div>
+  <p class="note" style="margin-top:12px">Режим high в продукте теперь равен тому, что мы мерили как xhigh (бюджет мыслей 32 768 токенов и расширенные проверки), старый high убран. Это решение принято после просмотра результатов, поэтому ниже оставлена его строка. Столбец считан без задачи hd5 (применение патча): в любом режиме она упирается в лимит времени и ничего не различает. Решение исключить её принято после первых результатов, поэтому метка показывает и вариант со всеми шестью задачами. Разброс между повторами у одного режима достигает 36 процентных пунктов, поэтому крупные разрывы (fast против остальных, max против medium) надёжны, а соседние ступени (medium, high) по этим данным различить нельзя, хотя средние идут строго вверх.</p>
 </section>
 
 <section class="panel" aria-labelledby="h-luna">
