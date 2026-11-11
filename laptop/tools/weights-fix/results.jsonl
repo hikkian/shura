@@ -17,3 +17,15 @@
 {"label":"l39gu","margin":{"label": "l39gu", "n": 24, "mean_margin": 1.94, "top1_share": 0.667, "code_mean_margin": 5.25, "code_top1": 6},"ppl":"1.09.335.768 I Final estimate: PPL = 5.6584 +/- 0.17096"}
 {"label":"l39dn","margin":{"label": "l39dn", "n": 24, "mean_margin": 2.18, "top1_share": 0.75, "code_mean_margin": 5.37, "code_top1": 6},"ppl":"1.08.579.145 I Final estimate: PPL = 5.7015 +/- 0.17333"}
 {"label":"l39p","margin":{"label": "l39p", "n": 24, "mean_margin": 2.38, "top1_share": 0.75, "code_mean_margin": 5.38, "code_top1": 6},"ppl":"1.07.853.172 I Final estimate: PPL = 5.6291 +/- 0.16922"}
+{"label":"s38","margin":{"label": "s38", "n": 24, "mean_margin": 1.73, "top1_share": 0.667, "code_mean_margin": 5.27, "code_top1": 6},"ppl":"1.05.601.826 I Final estimate: PPL = 5.7210 +/- 0.17521"}
+{"label":"s37","margin":{"label": "s37", "n": 24, "mean_margin": 1.51, "top1_share": 0.583, "code_mean_margin": 5.22, "code_top1": 6},"ppl":"1.19.664.697 I Final estimate: PPL = 5.7199 +/- 0.17518"}
+{"label":"s36","margin":{"label": "s36", "n": 24, "mean_margin": 1.96, "top1_share": 0.708, "code_mean_margin": 5.16, "code_top1": 6},"ppl":"1.11.726.015 I Final estimate: PPL = 5.7300 +/- 0.17551"}
+{"label":"s35","margin":{"label": "s35", "n": 24, "mean_margin": 2.06, "top1_share": 0.75, "code_mean_margin": 5.35, "code_top1": 6},"ppl":"1.12.180.189 I Final estimate: PPL = 5.7227 +/- 0.17537"}
+{"label":"s34","margin":{"label": "s34", "n": 24, "mean_margin": 1.37, "top1_share": 0.667, "code_mean_margin": 5.22, "code_top1": 6},"ppl":"1.07.356.102 I Final estimate: PPL = 5.7107 +/- 0.17480"}
+{"label":"s33","margin":{"label": "s33", "n": 24, "mean_margin": 1.73, "top1_share": 0.708, "code_mean_margin": 5.22, "code_top1": 6},"ppl":"1.06.619.709 I Final estimate: PPL = 5.7218 +/- 0.17495"}
+{"label":"s32","margin":{"label": "s32", "n": 24, "mean_margin": 1.5, "top1_share": 0.625, "code_mean_margin": 5.19, "code_top1": 6},"ppl":"1.11.493.208 I Final estimate: PPL = 5.7166 +/- 0.17484"}
+{"label":"s31","margin":{"label": "s31", "n": 24, "mean_margin": 1.78, "top1_share": 0.667, "code_mean_margin": 5.21, "code_top1": 6},"ppl":"1.07.583.356 I Final estimate: PPL = 5.7281 +/- 0.17508"}
+{"label":"s30","margin":{"label": "s30", "n": 24, "mean_margin": 1.55, "top1_share": 0.625, "code_mean_margin": 5.24, "code_top1": 6},"ppl":"1.06.599.078 I Final estimate: PPL = 5.7289 +/- 0.17550"}
+{"label":"s29","margin":{"label": "s29", "n": 24, "mean_margin": 1.85, "top1_share": 0.667, "code_mean_margin": 5.26, "code_top1": 6},"ppl":"1.06.162.234 I Final estimate: PPL = 5.7199 +/- 0.17497"}
+{"label":"s28","margin":{"label": "s28", "n": 24, "mean_margin": 1.83, "top1_share": 0.667, "code_mean_margin": 5.26, "code_top1": 6},"ppl":"1.06.147.422 I Final estimate: PPL = 5.7231 +/- 0.17505"}
+{"label":"multi-39,35,36","margin":{"label": "multi-39,35,36", "n": 24, "mean_margin": 2.91, "top1_share": 0.875, "code_mean_margin": 5.34, "code_top1": 6},"ppl":"1.07.509.028 I Final estimate: PPL = 5.5994 +/- 0.16851"}

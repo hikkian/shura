@@ -1,0 +1,3 @@
+Written 2026-11-11 BEFORE the runs. prompt-v6 = prompt-v4 + two general rules (save a first working version early; list every stated limit/bad input and check each).
+Test on production ornithi: h1 x2 reps at high (boundaries), hd1 and hd6 x1 at medium with a 900 s limit (progress by 900 s). Arms: _p4 (baseline) and _p6.
+Adopt v6 in production iff: (h1 mean fraction of checks improves by >= 10 points OR h1 passes more) AND (hd1+hd6 mean fraction at 900 s is not lower than p4 by more than 5 points). Otherwise keep v4. No re-runs.
