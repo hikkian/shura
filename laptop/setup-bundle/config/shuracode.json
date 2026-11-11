@@ -1,0 +1,465 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "provider": {
+    "tiel-local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Shura (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1"
+      },
+      "models": {
+        "tiel-coder": {
+          "name": "Tiel-Coder 35B-A3B (local, 200K ctx)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "low"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        },
+        "qwen36": {
+          "name": "Qwen3.6 35B-A3B (local, 200K ctx)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "low"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        },
+        "qwen36s": {
+          "name": "Qwen3.6 35B-A3B Sharp (local)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "low"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        },
+        "qwen36i": {
+          "name": "Qwen3.6 35B-A3B (русский и картинки)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        },
+        "qwen36it": {
+          "name": "Qwen3.6 ideal+terse (local)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        },
+        "ornithi": {
+          "name": "Ornith-1.5 35B-A3B (по умолчанию)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        },
+        "ornithit": {
+          "name": "Ornith-1.5 35B-A3B (короткие ответы)",
+          "attachment": true,
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 16384
+          },
+          "variants": {
+            "fast": {
+              "reasoningEffort": "none"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          },
+          "options": {
+            "reasoningEffort": "medium"
+          }
+        }
+      },
+      "whitelist": [
+        "ornithi",
+        "ornithit",
+        "qwen36i"
+      ]
+    }
+  },
+  "model": "tiel-local/ornithi",
+  "small_model": "tiel-local/ornithi",
+  "plugin": [
+    "/home/hikkian/.local/share/shura/shuracode/plugin/server.ts"
+  ],
+  "instructions": [
+    "~/.config/shuracode/AGENTS.md",
+    "~/.local/share/shuracode/memory/MEMORY.md"
+  ],
+  "agent": {
+    "build": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "prompt": "{file:/home/hikkian/.config/shuracode/prompt.txt}"
+    },
+    "plan": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "description": "Plan mode: reads the code and proposes a plan. Cannot edit files or run commands that change anything.",
+      "permission": {
+        "edit": "deny",
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "git blame*": "allow",
+          "ls*": "allow",
+          "cat *": "allow",
+          "head *": "allow",
+          "tail *": "allow",
+          "wc *": "allow",
+          "pwd": "allow",
+          "grep *": "allow",
+          "rg *": "allow",
+          "find *": "allow",
+          "find * -delete*": "deny",
+          "find * -exec*": "ask",
+          "tree*": "allow",
+          "curl *127.0.0.1*": "allow",
+          "curl *localhost*": "allow",
+          "*>*": "ask",
+          "*tee *": "ask"
+        }
+      },
+      "prompt": "{file:/home/hikkian/.config/shuracode/prompt.txt}"
+    },
+    "general": {
+      "temperature": 0.6,
+      "top_p": 0.95
+    },
+    "explore": {
+      "temperature": 0.6,
+      "top_p": 0.95
+    }
+  },
+  "permission": {
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git branch*": "allow",
+      "git show*": "allow",
+      "git add*": "allow",
+      "git commit*": "allow",
+      "npm test*": "allow",
+      "npm run*": "allow",
+      "npm install*": "allow",
+      "pytest*": "allow",
+      "python -m pytest*": "allow",
+      "python3 -m pytest*": "allow",
+      "python *": "allow",
+      "python3 *": "allow",
+      "node *": "allow",
+      "grep *": "allow",
+      "rg *": "allow",
+      "find *": "allow",
+      "ls*": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "wc *": "allow",
+      "pwd": "allow",
+      "curl *127.0.0.1*": "allow",
+      "curl *localhost*": "allow",
+      "git push*": "ask",
+      "git reset --hard*": "ask",
+      "git clean*": "ask",
+      "git rebase*": "ask",
+      "sudo *": "ask",
+      "dd *": "ask",
+      "chmod -R*": "ask",
+      "chown -R*": "ask",
+      "rm -rf*": "deny",
+      "rm -fr*": "deny",
+      "mkfs*": "deny",
+      "wipefs*": "deny",
+      "fdisk*": "deny",
+      "parted*": "deny",
+      "shutdown*": "deny",
+      "reboot*": "deny",
+      "poweroff*": "deny",
+      "systemctl poweroff*": "deny",
+      "systemctl reboot*": "deny",
+      "echo *": "allow",
+      "echo": "allow",
+      "cd *": "allow",
+      "mkdir *": "allow",
+      "touch *": "allow",
+      "sort*": "allow",
+      "uniq*": "allow",
+      "diff *": "allow",
+      "which *": "allow",
+      "true": "allow",
+      "printf *": "allow",
+      "sed -n *": "allow",
+      "basename *": "allow",
+      "dirname *": "allow",
+      "realpath *": "allow",
+      "stat *": "allow",
+      "file *": "allow",
+      "tr *": "allow",
+      "cut *": "allow",
+      "node --test*": "allow",
+      "git init*": "allow"
+    },
+    "edit": "allow",
+    "webfetch": "allow",
+    "websearch": "allow",
+    "task": "allow"
+  },
+  "mcp": {
+    "memory": {
+      "type": "local",
+      "command": [
+        "python3",
+        "/home/hikkian/.local/share/shura/shuracode/mcp/memory.py"
+      ],
+      "enabled": true
+    },
+    "playwright": {
+      "type": "local",
+      "command": [
+        "node",
+        "/home/hikkian/.config/shuracode/mcp/filter.js",
+        "/home/hikkian/.config/shuracode/mcp/playwright-allow.json",
+        "--",
+        "npx",
+        "-y",
+        "@playwright/mcp@latest",
+        "--isolated",
+        "--browser",
+        "chromium"
+      ],
+      "enabled": true
+    },
+    "searxng": {
+      "type": "local",
+      "command": [
+        "node",
+        "/home/hikkian/.config/shuracode/mcp/filter.js",
+        "/home/hikkian/.config/shuracode/mcp/searxng-allow.json",
+        "--",
+        "npx",
+        "-y",
+        "mcp-searxng"
+      ],
+      "environment": {
+        "SEARXNG_URL": "http://127.0.0.1:8888"
+      },
+      "enabled": true
+    }
+  },
+  "tools": {
+    "list_mcp_resources": false,
+    "list_mcp_resource_templates": false,
+    "read_mcp_resource": false,
+    "skill": false,
+    "task": true
+  },
+  "enabled_providers": [
+    "tiel-local"
+  ]
+}

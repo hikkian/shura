@@ -1,0 +1,3 @@
+#!/bin/sh
+# Safe pkill: never matches the calling process tree (parent shell whose command line contains the pattern).
+exec /usr/bin/pkill --ignore-ancestors "$@"

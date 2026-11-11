@@ -1,0 +1,43 @@
+use_default_settings: true
+
+server:
+  secret_key: "<GENERATE: openssl rand -hex 32>"
+  limiter: false
+  image_proxy: false
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
+
+# duckduckgo, brave and startpage answer a home IP with CAPTCHA or "too many requests": off. Engines that did not block are on.
+engines:
+  - name: duckduckgo
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: bing
+    disabled: false
+  - name: bing news
+    disabled: false
+    categories: [general, news]
+    shortcut: bin
+  - name: mojeek
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: mwmbl
+    disabled: false
+    categories: [general]
+  - name: github
+    disabled: false
+    categories: [it, general]
+  - name: stackoverflow
+    disabled: false
+    categories: [it, general]

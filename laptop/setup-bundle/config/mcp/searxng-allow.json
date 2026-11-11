@@ -1,0 +1,22 @@
+{
+ "searxng_web_search": {
+  "description": "Search the web (SearXNG). Returns results with title, URL and snippet. To read a full page, call web_url_read with its URL.",
+  "params": {
+   "query": "Search query.",
+   "pageno": "Result page, starting at 1."
+  },
+  "drop": [
+   "pages",
+   "engines",
+   "categories",
+   "time_range",
+   "language",
+   "safesearch",
+   "max_results",
+   "format"
+  ]
+ },
+ "web_url_read": {
+  "description": "Fetch a web page and return its main text as markdown. Use after searxng_web_search to read a result."
+ }
+}

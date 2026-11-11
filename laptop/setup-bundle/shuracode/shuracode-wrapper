@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# ShuraCode: runs the OpenCode engine under the ShuraCode name, configuration and branding.
+#
+#   shuracode [project]          open the TUI (default: current folder)
+#   shuracode run "message"      one-shot, non-interactive
+#   shuracode update             update the engine to the latest release, keep it only if the self-test passes
+#   shuracode rollback           go back to the previous engine
+#   shuracode doctor             check the installation
+#   shuracode version | help
+# Any other command is passed to the engine unchanged.
+set -euo pipefail
+
+SHURACODE_VERSION="0.1.0"
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+DATA="${SHURACODE_HOME:-$HOME/.local/share/shuracode}"
+CONFIG="${SHURACODE_CONFIG_DIR:-$HOME/.config/shuracode}"
+# A symlink to the engine binary named "shuracode": the kernel names the process after it, so ps/top/btop
+# show "shuracode".
+ENGINE="${SHURACODE_ENGINE:-$DATA/libexec/shuracode}"  # SHURACODE_ENGINE: used by the update self-test
+
+engine_env() {
+  export OPENCODE_CONFIG="$CONFIG/shuracode.json" OPENCODE_CONFIG_DIR="$CONFIG"
+  # Offline and private: no update checks, no sharing, no model catalogue downloads, no bundled cloud plugins.
+  export OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_SHARE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+  # The plugin sets the window title itself ("ShuraCode · <session>").
+  export OPENCODE_DISABLE_TERMINAL_TITLE=1
+  # per-step output cap: the engine default is 32000; each model's limit.output still applies (min of the two),
+  # so this only lets a model that asks for more (effort max: long thinking + a file write in one step) have it
+  export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX="${OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX:-65536}"
+  # Do not pick up another agent's global rules and skills (~/.claude/CLAUDE.md, ~/.claude/skills).
+  export OPENCODE_DISABLE_CLAUDE_CODE_PROMPT=1 OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1
+  # The engine (Bun) unpacks libopentui.so (5-14 MB) into $TMPDIR on every start and never removes it.
+  # /tmp is tmpfs = RAM, so hundreds of runs leaked GBs of RAM. Unpack on disk instead and drop copies
+  # older than a day (a running engine keeps its mapped copy even after unlink).
+  local tmp="${XDG_CACHE_HOME:-$HOME/.cache}/shuracode/tmp"
+  mkdir -p "$tmp" && export TMPDIR="$tmp"
+  find "$tmp" -maxdepth 1 -name '.*-00000000.so' -mmin +1440 -delete 2>/dev/null || true
+}
+
+engine_version() { "$ENGINE" --version 2>/dev/null || echo "?"; }
+
+need_engine() {
+  [ -x "$ENGINE" ] || { echo "shuracode: engine not installed - run $REPO_DIR/install.sh" >&2; exit 1; }
+}
+
+case "${1:-}" in
+  version|--version|-v)
+    need_engine
+    echo "ShuraCode $SHURACODE_VERSION (engine: OpenCode $(engine_version))"
+    exit 0 ;;
+  help|--help|-h)
+    sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    echo
+    echo "Engine commands (sessions, models, mcp, stats, export, ...): shuracode <command> --help"
+    exit 0 ;;
+  update)
+    shift; exec "$REPO_DIR/install.sh" --engine latest "$@" ;;
+  rollback)
+    prev="$(cat "$DATA/engine/previous" 2>/dev/null || true)"
+    if [ -z "$prev" ] || [ ! -d "$DATA/engine/$prev" ]; then
+      echo "shuracode: no previous engine to go back to" >&2; exit 1
+    fi
+    exec "$REPO_DIR/install.sh" --engine "$prev" ;;
+  doctor)
+    ok() { printf '  \033[32mok\033[0m   %s\n' "$*"; }
+    bad() { printf '  \033[31mfail\033[0m %s\n' "$*"; fail=1; }
+    fail=0
+    if [ -x "$ENGINE" ]; then ok "engine: OpenCode $(engine_version) ($(readlink -f "$ENGINE"))"; else bad "engine missing ($ENGINE)"; fi
+    for f in shuracode.json tui.json AGENTS.md; do
+      if [ -f "$CONFIG/$f" ]; then ok "config: $CONFIG/$f"; else bad "config missing: $CONFIG/$f"; fi
+    done
+    if [ -f "$DATA/memory/MEMORY.md" ]; then
+      ok "memory: $(find "$DATA/memory" -name '*.md' ! -name MEMORY.md | wc -l) memories in $DATA/memory"
+    else bad "memory index missing ($DATA/memory/MEMORY.md)"; fi
+    url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plugin"][0][1]["gateway"])' "$CONFIG/tui.json" 2>/dev/null || true)"
+    if [ -n "$url" ]; then
+      if curl -fsS -m 2 "$url" >/dev/null 2>&1; then ok "model gateway: $url"; else bad "model gateway not reachable: $url"; fi
+    fi
+    exit "$fail" ;;
+esac
+
+need_engine
+engine_env
+exec "$ENGINE" "$@"

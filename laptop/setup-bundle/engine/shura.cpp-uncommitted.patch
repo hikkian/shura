@@ -1,0 +1,377 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 4df72bae7..65d04f6c9 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2284,6 +2284,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             }
+         }
+     ).set_sampling());
++    add_opt(common_arg(
++        {"--ban-scripts"}, "LIST",
++        "ban every vocabulary token that contains characters of these scripts, for every request (comma-separated;\n"
++        "supported: cjk = Han, kana, Hangul, Bopomofo, CJK/fullwidth punctuation, including byte-level BPE fragments;\n"
++        "homoglyph = no switch between Latin and Cyrillic letters inside a word, e.g. a Latin c in \"держитcя\").\n"
++        "Stops a model from slipping Chinese into Russian/English answers. A request can lift it with \"allow_cjk\": true",
++        [](common_params & params, const std::string & value) {
++            params.sampling.ban_scripts = value;
++        }
++    ).set_env("LLAMA_ARG_BAN_SCRIPTS").set_sampling());
+     add_opt(common_arg(
+         {"--grammar"}, "GRAMMAR",
+         "BNF-like grammar to constrain generations (see samples in grammars/ dir)",
+diff --git a/common/common.cpp b/common/common.cpp
+index 3901a8f22..cd2b1c6b2 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1357,6 +1357,33 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+         }
+     }
+ 
++    // --ban-scripts: build the persistent ban list once, from the vocabulary
++    if (params.sampling.ban_scripts.find("cjk") != std::string::npos) {
++        params.sampling.logit_bias_ban.clear();
++        for (llama_token i = 0; i < llama_vocab_n_tokens(vocab); i++) {
++            if (llama_vocab_is_control(vocab, i) || llama_vocab_is_eog(vocab, i)) {
++                continue;
++            }
++            if (common_piece_has_cjk(common_token_to_piece(vocab, i, true))) {
++                params.sampling.logit_bias_ban.push_back({i, -INFINITY});
++            }
++        }
++        COM_INF("ban-scripts cjk: %zu of %d vocabulary tokens banned\n",
++                params.sampling.logit_bias_ban.size(), llama_vocab_n_tokens(vocab));
++    }
++
++    // --ban-scripts homoglyph: per-token script classes, computed once and shared by all samplers
++    if (params.sampling.ban_scripts.find("homoglyph") != std::string::npos) {
++        auto cls = std::make_shared<std::vector<uint8_t>>(llama_vocab_n_tokens(vocab), 0);
++        for (llama_token i = 0; i < llama_vocab_n_tokens(vocab); i++) {
++            if (!llama_vocab_is_control(vocab, i) && !llama_vocab_is_eog(vocab, i)) {
++                (*cls)[i] = common_piece_script_bits(common_token_to_piece(vocab, i, true));
++            }
++        }
++        params.sampling.homoglyph_cls = cls;
++        COM_INF("%s", "ban-scripts homoglyph: no Latin<->Cyrillic letter switch inside a word\n");
++    }
++
+     if (params.sampling.ignore_eos) {
+         // add EOG biases to the active set of logit biases
+         params.sampling.logit_bias.insert(
+@@ -1877,6 +1904,70 @@ std::vector<llama_token> common_tokenize(
+     return result;
+ }
+ 
++
++
++// script class of one code point for --ban-scripts homoglyph: 1 = Cyrillic letter, 2 = Latin letter, 0 = anything else
++static int common_script_class(uint32_t cp) {
++    if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')) return 2;
++    if (cp >= 0x0400 && cp <= 0x04FF) return 1;   // Cyrillic incl. Kazakh letters
++    return 0;
++}
++
++// first and last code point classes of a token piece (0 if the piece starts/ends with a partial UTF-8 sequence)
++uint8_t common_piece_script_bits(const std::string & s) {
++    const unsigned char * p = (const unsigned char *) s.data();
++    const size_t n = s.size();
++    int first = -1, last = 0;
++    for (size_t i = 0; i < n; ) {
++        const unsigned char c = p[i];
++        size_t len = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 0;
++        int cls = 0;
++        if (len == 0 || i + len > n) { len = 1; cls = 0; }
++        else {
++            uint32_t cp = len == 1 ? c : len == 2 ? (((c & 0x1F) << 6) | (p[i+1] & 0x3F))
++                        : len == 3 ? (((c & 0x0F) << 12) | ((p[i+1] & 0x3F) << 6) | (p[i+2] & 0x3F))
++                        : (((c & 0x07) << 18) | ((p[i+1] & 0x3F) << 12) | ((p[i+2] & 0x3F) << 6) | (p[i+3] & 0x3F));
++            cls = common_script_class(cp);
++        }
++        if (first < 0) first = cls;
++        last = cls;
++        i += len;
++    }
++    return (uint8_t) ((first < 0 ? 0 : first) | (last << 2));
++}
++
++// true if the token text contains a CJK character (Han, kana, Hangul, Bopomofo, CJK/fullwidth punctuation),
++// or ends with a truncated UTF-8 sequence whose lead byte (0xE3..0xED) can only start U+3000..U+DFFF
++// (byte-level BPE splits rare characters across tokens). 0xE2 (dashes, quotes, arrows) is never banned.
++bool common_piece_has_cjk(const std::string & s) {
++    const unsigned char * p = (const unsigned char *) s.data();
++    const size_t n = s.size();
++    for (size_t i = 0; i < n; ) {
++        const unsigned char c = p[i];
++        if (c < 0x80 || c < 0xC0) { i++; continue; }          // ASCII or a stray continuation byte
++        const size_t len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : 2;
++        if (i + len > n) {
++            return len == 3 && c >= 0xE3 && c <= 0xED;
++        }
++        uint32_t cp;
++        if (len == 2)      cp = ((c & 0x1F) << 6)  |  (p[i+1] & 0x3F);
++        else if (len == 3) cp = ((c & 0x0F) << 12) | ((p[i+1] & 0x3F) << 6)  |  (p[i+2] & 0x3F);
++        else               cp = ((c & 0x07) << 18) | ((p[i+1] & 0x3F) << 12) | ((p[i+2] & 0x3F) << 6) | (p[i+3] & 0x3F);
++        if ((cp >= 0x1100  && cp <= 0x11FF)  ||   // Hangul Jamo
++            (cp >= 0x2E80  && cp <= 0x9FFF)  ||   // CJK radicals, punctuation, kana, Bopomofo, Hangul compat, Han
++            (cp >= 0xA960  && cp <= 0xA97F)  ||   // Hangul Jamo ext-A
++            (cp >= 0xAC00  && cp <= 0xD7FF)  ||   // Hangul syllables, Jamo ext-B
++            (cp >= 0xF900  && cp <= 0xFAFF)  ||   // CJK compatibility ideographs
++            (cp >= 0xFE30  && cp <= 0xFE4F)  ||   // CJK compatibility forms
++            (cp >= 0xFF00  && cp <= 0xFFEF)  ||   // halfwidth/fullwidth forms
++            (cp >= 0x20000 && cp <= 0x3FFFF)) {   // Han extensions B..
++            return true;
++        }
++        i += len;
++    }
++    return false;
++}
++
+ std::string common_token_to_piece(const struct llama_context * ctx, llama_token token, bool special) {
+     const llama_model * model = llama_get_model(ctx);
+     const llama_vocab * vocab = llama_model_get_vocab(model);
+diff --git a/common/common.h b/common/common.h
+index b98a890fa..f2a5293b7 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -12,6 +12,7 @@
+ #include <list>
+ #include <set>
+ #include <sstream>
++#include <memory>
+ #include <string>
+ #include <string_view>
+ #include <vector>
+@@ -280,6 +281,9 @@ struct common_params_sampling {
+ 
+     std::vector<llama_logit_bias> logit_bias;     // logit biases to apply
+     std::vector<llama_logit_bias> logit_bias_eog; // pre-calculated logit biases for EOG tokens
++    std::string                   ban_scripts;    // --ban-scripts: comma-separated script list ("cjk")
++    std::vector<llama_logit_bias> logit_bias_ban; // persistent bans from --ban-scripts, applied even when a request sets logit_bias
++    std::shared_ptr<const std::vector<uint8_t>> homoglyph_cls; // --ban-scripts homoglyph: per token, bits 0-1 = class of first char, 2-3 = last char (1 Cyrillic letter, 2 Latin letter)
+ 
+     // The assistant generation prompt already prefilled into the prompt.
+     // Fed to the grammar sampler (to advance past pre-existing tokens) and used
+@@ -1206,6 +1210,11 @@ std::vector<llama_token> common_tokenize(
+ 
+ // tokenizes a token into a piece, optionally renders special/control tokens
+ // should work similar to Python's `tokenizer.id_to_piece`
++// script classes of the first/last character of a token piece (see --ban-scripts homoglyph)
++uint8_t common_piece_script_bits(const std::string & piece);
++// true if a token piece contains CJK characters (see --ban-scripts)
++bool common_piece_has_cjk(const std::string & piece);
++
+ std::string common_token_to_piece(
+         const struct llama_context * ctx,
+                        llama_token   token,
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index 564fa9c4d..0e8f7c6e9 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -188,6 +188,65 @@ std::string common_params_sampling::print() const {
+     return std::string(result);
+ }
+ 
++// --ban-scripts homoglyph: forbid a switch between Latin and Cyrillic letters inside one word
++// (e.g. "держитcя" with a Latin c, or "Трigram"). A token that starts with a letter of the other script
++// is banned right after a token that ended with a letter; a space, hyphen, digit or punctuation resets it.
++struct homoglyph_guard {
++    std::shared_ptr<const std::vector<uint8_t>> cls;
++    int prev = 0;   // class of the last character generated: 0 none, 1 Cyrillic, 2 Latin
++};
++static const char * homoglyph_name(const llama_sampler *) { return "homoglyph-guard"; }
++static void homoglyph_accept(llama_sampler * s, llama_token t) {
++    auto * g = (homoglyph_guard *) s->ctx;
++    g->prev = (t >= 0 && (size_t) t < g->cls->size()) ? (((*g->cls)[t] >> 2) & 3) : 0;
++}
++static void homoglyph_apply(llama_sampler * s, llama_token_data_array * cur_p) {
++    auto * g = (homoglyph_guard *) s->ctx;
++    if (g->prev == 0) return;
++    const int forbidden = g->prev == 1 ? 2 : 1;
++    size_t keep = 0;
++    for (size_t i = 0; i < cur_p->size; i++) {
++        const llama_token t = cur_p->data[i].id;
++        const int first = (t >= 0 && (size_t) t < g->cls->size()) ? ((*g->cls)[t] & 3) : 0;
++        if (first != forbidden && cur_p->data[i].logit != -INFINITY) keep++;
++    }
++    if (keep == 0) return;   // never leave the sampler without a candidate
++    for (size_t i = 0; i < cur_p->size; i++) {
++        const llama_token t = cur_p->data[i].id;
++        const int first = (t >= 0 && (size_t) t < g->cls->size()) ? ((*g->cls)[t] & 3) : 0;
++        if (first == forbidden) cur_p->data[i].logit = -INFINITY;
++    }
++}
++static void homoglyph_reset(llama_sampler * s) { ((homoglyph_guard *) s->ctx)->prev = 0; }
++static llama_sampler * homoglyph_clone(const llama_sampler * s);
++static void homoglyph_free(llama_sampler * s) { delete (homoglyph_guard *) s->ctx; }
++static void homoglyph_copy_state(const llama_sampler * src, llama_sampler * dst) {
++    ((homoglyph_guard *) dst->ctx)->prev = ((const homoglyph_guard *) src->ctx)->prev;
++}
++static llama_sampler_i homoglyph_iface = {
++    /* .name              = */ homoglyph_name,
++    /* .accept            = */ homoglyph_accept,
++    /* .apply             = */ homoglyph_apply,
++    /* .reset             = */ homoglyph_reset,
++    /* .clone             = */ homoglyph_clone,
++    /* .free              = */ homoglyph_free,
++    /* .backend_init      = */ nullptr,
++    /* .backend_accept    = */ nullptr,
++    /* .backend_apply     = */ nullptr,
++    /* .backend_set_input = */ nullptr,
++    /* .backend_reset     = */ nullptr,
++    /* .copy_state        = */ homoglyph_copy_state,
++};
++static llama_sampler * homoglyph_init(std::shared_ptr<const std::vector<uint8_t>> cls) {
++    return llama_sampler_init(&homoglyph_iface, new homoglyph_guard{ std::move(cls), 0 });
++}
++static llama_sampler * homoglyph_clone(const llama_sampler * s) {
++    const auto * g = (const homoglyph_guard *) s->ctx;
++    llama_sampler * c = homoglyph_init(g->cls);
++    ((homoglyph_guard *) c->ctx)->prev = g->prev;
++    return c;
++}
++
+ struct common_sampler * common_sampler_init(
+         const struct llama_model * model,
+         struct common_params_sampling & params) {
+@@ -329,6 +388,7 @@ struct common_sampler * common_sampler_init(
+     // logit bias: user biases + model suppress tokens (-INFINITY)
+     {
+         std::vector<llama_logit_bias> merged = params.logit_bias;
++        merged.insert(merged.end(), params.logit_bias_ban.begin(), params.logit_bias_ban.end()); // --ban-scripts
+ 
+         int32_t n_suppress = 0;
+         const llama_token * suppress = llama_vocab_get_suppress_tokens(vocab, &n_suppress);
+@@ -339,6 +399,9 @@ struct common_sampler * common_sampler_init(
+         if (!merged.empty()) {
+             samplers.push_back(llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab), merged.size(), merged.data()));
+         }
++        if (params.homoglyph_cls) {
++            samplers.push_back(homoglyph_init(params.homoglyph_cls));   // --ban-scripts homoglyph
++        }
+     }
+ 
+     if (params.mirostat == 0) {
+diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+index 378153fca..289d3847c 100644
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -524,33 +524,53 @@ template<int stride_tile, bool swz, int nbatch_fa, int nthreads, bool oob_check>
+ static __device__ __forceinline__ void flash_attn_ext_turbo4_load_tile(
+         const char * const __restrict__ KV_raw, half2 * const __restrict__ tile_KV,
+         const int D2, const int stride_bytes, const int col_offset, const int i_sup) {
++    // Work unit = 4 bytes of qs (8 elements = 4 half2 tile columns) of one row, read as two
++    // 16-bit loads (qs is only 2-byte aligned inside the 66-byte block). All nthreads threads
++    // share the nbatch_fa rows; neighbouring lanes read neighbouring bytes of the same row
++    // (coalesced), the 16 centroids live in the lanes of each warp and are fetched with
++    // __shfl_sync (no divergent constant-memory access, no shared LUT sync). Numerics are
++    // identical to the previous one-thread-per-row loader: half(centroid*norm).
+     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+-    const int tid = threadIdx.y * warp_size + threadIdx.x;
++    const int tid  = threadIdx.y * warp_size + threadIdx.x;
++    const int U    = D2 / 4;                       // units per row (D2 and col_offset multiples of 4)
++    const int total = nbatch_fa * U;
++    const float lutv = TURBO_CENTROIDS_4BIT_FATTN[threadIdx.x & 15];
++    constexpr unsigned full = 0xffffffffu;
++#pragma unroll 4
++    for (int base = 0; base < total; base += nthreads) {   // uniform trip count: all lanes shuffle together
++        const int  u     = base + tid;
++        const bool valid = u < total;
++        const int  uu    = valid ? u : 0;
++        const int  row   = uu / U;
++        const int  chunk = uu - row * U;
++        const int  col   = col_offset + 4*chunk;           // absolute half2 column (multiple of 4)
++        const int  blk_idx = col / (QK_TURBO4 / 2);
++        const int  in_blk  = col % (QK_TURBO4 / 2);
++        const bool oob = oob_check && row >= i_sup;
++        uint32_t b4 = 0; float norm = 0.0f;
++        if (!oob) {
++            const block_turbo4_0 * blk = (const block_turbo4_0 *)(KV_raw + (int64_t)row * stride_bytes) + blk_idx;
++            norm = __half2float(blk->norm);
++            const uint16_t * q16 = (const uint16_t *)(blk->qs + in_blk);   // qs is 2-byte aligned
++            b4 = (uint32_t) q16[0] | ((uint32_t) q16[1] << 16);
++        }
++        float c[8];
+ #pragma unroll
+-    for (int row = tid; row < nbatch_fa; row += nthreads) {
+-        if (oob_check && row >= i_sup) {
+-            for (int c = 0; c < D2; ++c) {
+-                tile_KV[row*stride_tile + c] = make_half2(0.0f, 0.0f);
+-            }
+-            continue;
++        for (int k = 0; k < 8; ++k) {
++            c[k] = __shfl_sync(full, lutv, (b4 >> (4*k)) & 0xF);
+         }
+-        const char * row_ptr = KV_raw + (int64_t)row * stride_bytes;
+-        // Which block(s) this column window spans. QK_TURBO4/2 == 64 half2 columns per block.
+-        // For D=128 there is exactly one block per row and col_offset==0.
+-        for (int c = 0; c < D2; ++c) {
+-            const int col = col_offset + c;                 // absolute half2 column in the row
+-            const int blk_idx = col / (QK_TURBO4 / 2);      // 64 half2 cols per turbo4 block
+-            const int in_blk  = col % (QK_TURBO4 / 2);      // half2 index within the block
+-            const block_turbo4_0 * blk = (const block_turbo4_0 *)(row_ptr) + blk_idx;
+-            const float norm = __half2float(blk->norm);
+-            const uint8_t byte = blk->qs[in_blk];
+-            const half lo = __float2half(TURBO_CENTROIDS_4BIT_FATTN[byte & 0xF] * norm);
+-            const half hi = __float2half(TURBO_CENTROIDS_4BIT_FATTN[byte >>  4] * norm);
+-            if constexpr (swz) {
+-                *swizzle<stride_tile>(tile_KV, row*stride_tile + c, row) = __halves2half2(lo, hi);
+-            } else {
+-                tile_KV[row*stride_tile + c] = __halves2half2(lo, hi);
++        if (valid) {
++            half2 o[4];
++#pragma unroll
++            for (int k = 0; k < 4; ++k) {
++                o[k] = oob ? make_half2(0.0f, 0.0f)
++                           : __halves2half2(__float2half(c[2*k] * norm), __float2half(c[2*k+1] * norm));
+             }
++            const int cc4 = 4*chunk;
++            half2 * dst;
++            if constexpr (swz) { dst = swizzle<stride_tile>(tile_KV, row*stride_tile + cc4, row); }
++            else               { dst = tile_KV + row*stride_tile + cc4; }
++            dst[0] = o[0]; dst[1] = o[1]; dst[2] = o[2]; dst[3] = o[3];
+         }
+     }
+ }
+diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
+index 8d0c2afda..3657fde10 100644
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -312,7 +312,8 @@ static __global__ void flash_attn_ext_vec(
+             KQ_max_new[j] = KQ_max[j];
+         }
+ 
+-#pragma unroll (ncols2 > 1 ? GQA_UNR : 16)
++        constexpr int gqa_unr_kq = ncols2 > 1 ? GQA_UNR : 16; // nvcc does not expand macros inside #pragma unroll
++#pragma unroll gqa_unr_kq
+         for (int i_KQ_0 = 0; i_KQ_0 < nthreads_KQ; ++i_KQ_0) {
+             const int i_KQ = threadIdx.y*WARP_SIZE + (nthreads_KQ == WARP_SIZE ? 0 : (threadIdx.x & ~(nthreads_KQ-1))) + i_KQ_0;
+ 
+@@ -395,7 +396,8 @@ static __global__ void flash_attn_ext_vec(
+ 
+         ggml_cuda_syncwarp(); // Needed for KQ synchronization.
+ 
+-#pragma unroll (ncols2 > 1 ? GQA_UNRV : 64)
++        constexpr int gqa_unr_v = ncols2 > 1 ? GQA_UNRV : 64; // nvcc does not expand macros inside #pragma unroll
++#pragma unroll gqa_unr_v
+         for (int k0 = 0; k0 < WARP_SIZE; k0 += V_cols_per_iter) {
+             const int k = threadIdx.y*WARP_SIZE + k0 + (nthreads_V == WARP_SIZE ? 0 : threadIdx.x / nthreads_V);
+ 
+diff --git a/tools/server/server-schema.cpp b/tools/server/server-schema.cpp
+index 1e2dce888..76c9a2840 100644
+--- a/tools/server/server-schema.cpp
++++ b/tools/server/server-schema.cpp
+@@ -420,6 +420,15 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
+             }
+         }));
+ 
++    add((new field_json("allow_cjk"))
++        ->set_desc("Lift the server's --ban-scripts cjk ban for this request (for answers that must contain Chinese/Japanese/Korean)")
++        ->set_handler([&](field_eval_context & ctx, const json & data) {
++            const auto & v = data.at("allow_cjk");
++            if (v.is_boolean() && v.get<bool>()) {
++                ctx.params.sampling.logit_bias_ban.clear();
++            }
++        }));
++
+     add((new field_bool("ignore_eos", params.sampling.ignore_eos))
+         ->set_desc("Ignore the end-of-sequence token and continue generating")
+         ->set_handler([&](field_eval_context & ctx, const json & data) {
