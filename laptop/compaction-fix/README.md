@@ -17,7 +17,7 @@
 
 Same-length byte edits only, asserted one by one; on any other engine version `patch_ui.py` stops with an assertion and changes nothing.
 `./rollback.sh` returns the symlink to the original engine; the old plugin is `server.ts.before-compaction`.
-After `shuracode update` the symlink points to a new engine: run `apply.sh` again (it will say if the new version does not match).
+`install.sh` (and so `shuracode update` / `rollback`) applies the patch to the engine it ends up with; if the version does not match, it keeps the plain engine and says why.
 
 Not done on purpose: `compaction.prune` (clears old tool outputs from every prompt, which breaks the prefix cache on each prune
 and costs ~80 s of re-reading), and a shorter tail (the tail is what keeps the last turns exact).

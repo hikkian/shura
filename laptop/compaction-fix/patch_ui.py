@@ -40,6 +40,8 @@ for v in ('W', 'LU', 'c'):
     sub(f'{v}.tokens.input+{v}.tokens.output+{v}.tokens.reasoning+',
         f'({v}.summary?0:{v}.tokens.input)+{v}.tokens.output+')
 
-open(dst, 'wb').write(b)
-os.chmod(dst, 0o755)
+tmp = dst + '.tmp'  # write beside, then rename: works even while the old copy is running
+open(tmp, 'wb').write(b)
+os.chmod(tmp, 0o755)
+os.replace(tmp, dst)
 print('patched ->', dst, len(b))
