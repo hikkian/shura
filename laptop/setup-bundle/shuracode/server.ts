@@ -64,6 +64,32 @@ export function rebrand(text: string, model?: string): string {
     .replace(/\bYou are opencode,/g, intro)
 }
 
+// Compaction: the request that writes the summary re-reads the whole old conversation on this machine
+// (about 450 tokens/s), so its size is the waiting time. The summary needs decisions, state and file names, not
+// the model's old reasoning or whole files it has read or written; those can be read again. The flag is set by
+// the "compacting" hook and used once by the "messages.transform" call that follows it in the engine.
+const KEEP_CHARS = 1500
+let compactingSince = 0
+
+function clip(text: string, keep = KEEP_CHARS): string {
+  return text.length <= keep ? text : `${text.slice(0, keep)}\n[... ${text.length - keep} more characters left out of this summary request]`
+}
+
+export function slimForCompaction(messages: any[]): void {
+  for (const message of messages) {
+    if (!Array.isArray(message?.parts)) continue
+    message.parts = message.parts.filter((part: any) => part?.type !== "reasoning")
+    for (const part of message.parts) {
+      if (part?.type !== "tool" || !part.state) continue
+      if (typeof part.state.output === "string") part.state.output = clip(part.state.output)
+      const input = part.state.input
+      if (input && typeof input === "object") {
+        for (const key of Object.keys(input)) if (typeof input[key] === "string") input[key] = clip(input[key])
+      }
+    }
+  }
+}
+
 const plugin: PluginModule & { id: string } = {
   id: "shuracode-server",
   server: async () => ({
@@ -82,6 +108,19 @@ const plugin: PluginModule & { id: string } = {
         })
       }
       output.parts.push(...extra)
+    },
+    "experimental.session.compacting": async () => {
+      compactingSince = Date.now()
+    },
+    "experimental.chat.messages.transform": async (_input, output) => {
+      if (!compactingSince) return
+      const fresh = Date.now() - compactingSince < 30_000
+      compactingSince = 0
+      try {
+        if (fresh) slimForCompaction(output.messages as any[])
+      } catch {
+        // never break a compaction because of the optimisation
+      }
     },
     "experimental.chat.system.transform": async (input, output) => {
       // edit in place: the engine keeps using the same array after the hook returns
