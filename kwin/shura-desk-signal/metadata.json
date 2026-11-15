@@ -1,0 +1,13 @@
+{
+  "KPlugin": {
+    "Id": "shura-desk-signal",
+    "Name": "Shura desk signal (read-only)",
+    "Description": "Writes one line to the user journal when the active window or full-screen state changes, so Shura can be polite to a game or a full-screen video. Reads window state only; never changes a window or a setting, never logs window titles.",
+    "Authors": [{ "Name": "hikkian" }],
+    "Version": "1.0",
+    "License": "MIT"
+  },
+  "X-Plasma-API": "javascript",
+  "X-Plasma-MainScript": "code/main.js",
+  "KPackageStructure": "KWin/Script"
+}

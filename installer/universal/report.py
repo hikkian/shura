@@ -9,9 +9,10 @@ import json
 GiB = 1024 ** 3
 
 
-def scrub(text, *, home=None, user=None, host=None):
+def scrub(text, *, home=None, user=None, host=None, shura_home=None):
     out = str(text)
-    for needle, repl in ((home, "~"), (user, "<user>"), (host, "<host>")):
+    # the Shura folder first: it can be anywhere (SHURA_HOME on another disk) and then carries the user's own folder names
+    for needle, repl in ((shura_home, "<shura-home>"), (home, "~"), (user, "<user>"), (host, "<host>")):
         if needle and len(needle) > 1:
             out = out.replace(needle, repl)
     return out
@@ -53,7 +54,8 @@ def card(hw, plan):
               f"  Backends : {', '.join(plan['backend_candidates'])}" + (" (measured at install)" if plan["needs_probe"] else ""),
               f"  Expected : ~{t['mid']:.0f} tok/s with {plan['speed_by_fill']['typical_tokens']} tokens in the window "
               f"(empty {plan['speed_by_fill']['empty']:.0f}, full {plan['speed_by_fill']['full']:.0f}; "
-              f"range {t['low']:.0f}-{t['high']:.0f}), confidence {plan['confidence']}",
+              f"range {t['low']:.0f}-{t['high']:.0f}), confidence {plan['confidence']}"
+              + (f" · {plan['speed_estimate']['label']}" if plan.get("speed_estimate") else ""),
               f"  Memory   : RAM {_gib(m['ram_need'])} of {_gib(m['ram_budget'])}"
               + (f" · VRAM {_gib(m['vram_need'])} of {_gib(m['vram_budget'])}" if m["vram_need"] else ""),
               "", "Why"]

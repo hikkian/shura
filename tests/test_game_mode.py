@@ -37,6 +37,33 @@ class Policy(unittest.TestCase):
         p.update(70, [])
         self.assertFalse(p.active)
 
+    def test_desk_deep_sleep_enables_the_parking_without_own_detectors(self):
+        # MEMV2: desk_need's deep sleep parks through game mode; it needs the governor and deskNeed
+        self.assertTrue(GamePolicy({"deskNeed": True, "vramPolicy": "governor"}).enabled)
+        self.assertFalse(GamePolicy({"deskNeed": True, "vramPolicy": "governor", "deskDeepSleep": False}).enabled)
+        self.assertFalse(GamePolicy({"deskNeed": True, "vramPolicy": "legacy"}).enabled)
+        self.assertFalse(GamePolicy({"vramPolicy": "governor"}).enabled)
+
+    def test_desk_only_parking_is_ready_from_the_start(self):
+        self.assertTrue(GamePolicy({"deskNeed": True, "vramPolicy": "governor"}).ready)
+        self.assertFalse(GamePolicy({"gameMode": True}).ready)        # own detectors: wait for their first sample
+
+    def test_settled_reasons_pause_and_end_at_once(self):
+        p = GamePolicy({"deskNeed": True, "vramPolicy": "governor"})
+        p.update(0, ["desk: game"], settled=["desk: game"])
+        self.assertTrue(p.active)                            # desk_need already held the game for its own seconds
+        p.update(1, [])
+        self.assertFalse(p.active)                           # and its wake already waited too
+
+    def test_a_detector_reason_keeps_the_usual_hysteresis_with_desk(self):
+        p = GamePolicy({"gameMode": True, "deskNeed": True, "vramPolicy": "governor"})
+        p.update(0, ["desk: game", "gamemoded registered game"], settled=["desk: game"])
+        self.assertTrue(p.active)
+        p.update(1, [])
+        self.assertTrue(p.active)                            # a detector of its own took part: the off hysteresis stands
+        p.update(61, [])
+        self.assertFalse(p.active)
+
     def test_twenty_second_flaps_one_transition(self):
         p = self.policy()
         p.update(0, ["game"])
@@ -171,6 +198,33 @@ class Gateway(unittest.TestCase):
     def active(self):
         self.gw.GAME.manual_switch(True, time.monotonic())
 
+    def test_a_pause_during_light_sleep_parks_instead_of_restarting(self):
+        # MEMV2: desk_need asked for light sleep (a game); the governor still had to pause: deep sleep and parking at once
+        import desk_need
+        desk = Mock()
+        desk.need = desk_need.DeskNeed({"deskSleepOnSeconds": 1})
+        for t in range(3):
+            desk.need.update(float(t), desk_need.Signals(game=True))
+        self.assertEqual(desk.need.sleep_level, 1)
+        cfg = {**self.gw.G, "gameMode": False, "deskNeed": True, "vramPolicy": "governor"}
+        with patch.object(self.gw, "DESK", desk), patch.object(self.gw, "GAME", GamePolicy(cfg)), \
+                patch.object(self.gw, "notify_vram_yield", Mock()):
+            self.assertTrue(self.gw.desk_deepen("the server paused while the model slept lightly"))
+            self.assertEqual(desk.need.sleep_level, 2)
+            self.assertTrue(self.gw.GAME.active)
+            self.assertEqual(self.gw.st.status, "PARKED_BY_GAME")
+            self.gw.save_slot_locked.assert_called_once_with(ram_only=True)
+            self.assertFalse(self.gw.desk_deepen("again"))    # already deep
+
+    def test_no_deep_sleep_when_the_desk_is_awake(self):
+        import desk_need
+        desk = Mock()
+        desk.need = desk_need.DeskNeed({})
+        cfg = {**self.gw.G, "gameMode": False, "deskNeed": True, "vramPolicy": "governor"}
+        with patch.object(self.gw, "DESK", desk), patch.object(self.gw, "GAME", GamePolicy(cfg)):
+            self.assertFalse(self.gw.desk_deepen("the server paused"))
+            self.assertFalse(self.gw.GAME.active)
+
     def test_save_failure_never_unloads(self):
         self.active()
         self.gw.save_slot_locked.return_value = False
@@ -270,10 +324,13 @@ class ProxyCancellation(unittest.TestCase):
         policy.ready = True
         out = {}
 
+        got_headers = threading.Event()
+
         def client():
             c = http.client.HTTPConnection("127.0.0.1", frontend.server_port, timeout=5)
             c.request("POST", "/v1/chat/completions", json.dumps({"messages": []}))
             response = c.getresponse()
+            got_headers.set()
             out["status"] = response.status
             out["body"] = response.read()
             c.close()
@@ -289,6 +346,8 @@ class ProxyCancellation(unittest.TestCase):
                 t = threading.Thread(target=client)
                 t.start()
                 self.assertTrue(ready.wait(3))
+                # The pause must come after the client has the 200 and the first chunk; before that it is a (correct) plain 503.
+                self.assertTrue(got_headers.wait(3))
                 policy.manual_switch(True, time.monotonic())
                 gw.game_tick(time.monotonic(), [])
                 t.join(5)
@@ -296,6 +355,9 @@ class ProxyCancellation(unittest.TestCase):
                 self.assertEqual(out["status"], 200, out.get("body"))
                 self.assertIn(b"game_pause_timeout", out["body"])
                 self.assertIn(b"[DONE]", out["body"])
+                deadline = time.monotonic() + 3      # the handler releases its slot just after the client has the last byte
+                while state.busy and time.monotonic() < deadline:
+                    time.sleep(0.02)
                 self.assertEqual(state.busy, 0)
         finally:
             release.set()

@@ -1,6 +1,6 @@
 # Installation
 
-Tested only on Fedora 44 + GNOME (Wayland) + Ghostty with an RTX 4070 SUPER (full list: [README → Tested environment](../README.md#tested-environment)). Other distros and NVIDIA cards with ≥12 GB VRAM should work
+Tested only on Fedora 44 + KDE Plasma (Wayland) + Ghostty with an RTX 4070 SUPER (full list: [README → Tested environment](../README.md#tested-environment-and-limits)). Other distros and NVIDIA cards with ≥12 GB VRAM should work
 with the obvious package-manager substitutions (set `CUDA_ARCH` for your GPU).
 
 ## 1. NVIDIA driver and CUDA toolkit
@@ -35,7 +35,7 @@ scripts/build-llama.sh              # -> ~/ai/llama.cpp-perf/build/bin/llama-ser
 CUDA_ARCH=86 scripts/build-llama.sh # RTX 30xx
 ```
 
-The script pins the exact benchmarked commit and applies `patches/turboquant-pr12-fix.patch`.
+The script pins the exact benchmarked commit and applies `patches/turboquant-pr12-fix.patch` and `patches/slot-checkpoints.patch`. With `--attention-decode` it also applies `patches/attention-decode.patch`.
 
 ## 4. Model
 
@@ -90,8 +90,11 @@ python3 bench/deep_context_bench.py --context /tmp/ctx_187k.txt
 - **`threads` / `threadsBatch`**: set them to your physical core count, not the thread count. The
   CPU-side expert compute is memory-bandwidth bound, so extra threads add no speed and only take CPU
   away from the desktop.
-- **`niceLevel`** (default 10): runs llama-server at lower CPU priority. It costs nothing on an idle
+- **`niceLevel`** (10 in the example config and in the config the installer writes; if the key is missing, llama-server runs at normal priority): runs llama-server at lower CPU priority. It costs nothing on an idle
   desktop, and interactive apps win whenever they compete.
+- **`poll`** (optional): forwards llama.cpp's CPU worker polling level (`0`–`100`). If omitted or
+  `null`, the server keeps its compiled default (`50`); `0` sleeps while waiting for work instead of
+  spinning. Change it only after measuring speed and desktop frame delays on the target machine.
 - **`chatTemplateKwargs`** (optional, e.g. `{"terse": false}`): extra variables for the model's chat template, passed as `--chat-template-kwargs`. Tiel-Coder's template adds a "be concise" system prompt by default (`terse`); on 44 short agentic tasks it made no measurable difference to quality or tokens, so switching it off is a matter of taste.
 - **`specDraftNMax`**: 1-3 perform about the same. 1 has the highest acceptance and uses the least VRAM.
 - To build a routing profile for a different model or your own workload: `scripts/capture-moe-trace.sh <model.gguf> [prompt-dir]`. Put a few realistic chat-formatted prompts in `prompt-dir`; only generated tokens are kept.

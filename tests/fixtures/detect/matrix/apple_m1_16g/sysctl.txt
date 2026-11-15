@@ -1,0 +1,4 @@
+hw.memsize: 17179869184
+hw.physicalcpu: 8
+hw.logicalcpu: 8
+machdep.cpu.brand_string: Apple M1

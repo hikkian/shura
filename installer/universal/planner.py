@@ -35,6 +35,8 @@ DEFAULTS = {
     "kv_quality": {"f16": 1.0, "q8_0": 1.0, "turbo3": 0.985, "turbo3_tqp": 0.99, "q5_0": 0.99, "q4_0": 0.975},   # share of quality kept by each KV cache type
     "kv_exotic": ("q5_0",),       # KV types the common builds may not run with flash attention (CUDA/HIP prebuilts: only q8_0/q4_0 pairs)
     "kv_unavailable": (),         # KV types the engine on this machine cannot run
+    "native_backends": False,     # native CUDA/ROCm/SYCL/Metal builds require explicit opt-in in the installer
+    "backend": None,              # an explicitly selected build; None means the safe Vulkan -> CPU path
     "unverified_margin": 1.15,    # a window nobody has run (beyond the verified one) is taken only with 15% more speed than the target
     "target_tolerance": 0.95,     # within 5% of the target counts as reaching it (measured run-to-run spread is 5-8%)
     "speed_scale": 1.0,           # measured speed / predicted speed on this machine (set by the installer after a real run)
@@ -44,6 +46,13 @@ DEFAULTS = {
     # "attention": efficiency of reading the KV cache for every generated token (attention kernels use a fraction of the
     # bandwidth; ~0.2 measured on the reference GPU at 187k context). It is what makes a long window cost speed.
     "efficiency": {"hybrid": 0.30, "gpu": 0.50, "cpu": 0.40, "unified": 0.45, "attention": 0.25},
+    # Vulkan (the default GPU path): efficiency fitted on open llama-bench data, PUB5 (docs/SPEED-ESTIMATES.md and
+    # catalog/speed-calibration-vulkan.json, which tests/test_speed_calibration.py keeps equal to these numbers).
+    # Dense models read the whole file per token. Intel Arc measured lower than RDNA3 and NVIDIA. "moe" is measured on one card
+    # only and is NOT applied to planning yet: it would lower the default quant of MoE models on AMD (a quality loss on one
+    # measurement). It is kept here, with its label, for the day a second measurement exists.
+    "vulkan_efficiency": {"dense": 0.67, "moe": 0.12, "intel_dense": 0.43},
+    "vulkan_label": {"dense": "оценка, ±20 %", "moe": "оценка, ±50 %, мало данных", "intel_dense": "оценка, ±50 %, мало данных"},
     "os_reserve_min": 6 * GiB,    # RAM kept for the OS, desktop and apps: max(min, frac * total)
     "os_reserve_frac": 0.15,
     "vram_reserve_display": int(0.8 * GiB),   # VRAM kept free on top of what the desktop already uses (display GPU)
@@ -96,6 +105,12 @@ def _cfg(overrides):
             cfg[k].update(v)
         else:
             cfg[k] = v
+    if not cfg["native_backends"] and cfg["backend"] not in ("cuda", "rocm", "hip", "sycl", "metal"):
+        cfg["mtp_standard"] = False
+        cfg["tqp_enabled"] = False
+        cfg["hipfork_enabled"] = False
+        cfg["fork"]["enabled"] = False
+        cfg["kv_unavailable"] = tuple(cfg["kv_unavailable"]) + ("q5_0", "q4_0", "turbo3")
     return cfg
 
 
@@ -152,10 +167,17 @@ def _tqp_backend(res, gpu):
     return None
 
 
-def backend_candidates(hw):
-    """Backends worth probing, most likely first. When there is more than one, the installer measures them."""
+def backend_candidates(hw, *, native_backends=False, backend=None):
+    """Backends worth probing, most likely first. Native GPU stacks need explicit opt-in."""
     if not hw["gpus"]:
         return ["cpu"], False
+    if backend:
+        requested = "rocm" if backend == "hip" else backend
+        if requested == "cpu":
+            return ["cpu"], False
+        return [requested] + ([] if requested == "vulkan" else ["vulkan"]) + ["cpu"], False
+    if not native_backends:
+        return ["vulkan", "cpu"], False
     g = max(hw["gpus"], key=lambda x: x["vram_total"])
     usable = [b for b in BACKEND_ORDER.get(g["vendor"], ()) if not g.get("backends") or b in g["backends"]]
     if not usable:
@@ -169,6 +191,14 @@ def _active_bytes(m, q):
     return float(q["file_bytes"])
 
 
+def _on_vulkan(cfg, gpu):
+    """The GPU runs on Vulkan: the default path (native builds not asked for) or Vulkan named by the user. Unified memory
+    is not Vulkan here (Apple uses Metal)."""
+    if not gpu or gpu.get("unified"):
+        return False
+    return cfg["backend"] == "vulkan" or (cfg["backend"] is None and not cfg["native_backends"])
+
+
 def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     """Placement and predicted speed of one (model, quant, context, KV type), or (None, reason)."""
     file, kv = q["file_bytes"], ctx * m["kv_bytes_per_token_f16"] * kv_factor
@@ -177,7 +207,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
     mtp = bool(g and cfg["mtp_standard"] and "mtp" in m.get("features", ()))
     draft = (ctx * cfg["mtp_draft_kv_per_token"] + cfg["mtp_compute"]) if mtp else 0      # VRAM of the MTP draft
 
-    def finish(mode, time_s, ram_need, vram_need, ngl, eta):
+    def finish(mode, time_s, ram_need, vram_need, ngl, eta, speed_key=None):
         if ram_need > res["ram_budget"]:
             return None, (f"needs {ram_need / GiB:.1f} GiB of RAM, only {res['ram_budget'] / GiB:.1f} GiB is "
                           f"available after keeping memory for the system")
@@ -195,7 +225,7 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
             if mode in ("hybrid", "gpu", "unified") else res["ram_budget"]
         return {"mode": mode, "tok_s": speed[typical], "tok_empty": speed[0.0], "tok_full": speed[1.0],
                 "fill_tokens": int(ctx * typical), "kv_bytes": kv, "kv_share": kv / pool if pool > 0 else 1.0,
-                "ram_need": ram_need, "vram_need": vram_need, "settings": s}, ""
+                "ram_need": ram_need, "vram_need": vram_need, "settings": s, "speed_key": speed_key}, ""
 
     if g and g.get("unified"):                                    # Apple-style unified memory
         need = file + kv + draft + cfg["compute_buffer"]
@@ -217,6 +247,8 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
             resident_cpu = expert_bytes * (1 - share)
             time_s = gpu_b / res["gpu_bw"] + cpu_b / res["ram_bw"]
             mode = "gpu" if on_gpu == m["n_layers"] else "hybrid"
+            # MoE on Vulkan keeps the old coefficient here: the measured 0.12 (one card) would cut the quant of the default
+            # plan on AMD (Q4 to Q3), a quality loss on one measurement. See vulkan_efficiency and docs/SPEED-ESTIMATES.md.
             return finish(mode, time_s, resident_cpu + cfg["host_base"], fixed + on_gpu * per_layer, "all",
                           eff[mode])
     elif g:                                                        # dense model, layers split by bandwidth time
@@ -227,9 +259,12 @@ def _fit(res, cfg, m, q, ctx, kv_name, kv_factor):
             mode = "gpu" if share >= 1 else "hybrid"
             # a dense layer split adds the two bandwidths without per-layer expert routing, so its overhead is that of
             # CPU inference (the MoE "hybrid" constant would make offloading look slower than not offloading)
-            return finish(mode, time_s, (1 - share) * file + cfg["host_base"], fixed + share * file,
-                          max(1, round(share * m["n_layers"])) if share < 1 else "all",
-                          eff["gpu"] if share >= 1 else eff["cpu"])
+            ngl = max(1, round(share * m["n_layers"])) if share < 1 else "all"
+            ram_need = (1 - share) * file + cfg["host_base"]
+            if share >= 1 and _on_vulkan(cfg, g):                  # dense on Vulkan, all on the GPU (PUB5)
+                key = "intel_dense" if g["vendor"] == "intel" else "dense"
+                return finish(mode, time_s, ram_need, fixed + share * file, ngl, cfg["vulkan_efficiency"][key], speed_key=key)
+            return finish(mode, time_s, ram_need, fixed + share * file, ngl, eff["gpu"] if share >= 1 else eff["cpu"])
     s["ngl"] = 0                                                    # CPU only (no GPU, or none that is usable)
     return finish("cpu", active / res["ram_bw"], file + kv + cfg["host_base"], 0, 0, eff["cpu"])
 
@@ -484,7 +519,7 @@ def _plan(hw, catalog, config, model, quant):
         raise ValueError("invalid input: " + "; ".join(problems))
     cfg = _cfg(config)
     res = _resources(hw, cfg)
-    backends, probe = backend_candidates(hw)
+    backends, probe = backend_candidates(hw, native_backends=cfg["native_backends"], backend=cfg["backend"])
     picks, refusals = [], []
     for m in sorted(catalog["models"], key=lambda x: -x["capability"]):
         if model and m["id"] != model:
@@ -530,6 +565,9 @@ def _plan(hw, catalog, config, model, quant):
         "speed_by_fill": {"empty": round(fit["tok_empty"], 1), "typical": round(mid, 1),
                           "full": round(fit["tok_full"], 1), "typical_tokens": fit["fill_tokens"]},
         "confidence": confidence,
+        # the label the report prints next to the number when a fitted coefficient made it (PUB5b); None otherwise
+        "speed_estimate": ({"key": fit["speed_key"], "label": cfg["vulkan_label"][fit["speed_key"]]}
+                           if fit.get("speed_key") else None),
         "memory": {"ram_need": int(fit["ram_need"]), "ram_budget": int(res["ram_budget"]),
                    "vram_need": int(fit["vram_need"]), "kv_bytes": int(fit["kv_bytes"]),
                    "kv_share": round(fit["kv_share"], 3),

@@ -1,0 +1,2 @@
+01:00.0 "VGA compatible controller" "NVIDIA Corporation" "TU116 [GeForce GTX 1660 Ti]" -ra1 -p00 "ASUSTeK Computer Inc." "Device 8975"
+00:14.0 "Ethernet controller" "Intel Corporation" "Ethernet Connection (17) I219-V" -r11 -p00 "ASRock" "Device 0100"

@@ -1,0 +1,130 @@
+# gemma-fa512: векторное ядро внимания для головы 512 (глобальные слои Gemma 4) на HIP, квантованный KV q8_0 (K) и q8_0/turbo4 (V).
+# Источник: собственная правка проекта (GEMMAFA1, REPORT-GEMMAFA1b.md, REPORT-GEMMAFA1c.md). Упаковка GQA — как в gqavec2 (включается GGML_HIP_FA_GQA_VEC=1).
+# Меняет: шлюз GQA-пути D==256 -> D==256||D==512; объявления и инстансы D=512 для q8_0/q8_0 и q8_0/turbo4; диспетчер;
+# выбор ядра (только HIP, квантованный K, ne[1]<=2); generate_cu_files.py (список пар D=512 и безопасная очистка);
+# tests/test-backend-ops.cpp (случаи hsk=512 с квантованным KV и GQA 8, которых не было в наборе).
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index a7f3d70..2284257 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -583,6 +583,10 @@ static void ggml_cuda_flash_attn_ext_vec(ggml_backend_cuda_context & ctx, ggml_t
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO4_0, GGML_TYPE_TURBO2_0)
+     FATTN_VEC_CASES_ALL_D(GGML_TYPE_TURBO2_0, GGML_TYPE_TURBO4_0)
+ 
++    // Gemma 4 global layers: head size 512 (only the q8_0 K pairs; see GEMMAFA1)
++    FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0)
++    FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0)
++
+     GGML_ABORT("fatal error");
+ }
+ 
+@@ -741,7 +745,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+ 
+     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
+     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
+-    const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
++#if defined(GGML_USE_HIP)
++    // Head 512 (Gemma global layers): the vector kernel is allowed on HIP for q8_0 K and q8_0/turbo4 V at decode batch sizes.
++    const bool head512_vec_ok = Q->ne[0] == 512 && K->type == GGML_TYPE_Q8_0 && (V->type == GGML_TYPE_Q8_0 || V->type == GGML_TYPE_TURBO4_0) && Q->ne[1] <= 2;
++#else
++    const bool head512_vec_ok = false;
++#endif // GGML_USE_HIP
++    const bool can_use_vector_kernel = (Q->ne[0] <= 256 || head512_vec_ok) && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+ 
+     // If Turing tensor cores are available, use them:
+     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
+index 8025088..aed6562 100644
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -643,7 +643,7 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
+ 
+ #if defined(GGML_USE_HIP)
+     // GQA-packed decode path (opt-in): one block handles all Q heads of one KV head, K/V rows are read and unpacked once.
+-    if constexpr (D == 256 && type_K == GGML_TYPE_Q8_0 && (type_V == GGML_TYPE_Q8_0 || type_V == GGML_TYPE_TURBO4_0)) {
++    if constexpr ((D == 256 || D == 512) && type_K == GGML_TYPE_Q8_0 && (type_V == GGML_TYPE_Q8_0 || type_V == GGML_TYPE_TURBO4_0)) {
+         static const bool gqa_vec_enabled = []() { const char * e = getenv("GGML_HIP_FA_GQA_VEC"); return e && e[0] == '1'; }();
+         const ggml_tensor * K = dst->src[1];
+         const int gqa_ratio = Q->ne[2] / K->ne[2];
+@@ -745,6 +745,8 @@ extern DECL_FATTN_VEC_CASE(256, GGML_TYPE_TURBO2_0, GGML_TYPE_Q8_0);
+ extern DECL_FATTN_VEC_CASE( 64, GGML_TYPE_Q8_0, GGML_TYPE_TURBO2_0);
+ extern DECL_FATTN_VEC_CASE(128, GGML_TYPE_Q8_0, GGML_TYPE_TURBO2_0);
+ extern DECL_FATTN_VEC_CASE(256, GGML_TYPE_Q8_0, GGML_TYPE_TURBO2_0);
++extern DECL_FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
++extern DECL_FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0);
+ extern DECL_FATTN_VEC_CASE( 64, GGML_TYPE_F16, GGML_TYPE_TURBO2_0);
+ extern DECL_FATTN_VEC_CASE(128, GGML_TYPE_F16, GGML_TYPE_TURBO2_0);
+ extern DECL_FATTN_VEC_CASE(256, GGML_TYPE_F16, GGML_TYPE_TURBO2_0);
+diff --git a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
+index a5b768b..34b7e52 100644
+--- a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
++++ b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-q8_0.cu
+@@ -5,3 +5,4 @@
+ DECL_FATTN_VEC_CASE( 64, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
+ DECL_FATTN_VEC_CASE(128, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
+ DECL_FATTN_VEC_CASE(256, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
++DECL_FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0);
+diff --git a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo4_0.cu b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo4_0.cu
+index 1646ef0..ba6b6f6 100644
+--- a/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo4_0.cu
++++ b/ggml/src/ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo4_0.cu
+@@ -5,3 +5,4 @@
+ DECL_FATTN_VEC_CASE( 64, GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0);
+ DECL_FATTN_VEC_CASE(128, GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0);
+ DECL_FATTN_VEC_CASE(256, GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0);
++DECL_FATTN_VEC_CASE(512, GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0);
+diff --git a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
+index d7cd271..e5b70fe 100755
+--- a/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
++++ b/ggml/src/ggml-cuda/template-instances/generate_cu_files.py
+@@ -62,18 +62,27 @@ def get_short_name(long_quant_name):
+     return long_quant_name.replace("GGML_TYPE_", "").lower()
+ 
+ 
++# Remove only the files this script generated: the hand-written TurboQuant instances live in the same folder and must stay.
+ for filename in glob("*.cu"):
+-    os.remove(filename)
++    with open(filename, encoding="utf-8") as f:
++        if "autogenerated by generate_cu_files.py" in f.readline():
++            os.remove(filename)
+ 
+ for head_size_kq in HEAD_SIZES_KQ:
+     head_size_v = HEAD_SIZES_V_OVERRIDE.get(head_size_kq, head_size_kq)
+     with open(f"fattn-tile-instance-dkq{head_size_kq}-dv{head_size_v}.cu", "w") as f:
+         f.write(SOURCE_FATTN_TILE.format(head_size_kq=head_size_kq, head_size_v=head_size_v))
+ 
++# Head size 512 (Gemma 4 global layers, GEMMAFA1c) gets vector instances only for these pairs:
++# every other pair would compile an unused kernel. q8_0 K with turbo4 V is in a hand-written file (TYPES_KV has no turbo).
++VEC_HEAD512_PAIRS = {("GGML_TYPE_Q8_0", "GGML_TYPE_Q8_0")}
++
+ for type_k in TYPES_KV:
+     for type_v in TYPES_KV:
+         with open(f"fattn-vec-instance-{get_short_name(type_k)}-{get_short_name(type_v)}.cu", "w") as f:
+             f.write(SOURCE_FATTN_VEC.format(type_k=type_k, type_v=type_v))
++            if (type_k, type_v) in VEC_HEAD512_PAIRS:
++                f.write(f"DECL_FATTN_VEC_CASE(512, {type_k}, {type_v});\n")
+ 
+ for ncols in [8, 16, 32, 64]:
+     for ncols2 in [1, 2, 4, 8, 16, 32]:
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index e922255..63a15d4 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -10363,6 +10363,17 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+         }
+     }
+ 
++    // Gemma 4 global layers: head size 512, 2 KV heads with 8 Q heads per KV head, quantized KV, decode-sized batches (GEMMAFA1c).
++    // The head-size loop above tests quantized KV only for head sizes 64 and 72.
++    for (const auto & kv_types : std::initializer_list<std::pair<ggml_type, ggml_type>>{
++            {GGML_TYPE_Q8_0, GGML_TYPE_Q8_0}, {GGML_TYPE_Q8_0, GGML_TYPE_TURBO4_0}}) {
++        for (int kv : { 113, 512, 1024, }) {
++            for (int nb : { 1, 2, }) {
++                test_cases.emplace_back(new test_flash_attn_ext(512, 512, 2, {8, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, kv_types.first, kv_types.second));
++            }
++        }
++    }
++
+     for (int hsk : { 40, 64, 72, 80, 96, 128, 192, 256, 320, 512, 576 }) {
+         for (int hsv : { 40, 64, 72, 80, 96, 128, 192, 256, 512 }) {
+             if (hsk != 192 && hsk != 320 && hsk != 576 && hsk != hsv) continue;

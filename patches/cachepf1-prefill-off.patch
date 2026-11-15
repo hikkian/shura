@@ -1,0 +1,19 @@
+# cachepf1: кеш экспертов (hot/cold split) только для батчей <= 8 токенов (декод и черновики MTP); префилл идёт без кеша.
+# Причина: при кеше каждый MoE-слой считает обе ветки (cold и hot) для всех токенов батча, на префилле это вдвое больше работы.
+# Замер: Окками, 26k, префилл 1241 -> 1624 ток/с без кеша (REPORT-CACHEPF1). Качество: тот же математический результат, другой порядок суммирования (см. отчёт).
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2065,10 +2065,12 @@
+     // no pre-FFN weighting) — the dual chains below reproduce exactly that
+     ggml_tensor * ids_hot  = nullptr;
+     ggml_tensor * ids_cold = nullptr;
++    // the hot/cold split computes both chains for every token; for large (prefill) batches that doubles the expert work
++    // (measured: -24 % prefill at 26k on Occamy), so the cache path is used only for decode-size batches (and MTP drafts)
+     const bool use_moe_packs = moe_cache && moe_cache->moe_map_hot && !gate_up_exps &&
+         !up_exps_s && !gate_exps_s && !down_exps_s &&
+         type_op == LLM_FFN_SILU && gate_exps && !up_exps_b && !gate_exps_b && !weight_before_ffn &&
+-        (il < 0 || hparams.swiglu_clamp_exp[il] <= 1e-6f);
++        (il < 0 || hparams.swiglu_clamp_exp[il] <= 1e-6f) && n_tokens <= 8;
+     if (use_moe_packs) {
+         ggml_tensor * ids_flat = ggml_cont_1d(ctx0, selected_experts, n_expert_used*n_tokens); // topk ids are a strided view
+         if (moe_cache->moe_cache_hybrid && n_tokens <= 8) {

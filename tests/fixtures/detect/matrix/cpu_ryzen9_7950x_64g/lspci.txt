@@ -1,0 +1,1 @@
+00:14.0 "Ethernet controller" "Intel Corporation" "Ethernet Connection (17) I219-V" -r11 -p00 "ASRock" "Device 0100"

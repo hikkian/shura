@@ -18,7 +18,11 @@ class AtomicSlotSaveTests(unittest.TestCase):
         (config / "guardian.json").write_text(
             json.dumps({"slotSaveDir": str(root / "slots"), "slotSaveMinTokens": 1})
         )
-        (config / "model-launch.json").write_text(json.dumps({"models": {}}))
+        (config / "model-launch.json").write_text(
+            json.dumps({"exePath": "/tmp/test-llama", "models": {
+                "test-model": {"modelPath": "/tmp/test-model.gguf", "ctxSize": 200000}
+            }})
+        )
         cls.old_config = os.environ.get("AI_GATEWAY_CONFIG")
         cls.old_state = os.environ.get("AI_GATEWAY_STATE")
         os.environ["AI_GATEWAY_CONFIG"] = str(config)
@@ -72,6 +76,10 @@ class AtomicSlotSaveTests(unittest.TestCase):
         self.assertEqual(final.read_bytes(), b"new-complete-slot")
         self.assertFalse(pending.exists())
         self.assertEqual(calls[1][2]["filename"], pending.name)
+        sidecar = self.gateway.checkpoint_metadata_path(final)
+        metadata = json.loads(sidecar.read_text())
+        self.assertEqual(metadata["bytes"], final.stat().st_size)
+        self.assertEqual(metadata["sha256"], self.gateway.file_hash(final))
 
     def test_failed_partial_save_keeps_previous_final_and_removes_pending(self):
         final = self.gateway.SLOT_DIR / "test-model-text.bin"

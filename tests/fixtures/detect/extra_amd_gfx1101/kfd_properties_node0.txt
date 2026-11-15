@@ -1,0 +1,3 @@
+cpu_cores_count 16
+simd_count 0
+gfx_target_version 0

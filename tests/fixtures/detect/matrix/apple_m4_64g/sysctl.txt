@@ -1,0 +1,4 @@
+hw.memsize: 68719476736
+hw.physicalcpu: 10
+hw.logicalcpu: 10
+machdep.cpu.brand_string: Apple M4

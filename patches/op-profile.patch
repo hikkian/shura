@@ -1,0 +1,208 @@
+# op-profile: хронометраж по операциям, только при GGML_CUDA_OP_PROFILE=1 (по умолчанию выключено).
+# Источник: собственная правка проекта, reports/REPORT-DECODE1.md.
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2,6 +2,9 @@
+ #include "ggml-impl.h"
+ #include "ggml-backend-impl.h"
+ 
++#include <chrono>
++#include <map>
++
+ #include "ggml-cuda/allreduce.cuh"
+ #include "ggml-cuda/common.cuh"
+ #include "ggml-cuda/acc.cuh"
+@@ -4223,6 +4226,131 @@
+     return 0;
+ }
+ 
++// GGML_CUDA_OP_PROFILE=1: serial per-node timing (profiling copy only; graphs and parallel streams off).
++// GGML_CUDA_DISABLE_GRAPHS=1: run the same binary without CUDA/HIP graphs.
++static bool ggml_cuda_env_flag(const char * name) {
++    const char * v = getenv(name);
++    return v != nullptr && atoi(v) != 0;
++}
++
++struct ggml_cuda_op_prof_rec {
++    std::string key;
++    double      mb;
++    int         ev0;
++    int         ev1;
++};
++
++struct ggml_cuda_op_prof_entry {
++    long long calls = 0;
++    double    ms    = 0.0;
++    double    mb    = 0.0;
++};
++
++struct ggml_cuda_op_prof_state {
++    const bool on = ggml_cuda_env_flag("GGML_CUDA_OP_PROFILE");
++    std::map<std::string, ggml_cuda_op_prof_entry> table;
++    std::vector<ggml_cuda_op_prof_rec>             recs;
++    std::vector<cudaEvent_t>                       events;
++    int       next_ev  = 0;
++    long long graphs   = 0;
++    double    graph_ms = 0.0;
++    double    nodes_ms = 0.0;
++
++    ~ggml_cuda_op_prof_state() {
++        if (!on) {
++            return;
++        }
++        fprintf(stderr, "OPPROF_GRAPH\tcalls=%lld\twall_ms=%.3f\tnodes_ms=%.3f\n", graphs, graph_ms, nodes_ms);
++        for (const auto & [key, e] : table) {
++            fprintf(stderr, "OPPROF\t%s\t%lld\t%.4f\t%.3f\n", key.c_str(), e.calls, e.ms, e.mb);
++        }
++    }
++};
++
++static ggml_cuda_op_prof_state g_op_prof;
++
++// GGML_CUDA_SERIAL=1: control run, no graphs and no parallel streams, no events (same work, no profiling)
++static const bool g_cuda_serial = ggml_cuda_env_flag("GGML_CUDA_SERIAL");
++
++static std::string ggml_cuda_op_prof_key(const ggml_tensor * node) {
++    char buf[160];
++    if (node->op == GGML_OP_MUL_MAT || node->op == GGML_OP_MUL_MAT_ID || node->op == GGML_OP_FLASH_ATTN_EXT) {
++        const ggml_tensor * s0 = node->src[0];
++        snprintf(buf, sizeof(buf), "%s %s %lldx%lldx%lld n=%lld", ggml_op_name(node->op), ggml_type_name(s0->type),
++                 (long long) s0->ne[0], (long long) s0->ne[1], (long long) s0->ne[2], (long long) node->ne[1]);
++    } else {
++        snprintf(buf, sizeof(buf), "%s %s %lldx%lld", ggml_op_name(node->op), ggml_type_name(node->type),
++                 (long long) node->ne[0], (long long) node->ne[1]);
++    }
++    return buf;
++}
++
++// MB read per call: weights for MUL_MAT; only the used experts for MUL_MAT_ID; K and V for FLASH_ATTN_EXT
++static double ggml_cuda_op_prof_mb(const ggml_tensor * node) {
++    switch (node->op) {
++        case GGML_OP_MUL_MAT:
++            return ggml_nbytes(node->src[0]) / 1e6;
++        case GGML_OP_MUL_MAT_ID: {
++            const ggml_tensor * s0 = node->src[0];
++            return ggml_nbytes(s0) / 1e6 * (double) node->src[2]->ne[0] / (double) s0->ne[2];
++        }
++        case GGML_OP_FLASH_ATTN_EXT:
++            return (ggml_nbytes(node->src[1]) + ggml_nbytes(node->src[2])) / 1e6;
++        default:
++            return 0.0;
++    }
++}
++
++static int ggml_cuda_op_prof_event(cudaStream_t stream) {
++    auto & P = g_op_prof;
++    if (P.next_ev >= (int) P.events.size()) {
++        cudaEvent_t ev;
++        CUDA_CHECK(cudaEventCreateWithFlags(&ev, 0));  // timing enabled
++        P.events.push_back(ev);
++    }
++    CUDA_CHECK(cudaEventRecord(P.events[P.next_ev], stream));
++    return P.next_ev++;
++}
++
++static void ggml_cuda_op_prof_push(const ggml_cgraph * cgraph, int first, int n, int ev0, int ev1) {
++    std::string key;
++    double      mb = 0.0;
++    if (n == 1) {
++        key = ggml_cuda_op_prof_key(cgraph->nodes[first]);
++        mb  = ggml_cuda_op_prof_mb(cgraph->nodes[first]);
++    } else {
++        key = "FUSED";
++        for (int k = 0; k < n; k++) {
++            key += k == 0 ? " " : "+";
++            key += ggml_op_name(cgraph->nodes[first + k]->op);
++            mb  += ggml_cuda_op_prof_mb(cgraph->nodes[first + k]);
++        }
++    }
++    g_op_prof.recs.push_back({key, mb, ev0, ev1});
++}
++
++static void ggml_cuda_op_prof_flush(cudaStream_t stream, std::chrono::steady_clock::time_point t0) {
++    auto & P = g_op_prof;
++    CUDA_CHECK(cudaStreamSynchronize(stream));
++    P.graph_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++    P.graphs++;
++    for (const auto & r : P.recs) {
++        float ms = 0.0f;
++#ifdef GGML_USE_HIP
++        CUDA_CHECK(hipEventElapsedTime(&ms, P.events[r.ev0], P.events[r.ev1]));
++#else
++        CUDA_CHECK(cudaEventElapsedTime(&ms, P.events[r.ev0], P.events[r.ev1]));
++#endif
++        auto & e = P.table[r.key];
++        e.calls++;
++        e.ms += ms;
++        e.mb += r.mb;
++        P.nodes_ms += ms;
++    }
++    P.recs.clear();
++    P.next_ev = 0;
++}
++
+ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, const bool use_cuda_graph, const bool cuda_graph_update_required, uint64_t graph_key) {
+     bool graph_evaluated_or_captured = false;
+ 
+@@ -4259,6 +4387,10 @@
+         if (!use_cuda_graph || cuda_graph_update_required) {
+             [[maybe_unused]] int prev_i = 0;
+ 
++            if (g_op_prof.on || g_cuda_serial) {
++                stream_ctx.concurrent_events.clear();  // profiling: one stream, nodes run in order
++            }
++
+             if (stream_ctx.concurrent_events.size() > 0) {
+                 should_launch_concurrent_events = true;
+                 for (const auto & [tensor, event] : stream_ctx.concurrent_events) {
+@@ -4363,9 +4495,15 @@
+                     continue;
+                 }
+ 
++                const bool prof_on  = g_op_prof.on;
++                const int  prof_ev0 = prof_on ? ggml_cuda_op_prof_event(cuda_ctx->stream()) : -1;
++
+                 int nodes_to_skip = ggml_cuda_try_fuse(cuda_ctx, cgraph, i);
+ 
+                 if (nodes_to_skip != 0) {
++                    if (prof_on) {
++                        ggml_cuda_op_prof_push(cgraph, i, nodes_to_skip + 1, prof_ev0, ggml_cuda_op_prof_event(cuda_ctx->stream()));
++                    }
+ #ifdef GGML_CUDA_DEBUG
+                     const int last_fused = i + nodes_to_skip;
+                     GGML_LOG_INFO("nodes_fused: %d, first: %s (%s), last: %s (%s)\n",
+@@ -4393,6 +4531,9 @@
+ #endif  // NDEBUG
+ 
+                 bool ok = ggml_cuda_compute_forward(*cuda_ctx, node);
++                if (prof_on) {
++                    ggml_cuda_op_prof_push(cgraph, i, 1, prof_ev0, ggml_cuda_op_prof_event(cuda_ctx->stream()));
++                }
+                 if (!ok) {
+                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+                 }
+@@ -4502,6 +4643,13 @@
+     }
+ #endif // USE_CUDA_GRAPH
+ 
++    const auto prof_t0 = std::chrono::steady_clock::now();
++    static const bool prof_disable_graphs = ggml_cuda_env_flag("GGML_CUDA_DISABLE_GRAPHS");
++    if (prof_disable_graphs || g_op_prof.on || g_cuda_serial) {
++        use_cuda_graph             = false;
++        cuda_graph_update_required = false;
++    }
++
+     if (use_cuda_graph && cuda_graph_update_required) {
+         // Start CUDA graph capture
+         {
+@@ -4514,6 +4662,10 @@
+ 
+     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+ 
++    if (g_op_prof.on) {
++        ggml_cuda_op_prof_flush(cuda_ctx->stream(), prof_t0);
++    }
++
+     return GGML_STATUS_SUCCESS;
+ }
+ 

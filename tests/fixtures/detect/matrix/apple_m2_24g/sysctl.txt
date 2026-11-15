@@ -1,0 +1,4 @@
+hw.memsize: 25769803776
+hw.physicalcpu: 8
+hw.logicalcpu: 8
+machdep.cpu.brand_string: Apple M2

@@ -1,0 +1,488 @@
+[
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 0,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 0.908,
+    "red": 0.092
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 0.252,
+    "red": 0.748
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.0,
+    "red": 1.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 5,
+    "green": 0.147,
+    "grey": 0.853,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 10,
+    "green": 0.515,
+    "grey": 0.485,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 0,
+    "green": 0.001,
+    "grey": 0.999,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 0.936,
+    "red": 0.064
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.001,
+    "red": 0.999
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 5,
+    "green": 0.153,
+    "grey": 0.847,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 10,
+    "green": 0.556,
+    "grey": 0.444,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 0,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.997,
+    "red": 0.003
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 5,
+    "green": 0.164,
+    "grey": 0.836,
+    "red": 0.0
+  },
+  {
+    "tasks": 56,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 10,
+    "green": 0.535,
+    "grey": 0.465,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 0,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 0.889,
+    "red": 0.111
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 0.137,
+    "red": 0.863
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.0,
+    "red": 1.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 5,
+    "green": 0.174,
+    "grey": 0.826,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 10,
+    "green": 0.588,
+    "grey": 0.412,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 0,
+    "green": 0.001,
+    "grey": 0.999,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 0.999,
+    "red": 0.001
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 0.898,
+    "red": 0.102
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.0,
+    "red": 1.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 5,
+    "green": 0.187,
+    "grey": 0.813,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 10,
+    "green": 0.591,
+    "grey": 0.409,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 0,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.999,
+    "red": 0.001
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 5,
+    "green": 0.198,
+    "grey": 0.802,
+    "red": 0.0
+  },
+  {
+    "tasks": 120,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 10,
+    "green": 0.577,
+    "grey": 0.423,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 0,
+    "green": 0.0,
+    "grey": 0.999,
+    "red": 0.001
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 0.966,
+    "red": 0.034
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 0.528,
+    "red": 0.472
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.007,
+    "red": 0.993
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 5,
+    "green": 0.209,
+    "grey": 0.791,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.03,
+    "effect": 10,
+    "green": 0.421,
+    "grey": 0.579,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 0,
+    "green": 0.001,
+    "grey": 0.999,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 0.999,
+    "red": 0.001
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 0.965,
+    "red": 0.035
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.076,
+    "red": 0.924
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 5,
+    "green": 0.218,
+    "grey": 0.782,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.05,
+    "effect": 10,
+    "green": 0.411,
+    "grey": 0.589,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 0,
+    "green": 0.001,
+    "grey": 0.999,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -3,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -5,
+    "green": 0.0,
+    "grey": 1.0,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": -10,
+    "green": 0.0,
+    "grey": 0.998,
+    "red": 0.002
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 5,
+    "green": 0.203,
+    "grey": 0.797,
+    "red": 0.0
+  },
+  {
+    "tasks": 15,
+    "families_available": 12,
+    "delta": 0.12,
+    "effect": 10,
+    "green": 0.437,
+    "grey": 0.563,
+    "red": 0.0
+  }
+]

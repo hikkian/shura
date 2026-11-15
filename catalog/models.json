@@ -79,5 +79,65 @@
         "verified_context": 200000
       }
     }
+  ],
+  "pending": [
+    {
+      "id": "laptop-rtx3050-6g",
+      "status": "ждёт итога LAPTOPV1",
+      "note": "placeholder: the laptop model file and its numbers come from LAPTOPV1; not in models, so the planner does not choose it"
+    }
+  ],
+  "reference": [
+    {
+      "id": "tiel-apex-mtp-q8head",
+      "name": "Tiel-Coder APEX-I-MiniPlus V2.1 (MTP head Q8, local file)",
+      "arch": "qwen35moe",
+      "kind": "moe",
+      "params_total_b": 35,
+      "params_active_b": 3,
+      "n_layers": 40,
+      "n_experts": 256,
+      "experts_used": 8,
+      "expert_active_fraction": 0.3,
+      "context_max": 262144,
+      "kv_bytes_per_token_f16": 20480,
+      "capability": 10,
+      "default_quant": "APEX-I-MiniPlus-V2.1-q8mtp",
+      "license": "see the model card of peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP; the licence terms of the locally grafted Q8 MTP head are not confirmed",
+      "features": [
+        "mtp",
+        "vision"
+      ],
+      "source": {
+        "hf_repo": "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP",
+        "file_pattern": "Tiel-Coder-35B-A3B.APEX-I-MiniPlus-V2.1.q8mtp.gguf"
+      },
+      "quants": [
+        {
+          "id": "APEX-I-MiniPlus-V2.1-q8mtp",
+          "file_bytes": 15140702816,
+          "nonexpert_bytes": 2598384128,
+          "quality": 4,
+          "sha256": "29cd4fccfe1e8d50f303a4199df6b52da95355d6722aaf84d19a29779daccddd",
+          "note": "file_bytes and sha256 measured on disk; nonexpert_bytes copied from the Tiel IQ4_XS entry (same architecture), not re-measured"
+        }
+      ],
+      "tested": [
+        {
+          "hardware": "not confirmed for this entry",
+          "quant": "APEX-I-MiniPlus-V2.1-q8mtp",
+          "backend": "see tiel-coder-35b-a3b-mtp for the measured runs of the same architecture",
+          "result": "not measured in this entry",
+          "date": null
+        }
+      ],
+      "min_quant": "APEX-I-MiniPlus-V2.1-q8mtp",
+      "fork": {
+        "kv_type": "turbo3",
+        "kv_factor": 0.195,
+        "verified_context": 200000
+      },
+      "provenance": "Tiel-Coder = Ornith-1.5 in the APEX-I-MiniPlus V2.1 quant, source peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP (reports/SHURA-STATE.md). The q8mtp suffix is OUR local change: the MTP head was re-grafted in Q8, so this exact file (and its sha256, measured on disk 2026-11-15) exists only on our machine and cannot be downloaded by users until it is published. IsValorum/Qwen3.6-35B-A3B-MTP-APEX-I-MiniPlus-V2.1-GGUF is the plain Qwen3.6 in the same quant, not Tiel. The fork block below (turbo3 KV) describes the earlier engine; shura.cpp 1.0 has no TurboQuant types."
+    }
   ]
 }

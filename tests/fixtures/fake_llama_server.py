@@ -31,7 +31,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        self._send({"content": "" if mode == "empty" else " there was a little girl",
+        content = "" if mode == "empty" else "\ufffd\ufffd" if mode == "garbage" else " there was a little girl"
+        self._send({"content": content,
                     "timings": {"predicted_n": 24, "predicted_per_second": float(os.environ.get("FAKE_TOK_S", "50")),
                                 "prompt_per_second": 400.0}})
 

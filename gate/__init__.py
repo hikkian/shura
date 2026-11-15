@@ -1,0 +1,1 @@
+"""Paired statistical gate package."""

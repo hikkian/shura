@@ -27,3 +27,13 @@ bench/results/
 # Generated from bench/agentic-eval/families by build_tasks.py
 bench/agentic-eval/tasks/
 bench/agentic-eval/families/__pycache__/
+
+# CODEEVAL2: vendored JS deps for the frontend/backend eval tasks (built offline by bench/agentic-eval/prepare_vendor_js.sh)
+bench/agentic-eval/vendor_js/
+
+# EXAM200: built exam folders are reproducible (exam/build_v3r1.py, exam/build_extra_r1.py)
+bench/agentic-eval/exam/tasks_v3r1/
+bench/agentic-eval/exam/tasks_control_public_r1/
+bench/agentic-eval/exam/tasks_lh_r1/
+bench/agentic-eval/exam/__pycache__/
+bench/agentic-eval/exam/tasks_v3r1_ru/

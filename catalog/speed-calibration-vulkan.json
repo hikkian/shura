@@ -1,0 +1,38 @@
+{
+  "_about": "PUB5 / PUB5b: Vulkan speed-prediction coefficients fitted on open llama-bench data. The planner (installer/universal/planner.py, DEFAULTS vulkan_efficiency and vulkan_label) carries these numbers and applies the dense and Intel ones; the MoE one is recorded, not applied (see applied_to_planning). tests/test_speed_calibration.py keeps the two equal. Method and sources: docs/SPEED-ESTIMATES.md; rows: reports/pub5/vulkan_rows.csv.",
+  "method": "efficiency = tg128 tok/s x bytes read per token / peak memory bandwidth",
+  "dense": {
+    "model": "llama-2-7b Q4_0, 3.83 GB",
+    "backend": "vulkan",
+    "flash_attn": "off",
+    "efficiency": 0.67,
+    "basis": "lower quartile of RDNA3 and NVIDIA rows (median 0.72, quartiles 0.67/0.77, n=20)",
+    "label": "оценка, ±20 %",
+    "spread_check": "18 of 20 rows within ±20% of the median"
+  },
+  "moe": {
+    "model": "qwen3-30b-a3b Q4_K_M, about 2.0 GB active per token",
+    "backend": "vulkan",
+    "efficiency": 0.12,
+    "basis": "one card (RX 7900 XTX), one source; the same post's dense run on that card is inconsistent, so this is a lower bound until a second source",
+    "label": "оценка, ±50 %, мало данных",
+    "confidence": "low",
+    "applied_to_planning": false,
+    "why_not_applied": "one card, one source: applying it lowers the default quant of MoE models on AMD (Q4 to Q3), a quality loss on one measurement. Needs a second measurement first."
+  },
+  "intel_dense": {
+    "model": "llama-2-7b Q4_0, Intel Arc Vulkan, no flash attention",
+    "backend": "vulkan",
+    "efficiency": 0.43,
+    "basis": "median of the four Intel Arc rows (0.32-0.59); RDNA3 and NVIDIA are higher",
+    "label": "оценка, ±50 %, мало данных",
+    "confidence": "low"
+  },
+  "unchanged": ["hip", "cuda", "hipfork_time_penalty", "fork"],
+  "sources": [
+    "https://github.com/ggml-org/llama.cpp/discussions/10879",
+    "https://github.com/ggml-org/llama.cpp/discussions/15021",
+    "https://forum.radxa.com/t/llama-cpp-benchmarks/27813/17",
+    "https://github.com/ggml-org/llama.cpp/issues/17751"
+  ]
+}

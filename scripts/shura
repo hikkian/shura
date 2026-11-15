@@ -5,16 +5,23 @@
 #   shura launch     pick a project folder in a dialog, then open ShuraCode there in a terminal window
 #   shura window     open a separate Shura window for the current folder
 #   shura status     gateway / model state, RAM and VRAM headroom
+#   shura monitor    open the compact Shura Monitor window
+#   shura doctor     preflight checks for backend, memory, disk, gateway, service and model
 #   shura warm       load the model now
-#   shura unload     unload the model now (frees RAM/VRAM; long session is saved to disk)
+#   shura unload     unload the model now (frees RAM/VRAM; long session is saved to disk); --force cuts an answer in progress
 #   shura pause | resume  game-mode pause / request-based resume (requires opt-in)
 #   shura off | on   disable / re-enable the AI entirely
 #   shura logs       follow gateway + llama-server logs
 #   shura restart    restart the gateway service
+#   shura memory     the knowledge store: save | search | read | fix | forget [--purge] | restore | export | import | stats (no gateway, no model)
 #   shura check      describe this machine and show what Shura would pick for it (installs nothing)
 #   shura report     write an anonymous hardware report to paste into a GitHub issue
 #   shura install    any OS/GPU/CPU: download, test and set up the best configuration (--dry-run shows the plan)
 #   shura start|stop run / stop the server installed by `shura install` (the Linux+NVIDIA setup.sh uses the gateway)
+#   shura uninstall  remove downloaded files; add --all for full Shura removal (asks first)
+#
+# Timeouts (seconds): SHURA_HTTP_TIMEOUT (off/on/unload, default 60), SHURA_PROBE_TIMEOUT (is the gateway there, default 10),
+# SHURA_WARM_TIMEOUT (default 300), SHURA_START_WAIT (wait for a started gateway, default 20), SHURA_BUSY_WAIT (default 60).
 #
 # Works with any desktop and terminal. Terminal: $SHURA_TERMINAL, then $TERMINAL, then the first one
 # found. Folder dialog: zenity, kdialog or yad (optional).
@@ -30,23 +37,114 @@ notify() {
   echo "$1"
 }
 
-ensure_gateway() {
-  if ! curl -s --max-time 2 "$GW/guardian/status" >/dev/null; then
-    systemctl --user start ai-gateway.service
-    for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s --max-time 1 "$GW/guardian/status" >/dev/null && return; sleep 0.5; done
-    notify "Gateway did not start - see: shura logs"; exit 1
-  fi
+fail() {  # a failed command must be visible: desktop notification (the launcher has no terminal) + stderr + exit 1
+  if command -v notify-send >/dev/null; then notify-send -a Shura "Shura" "$1" || true; fi
+  echo "$1" >&2
+  exit 1
 }
 
-warm() {  # a 1-token request makes the gateway load the model (and restore the last long session)
-  curl -s --max-time 300 "$GW/v1/chat/completions" -H 'Content-Type: application/json' \
-    -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}' >/dev/null
+HTTP_TIMEOUT="${SHURA_HTTP_TIMEOUT:-60}"
+# With an apiKey configured the gateway's switches ask for it: SHURA_API_KEY, else the key in model-launch.json.
+API_KEY="${SHURA_API_KEY:-}"
+if [ -z "$API_KEY" ]; then
+  API_KEY="$(python3 - "${AI_GATEWAY_CONFIG:-$REPO_DIR/config}/model-launch.json" 2>/dev/null <<'PY' || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("apiKey") or "")
+except Exception:
+    pass
+PY
+)"
+fi
+PROBE_TIMEOUT="${SHURA_PROBE_TIMEOUT:-10}"
+WARM_TIMEOUT="${SHURA_WARM_TIMEOUT:-300}"
+START_WAIT="${SHURA_START_WAIT:-20}"
+BUSY_WAIT="${SHURA_BUSY_WAIT:-60}"
+OFF_WAIT="${SHURA_OFF_WAIT:-10}"      # how long `shura off` waits for the model to leave READY
+
+probe_gateway() {  # 0 = answers; 1 = nobody listens (refused, unreachable); 2 = the connection was accepted but no answer in time
+  local rc=0                  # (the gateway holds its lock while it saves a session: busy is not dead, and must not be restarted)
+  curl -s --max-time "$1" -o /dev/null "$GW/guardian/status" || rc=$?
+  case "$rc" in 0) return 0 ;; 28) return 2 ;; *) return 1 ;; esac
+}
+
+ensure_gateway() {
+  local rc=0 waited=0 i
+  probe_gateway "$PROBE_TIMEOUT" || rc=$?
+  [ "$rc" = 0 ] && return 0
+  if [ "$rc" = 2 ]; then
+    while [ "$waited" -lt "$BUSY_WAIT" ]; do
+      rc=0; probe_gateway "$PROBE_TIMEOUT" || rc=$?
+      [ "$rc" = 0 ] && return 0
+      [ "$rc" = 2 ] || break
+      waited=$((waited + PROBE_TIMEOUT))
+    done
+    if [ "$rc" = 2 ]; then
+      echo "Gateway is busy (no answer for ${waited}s, probably saving or loading a session) - continuing without restarting it" >&2
+      return 0
+    fi
+  fi
+  if ! systemctl --user cat ai-gateway.service >/dev/null 2>&1; then
+    fail "Gateway is not running and there is no ai-gateway service. Plain 'shura' needs the gateway of the Linux+NVIDIA setup (setup.sh); a machine set up with 'shura install' uses: shura start, shura status"
+  fi
+  systemctl --user start ai-gateway.service
+  for ((i = 0; i < START_WAIT * 2; i++)); do
+    probe_gateway 1 && return 0
+    sleep 0.5
+  done
+  fail "Gateway did not start - see: shura logs"
+}
+
+GW_ERR="" GW_BODY=""
+gw_post() {  # POST $1 to the gateway; 0 only for an HTTP 2xx. Otherwise GW_ERR says what happened.
+  local tmp code rc=0
+  tmp="$(mktemp)"
+  code="$(curl -s --max-time "${2:-$HTTP_TIMEOUT}" -o "$tmp" -w '%{http_code}' -X POST ${API_KEY:+-H "Authorization: Bearer $API_KEY"} "$GW$1")" || rc=$?
+  GW_BODY="$(head -c 500 "$tmp")"; rm -f "$tmp"
+  if [ "$rc" = 0 ] && [ "${code:0:1}" = 2 ]; then return 0; fi
+  case "$rc" in
+    0)  GW_ERR="the gateway at $GW answered HTTP $code${GW_BODY:+: $GW_BODY}" ;;
+    7)  GW_ERR="the gateway is not running at $GW (start it with: shura restart)" ;;
+    28) GW_ERR="no answer from the gateway within ${2:-$HTTP_TIMEOUT}s (busy saving a session?); it may still finish, check: shura status" ;;
+    *)  GW_ERR="the request to $GW$1 failed (curl exit $rc)" ;;
+  esac
+  return 1
+}
+
+warm() {  # a 1-token request makes the gateway load the model (and restore the last long session); 0 only if it answered 2xx
+  local tmp code rc=0
+  tmp="$(mktemp)"
+  code="$(curl -s --max-time "$WARM_TIMEOUT" -o "$tmp" -w '%{http_code}' "$GW/v1/chat/completions" -H 'Content-Type: application/json' \
+    ${API_KEY:+-H "Authorization: Bearer $API_KEY"} \
+    -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":1}')" || rc=$?
+  GW_BODY="$(head -c 500 "$tmp")"; rm -f "$tmp"
+  if [ "$rc" = 0 ] && [ "${code:0:1}" = 2 ]; then return 0; fi
+  case "$rc" in
+    0)  GW_ERR="the gateway refused (HTTP $code)${GW_BODY:+: $GW_BODY}" ;;
+    28) GW_ERR="the model was not ready within ${WARM_TIMEOUT}s; it may still be loading, check: shura status" ;;
+    *)  GW_ERR="could not reach the gateway at $GW (curl exit $rc)" ;;
+  esac
+  return 1
+}
+
+model_state() {  # prints the model status word of the gateway, or nothing
+  curl -s --max-time 5 "$GW/guardian/status" 2>/dev/null | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("status", ""))
+except Exception: pass' 2>/dev/null || true
 }
 
 status() {
   local js
-  js="$(curl -s --max-time 5 "$GW/guardian/status")" || js=""
-  if [ -z "$js" ]; then echo "gateway is not running - start it with: shura restart"; return 1; fi
+  local rc=0
+  js="$(curl -s --max-time "$PROBE_TIMEOUT" "$GW/guardian/status")" || rc=$?
+  if [ -z "$js" ]; then
+    if [ "$rc" = 28 ]; then      # it accepted the connection: it is alive, busy (saving a session); restarting it would kill the model
+      echo "gateway is busy (no answer within ${PROBE_TIMEOUT}s, probably saving or loading a session) - try again in a moment, do not restart it"
+    else
+      echo "gateway is not running - start it with: shura restart"
+    fi
+    return 1
+  fi
   SHURA_STATUS="$js" python3 - <<'PY'
 import json, os
 d = json.loads(os.environ["SHURA_STATUS"])
@@ -69,6 +167,20 @@ if d.get("game_mode", {}).get("enabled"):
     g = d["game_mode"]
     print(f"game mode  : {g['reason'] or 'quiet'} ({g['elapsed_seconds']} s), active={g['active']}")
     if g.get("errors"): print("game errors: " + "; ".join(g["errors"]))
+p = d.get("polite_model", {})
+if p.get("enabled"):
+    print(f"polite CPU : {p.get('mode', 'dynamic')} L{p['level']}, weight={p.get('weight')}, available={p['available']}" + (" - " + p['error'] if p.get('error') else ""))
+g = d.get("slot_gears", {})
+if g.get("enabled"):
+    for model, gear in g.get("models", {}).items():
+        print(f"slot gears : {model} {gear['slots']} - {gear['reason']}")
+v = d.get("vram_valve", {})
+if v.get("enabled"):
+    if v.get("models"):
+        for model, valve in v["models"].items():
+            print(f"vram valve : {model} {valve['slots']}/{valve['configured_max']} - {valve['reason']}")
+    else:
+        print("vram valve : enabled; waiting for model")
 if d["status"] == "READY":
     print(f"idle       : {d['idle_seconds']} s (auto-unload after {d['idle_unload_after_seconds']} s)")
 PY
@@ -130,17 +242,27 @@ case "${1:-}" in
   "")      ensure_gateway; (warm &) ; exec shuracode ;;
   launch)  launch ;;
   window)  open_terminal "$PWD" ;;
-  status)  if [ -f "${SHURA_HOME:-$HOME/.local/share/shura}/state.json" ] && ! systemctl --user cat ai-gateway.service >/dev/null 2>&1; then
+  status)  if [ -f "${SHURA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/shura}/state.json" ] && ! systemctl --user cat ai-gateway.service >/dev/null 2>&1; then
              exec python3 "$REPO_DIR/installer/universal/cli.py" status      # installed by `shura install`: no gateway
            else status; fi ;;
-  warm)    ensure_gateway; s=$(date +%s); warm; notify "Model loaded in $(( $(date +%s) - s ))s" ;;
-  unload)  curl -s -X POST "$GW/guardian/unload" >/dev/null && notify "Model unloaded" ;;
-  pause|resume) curl --fail-with-body -s -X POST "$GW/guardian/$1"; echo ;;
-  off)     curl -s -X POST "$GW/guardian/ai-off" >/dev/null && notify "AI disabled (shura on to re-enable)" ;;
-  on)      curl -s -X POST "$GW/guardian/ai-on" >/dev/null && notify "AI enabled" ;;
+  monitor) exec python3 "$REPO_DIR/installer/universal/monitor_window.py" "${@:2}" ;;
+  doctor) if [ "${2:-}" = "--hw-dump" ]; then exec python3 "$REPO_DIR/installer/universal/hw_dump.py" "${@:2}"; fi
+          exec python3 "$REPO_DIR/installer/universal/cli.py" doctor "${@:2}" ;;
+  warm)    ensure_gateway; s=$(date +%s); warm || fail "Model was not loaded: $GW_ERR"; notify "Model loaded in $(( $(date +%s) - s ))s" ;;
+  unload)  path=/guardian/unload; [ "${2:-}" = "--force" ] && path="$path?force=1"
+           gw_post "$path" || fail "Model was not unloaded: $GW_ERR"; notify "Model unloaded" ;;
+  pause|resume) curl --fail-with-body -s --max-time "$HTTP_TIMEOUT" -X POST "$GW/guardian/$1"; echo ;;
+  off)     gw_post /guardian/ai-off || fail "AI was NOT disabled: $GW_ERR"
+           for ((i = 0; i < OFF_WAIT; i++)); do [ "$(model_state)" = READY ] || break; sleep 1; done
+           if [ "$(model_state)" = READY ]; then
+             echo "Warning: AI is disabled, but the model still reports READY (it is freed when the running request ends). Check: shura status" >&2
+           fi
+           notify "AI disabled (shura on to re-enable)" ;;
+  on)      gw_post /guardian/ai-on || fail "AI was NOT enabled: $GW_ERR"; notify "AI enabled" ;;
   logs)    exec journalctl --user -u ai-gateway -f -o cat ;;
   restart) systemctl --user restart ai-gateway.service && notify "Gateway restarted" ;;
+  memory)  exec python3 "$REPO_DIR/gateway/lifelong_store.py" "${@:2}" ;;
   check|report|install|uninstall|start|stop) exec python3 "$REPO_DIR/installer/universal/cli.py" "$@" ;;
-  -h|--help|help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help|help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   *)       echo "unknown command: $1 (see: shura help)"; exit 2 ;;
 esac

@@ -1,0 +1,13 @@
+{
+ "rule": "pre-registered for the RSIL0c pilot: the six dev ideas with the smallest sha256(\"20261021:<idea>\"); the rest of the dev part is for RSI1",
+ "seed": 20261021,
+ "ideas": [
+  "changelog",
+  "histogram",
+  "numwords",
+  "rle",
+  "rooms",
+  "undo"
+ ],
+ "expected_tasks": 48
+}

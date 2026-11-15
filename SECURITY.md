@@ -16,6 +16,35 @@ Anyone who can reach the gateway can run the model, unload it, or disable it thr
 If you need remote access, put it behind an authenticated tunnel such as SSH port forwarding or
 Tailscale, and set `apiKey`.
 
+### Web pages in your browser
+
+A page open in your browser can send requests to `127.0.0.1` too, so the gateway does not trust a request just because it
+comes from this machine. It refuses what a browser can send for a stranger:
+
+- a `Host` header that is not this machine (a DNS-rebinding page uses its own name);
+- an `Origin` that is not the gateway's own page. To let a web UI of yours call the gateway, list its origin in
+  `allowedOrigins` in `guardian.json` (for example `["http://localhost:3000"]`); the gateway then answers that origin only,
+  never `*`;
+- a request the browser marks as cross-site (`Sec-Fetch-Site`), which also covers an `<img>` tag;
+- a GET on anything under `/guardian/` that changes something: those endpoints take POST only.
+
+llama-server's own CORS headers (it answers every web page by default) are removed from what the gateway relays, and the
+server is started with `--cors-origins` limited to its own origin (one value: the option does not take a list) when the binary supports it. Requests to `/health`,
+`/v1/models` and `OPTIONS` never load the model.
+
+With `apiKey` set in `model-launch.json` (or `gatewayApiKey` in `guardian.json`), everything that changes something or could wake the
+model needs `Authorization: Bearer <key>`: the switches under `/guardian/`, every POST/PUT/DELETE, and the monitor's data.
+Reading `GET /guardian/status`, `GET /health` and `/v1/models` stays open. The key is handed to llama-server through a private file
+(`~/.local/state/ai-gateway/llama-api-key`, mode 600), not on its command line (if the file cannot be written, the command line is
+used as before). `shura off/on/unload/warm` send the key from `SHURA_API_KEY` or `model-launch.json`.
+
+Limits against a local program that misbehaves (all in `guardian.json`): `maxRequestBytes` (32 MiB), `maxConnections` (64),
+`requestHeaderSeconds` (30: all the headers of a request must arrive within this), `requestBodySeconds` (120), `clientIdleSeconds`
+(300, an idle keep-alive connection), `upstreamIdleSeconds` (600 without a byte from a running answer), `allowedHosts`,
+`allowedOrigins`. A client that goes away while the model is still thinking has its generation stopped (`watchClientLeave`, on by
+default); a client that half-closes its sending side and keeps waiting (an HTTP/1.0 or `Connection: close` request is exempt; an
+HTTP/1.1 `nc -N` is not) would be cut off, so set `watchClientLeave` to `false` if you have such a tool.
+
 ## The agent runs commands on your machine
 
 ShuraCode executes shell commands and edits files with your user's permissions. Its shipped config

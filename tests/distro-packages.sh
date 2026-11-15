@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# Runs inside a distro container: detects the family, installs the build packages setup.sh would install,
-# checks the tools exist and that NVIDIA's CUDA repository URL for this release is reachable.
+# Runs inside a distro container (or anywhere with bash): detects the family and checks that pkg_install only PRINTS the
+# install command for each family (dnf / apt-get / pacman) and runs nothing. No network, no sudo, nothing installed.
 set -euo pipefail
-if ! command -v sudo >/dev/null; then  # containers run as root without sudo
-  printf '#!/bin/sh\nexec "$@"\n' > /usr/local/bin/sudo
-  chmod +x /usr/local/bin/sudo
-fi
 # shellcheck disable=SC1091  # setup.sh is mounted at /repo inside the container
-SHURA_SOURCE_ONLY=1 . /repo/setup.sh
+SHURA_SOURCE_ONLY=1 . "${SETUP_SH:-/repo/setup.sh}"
 detect_family
 echo "family=$FAMILY os=$OS_NAME"
+orig="$FAMILY"
 read -ra PKGS <<< "$(build_packages)"
-case "$FAMILY" in arch) pacman -Sy --noconfirm >/dev/null ;; esac
-pkg_install "${PKGS[@]}" >/tmp/pkg.log 2>&1 || { tail -20 /tmp/pkg.log; exit 1; }
-for t in git curl cmake node npm python3; do command -v "$t" >/dev/null || { echo "MISSING $t"; exit 1; }; done
-command -v ninja >/dev/null || command -v ninja-build >/dev/null || { echo "MISSING ninja"; exit 1; }
-echo "tools: cmake $(cmake --version | head -1 | awk '{print $3}'), node $(node --version), python $(python3 --version | awk '{print $2}')"
+[ "${#PKGS[@]}" -gt 0 ] || { echo "build_packages is empty for $FAMILY"; exit 1; }
+bin="$(mktemp -d)"; trap 'rm -rf "$bin"' EXIT
+for tool in sudo dnf apt-get pacman; do  # tripwires: if pkg_install ran any of them, the marker appears
+  printf '#!/bin/sh\necho "$0 $*" >> "%s/ran"\nexit 0\n' "$bin" > "$bin/$tool"; chmod +x "$bin/$tool"
+done
+for fam in fedora debian arch; do
+  FAMILY=$fam
+  case "$fam" in fedora) want="dnf install" ;; debian) want="apt-get install" ;; arch) want="pacman -S" ;; esac
+  if PATH="$bin:$PATH" pkg_install git curl >"$bin/out" 2>&1; then echo "pkg_install returned 0 for $fam (it must not install)"; exit 1; fi
+  line="$(grep -F "sudo " "$bin/out" || true)"
+  case "$line" in *"$want"*"git curl"*) ;; *) echo "pkg_install printed no $fam command: $line"; exit 1 ;; esac
+  echo "$fam: $line"
+done
+[ ! -e "$bin/ran" ] || { echo "pkg_install ran a command: $(cat "$bin/ran")"; exit 1; }
+FAMILY="$orig"
 url="$(cuda_repo_url)"
-if [ -n "$url" ]; then
-  code="$(curl -s -o /dev/null -w '%{http_code}' -I "$url")"; echo "cuda repo: $code $url"; [ "$code" = 200 ]
-else
-  echo "cuda: from distro repos (pacman -S cuda)"; pacman -Si cuda >/dev/null && echo "cuda package available"
-fi
+echo "cuda repo url for $FAMILY: ${url:-"(distro repos)"}"
 echo "OK"

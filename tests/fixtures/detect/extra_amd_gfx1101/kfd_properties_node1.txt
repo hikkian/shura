@@ -1,0 +1,4 @@
+cpu_cores_count 0
+simd_count 120
+gfx_target_version 110001
+vendor_id 4098

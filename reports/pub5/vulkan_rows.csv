@@ -1,0 +1,42 @@
+gpu,family,vram_gb,peak_gbs,peak_source,model,quant,flash_attn,bytes_per_token_gb,tg128_tok_s,eff,source,use,note
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,182.63,0.729,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 7900 XT,RDNA3,20,800,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,123.18,0.59,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 7800 XT,RDNA3,16,624,search: 256-bit x 19.5 Gbps,llama2-7b,Q4_0,no,3.83,118.27,0.726,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 7900 GRE,RDNA3,16,576,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,116.11,0.772,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 7600,RDNA3,8,288,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,58.03,0.772,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 7600 XT,RDNA3,16,288,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,53.02,0.705,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 6900 XT,RDNA2,16,512,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,108.0,0.808,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6800 XT,RDNA2,16,512,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,100.32,0.75,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6800,RDNA2,16,512,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,101.47,0.759,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6750 XT,RDNA2,12,432,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,81.98,0.727,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6700 XT,RDNA2,12,384,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,83.88,0.837,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6650 XT,RDNA2,8,280,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,62.14,0.85,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6600 XT,RDNA2,8,256,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,53.92,0.807,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RX 6600,RDNA2,8,224,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,50.57,0.865,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Infinity Cache
+RTX 4090,NVIDIA,24,1008,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,187.97,0.714,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 4080 Super,NVIDIA,16,736,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,147.13,0.766,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 4070 Ti Super,NVIDIA,16,672,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,129.45,0.738,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 4070 Ti,NVIDIA,12,504,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,110.53,0.84,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 4070 Super,NVIDIA,12,504,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,108.74,0.826,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 4070,NVIDIA,12,504,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,92.29,0.701,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RTX 3090,NVIDIA,24,936,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,164.05,0.671,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 3080,NVIDIA,10,760,spec for the 10 GB card; the row does not say which,llama2-7b,Q4_0,no,3.83,139.15,0.701,https://github.com/ggml-org/llama.cpp/discussions/10879,0,VRAM variant unknown
+RTX 3070,NVIDIA,8,448,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,78.71,0.673,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RTX 3060 Ti,NVIDIA,8,448,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,86.74,0.742,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RTX 3060,NVIDIA,12,360,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,75.94,0.808,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+Arc A770,Intel,16,560,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,52.56,0.359,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Intel Arc: lower efficiency
+Arc A750,Intel,8,512,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,42.66,0.319,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Intel Arc: lower efficiency
+Arc B580,Intel,12,456,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,70.14,0.589,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Intel Arc: lower efficiency
+Arc B570,Intel,10,380,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,49.64,0.5,https://github.com/ggml-org/llama.cpp/discussions/10879,1,Intel Arc: lower efficiency
+RX 7800 XT,RDNA3,16,624,search: 256-bit x 19.5 Gbps,llama2-7b,Q4_0,yes,3.83,124.86,0.766,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",llama2-7b,Q4_0,yes,3.83,190.92,0.762,https://github.com/ggml-org/llama.cpp/discussions/10879,1,
+RTX 4090,NVIDIA,24,1008,"spec, not re-checked",llama2-7b,Q4_0,yes,3.83,190.1,0.722,https://github.com/ggml-org/llama.cpp/discussions/10879,1,coopmat2
+RX 7800 XT,RDNA3,16,624,search: 256-bit x 19.5 Gbps,llama2-7b,Q4_0,no,3.83,96.89,0.595,https://github.com/ggml-org/llama.cpp/discussions/15021,1,"comment, other build"
+RX 7600 XT,RDNA3,16,288,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,52.84,0.703,https://github.com/ggml-org/llama.cpp/discussions/15021,1,"comment, other build"
+RX 6800 XT,RDNA2,16,512,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,91.59,0.685,https://github.com/ggml-org/llama.cpp/discussions/10879,1,"comment, Jan 2025 build"
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,136.24,0.544,https://github.com/ggml-org/llama.cpp/discussions/10879,1,"comment, Jan 2025 build, one device"
+RTX 3090,NVIDIA,24,936,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,123.72,0.506,https://github.com/ggml-org/llama.cpp/discussions/10879,1,"comment, Jan 2025 build"
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",qwen3-30b-a3b,Q4_K_M,no,2.0,57.64,0.12,https://forum.radxa.com/t/llama-cpp-benchmarks/27813/17,1,"one card, one build; see report"
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",qwen3-30b-a3b,Q4_K_M,no,2.0,61.92,0.129,https://forum.radxa.com/t/llama-cpp-benchmarks/27813/17,1,"taskset variant, -t 8"
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",qwen3-30b-a3b,Q4_K_M,no,2.0,62.28,0.13,https://forum.radxa.com/t/llama-cpp-benchmarks/27813/17,1,"taskset variant, -t 1"
+RX 7900 XTX,RDNA3,24,960,"spec, not re-checked",llama2-7b,Q4_0,no,3.83,99.82,0.398,https://forum.radxa.com/t/llama-cpp-benchmarks/27813/17,0,same post: contradicts the scoreboard (182.6) on the same card; build or settings differ

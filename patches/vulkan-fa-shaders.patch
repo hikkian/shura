@@ -1,0 +1,90 @@
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -18811,7 +18811,7 @@
+                 if (op->src[3] && op->src[3]->type != GGML_TYPE_F16) {
+                     return false;
+                 }
+-                auto fa_kv_ok = [](ggml_type t) {
++                auto fa_kv_ok = [coopmat2](ggml_type t) {
+                     switch (t) {
+                     case GGML_TYPE_F32:
+                     case GGML_TYPE_F16:
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/fa_types.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/fa_types.glsl
+@@ -27,6 +27,9 @@
+         case FA_TYPE_Q8_0: return uint(QUANT_K_Q8_0);
+         case FA_TYPE_IQ4_NL: return uint(QUANT_K_IQ4_NL);
+         case FA_TYPE_BF16: return 1u;
++        case 43u:          return uint(QUANT_K_TURBO2_0); // GGML_TYPE_TURBO2_0
++        case 44u:          return uint(QUANT_K_TURBO3_0); // GGML_TYPE_TURBO3_0
++        case 45u:          return uint(QUANT_K_TURBO4_0); // GGML_TYPE_TURBO4_0
+         default:           return 1u;
+     }
+ }
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
+@@ -98,40 +98,7 @@
+ #define O_TYPEV4 FLOAT_TYPEV4
+ #endif
+ 
+-// Number of matrix elements per buffer block, derived from the K/V type spec
+-// constant. F32 is treated as a vec4 "block" of 4 floats. F16 uses block size 1
+-// and bypasses the dequant path entirely. Quants follow their ggml block sizes.
+-uint fa_block_elems(uint ty) {
+-    switch (ty) {
+-        case FA_TYPE_F32:  return 4u;
+-        case FA_TYPE_F16:  return 1u;
+-        case FA_TYPE_Q4_0: return uint(QUANT_K_Q4_0);
+-        case FA_TYPE_Q4_1: return uint(QUANT_K_Q4_1);
+-        case FA_TYPE_Q5_0: return uint(QUANT_K_Q5_0);
+-        case FA_TYPE_Q5_1: return uint(QUANT_K_Q5_1);
+-        case FA_TYPE_Q8_0: return uint(QUANT_K_Q8_0);
+-        case FA_TYPE_BF16: return 1u;
+-        case FA_TYPE_Q1_0: return uint(QUANT_K_Q1_0); // cm2-only, harmless elsewhere
+-        case 43u:          return uint(QUANT_K_TURBO2_0); // GGML_TYPE_TURBO2_0
+-        case 44u:          return uint(QUANT_K_TURBO3_0); // GGML_TYPE_TURBO3_0
+-        case 45u:          return uint(QUANT_K_TURBO4_0); // GGML_TYPE_TURBO4_0
+-        default:           return 1u;
+-    }
+-}
+-
+-// QUANT_R_MMQ for FA-eligible K types. Q4_*/Q5_* store two nibbles per byte
+-// (R==2); Q8_0 stores one byte per element (R==1). Used to derive the number
+-// of int32s per 32-element block on the MMQ K path: ints_per_block == 8 / R.
+-uint fa_quant_r_mmq(uint ty) {
+-    switch (ty) {
+-        case FA_TYPE_Q4_0: return uint(QUANT_R_Q4_0);
+-        case FA_TYPE_Q4_1: return uint(QUANT_R_Q4_1);
+-        case FA_TYPE_Q5_0: return uint(QUANT_R_Q5_0);
+-        case FA_TYPE_Q5_1: return uint(QUANT_R_Q5_1);
+-        case FA_TYPE_Q8_0: return uint(QUANT_R_Q8_0);
+-        default:           return 1u;
+-    }
+-}
++// fa_block_elems() and fa_quant_r_mmq() come from fa_types.glsl (included above).
+ 
+ // These can't be `const` globals because GLSL forbids function calls in global
+ // const initializers, even when the spec constants would let the driver fold
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -709,14 +709,18 @@
+             // the shader gets turbo-only K/V bindings (no f16 alias) and the dequant
+             // path runs the per-element centroid lookup (graph applies WHT to Q
+             // pre-attention and inverse WHT to output post-attention).
++            // The turbo K/V types never use IQ4_NL, and the IQ4_NL block of types.glsl would redefine
++            // QUANT_K/QUANT_R/A_TYPE next to the turbo block, so the IQ4_NL define is left out of these variants.
++            std::map<std::string, std::string> turbo_base_dict = fa_base_dict;
++            turbo_base_dict.erase("DATA_A_IQ4_NL");
+             for (std::string turbo : {"turbo2_0", "turbo3_0", "turbo4_0"}) {
+                 const std::string data_a = "DATA_A_" + to_uppercase(turbo);
+                 string_to_spv("flash_attn_f32_f16_" + turbo, "flash_attn.comp",
+-                    merge_maps(fa_base_dict, {{data_a, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}}), fp16, false, false, f16acc);
++                    merge_maps(turbo_base_dict, {{data_a, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}}), fp16, false, false, f16acc);
+ #if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
+                 if (fp16) {
+                     string_to_spv("flash_attn_f32_f16_" + turbo, "flash_attn_cm1.comp",
+-                        merge_maps(fa_base_dict, {{data_a, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"COOPMAT", "1"}}), fp16, true, false, f16acc);
++                        merge_maps(turbo_base_dict, {{data_a, "1"}, {"Q_TYPE", "float"}, {"D_TYPE", "float"}, {"D_TYPEV4", "vec4"}, {"COOPMAT", "1"}}), fp16, true, false, f16acc);
+                 }
+ #endif
+             }

@@ -1,0 +1,48 @@
+# forktune1: переключатели LLAMA_GDN_FUSED_CH и варианты fattn-vec (по умолчанию прежнее поведение).
+# Источник: собственная правка проекта, измерения в reports/REPORT-FORKTUNE1.md.
+diff --git a/ggml/src/ggml-cuda/fattn-vec.cuh b/ggml/src/ggml-cuda/fattn-vec.cuh
+index c904772..e132a54 100644
+--- a/ggml/src/ggml-cuda/fattn-vec.cuh
++++ b/ggml/src/ggml-cuda/fattn-vec.cuh
+@@ -73,11 +73,17 @@ static __global__ void flash_attn_ext_vec(
+ 
+ #ifdef GGML_USE_HIP
+ #ifdef RDNA
+-    constexpr int nthreads_KQ_q = 2;
++#ifndef GGML_HIP_FA_VEC_KQ_Q
++#define GGML_HIP_FA_VEC_KQ_Q 2
++#endif
++    constexpr int nthreads_KQ_q = GGML_HIP_FA_VEC_KQ_Q;
+ #else
+     constexpr int nthreads_KQ_q = 4;
+ #endif // RDNA
+-    constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
++#ifndef GGML_HIP_FA_VEC_V_Q
++#define GGML_HIP_FA_VEC_V_Q (D/4 < 32 ? D/4 : 32)
++#endif
++    constexpr int nthreads_V_q  = GGML_HIP_FA_VEC_V_Q;
+ #else
+     constexpr int nthreads_KQ_q = (D/4 < 32 ? D/4 : 32);
+     constexpr int nthreads_V_q  = (D/4 < 32 ? D/4 : 32);
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index bce0c59..f93fdfc 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -15,6 +15,7 @@
+ 
+ #include <cinttypes>
+ #include <cmath>
++#include <cstdlib>
+ #include <cstring>
+ #include <limits>
+ #include <mutex>
+@@ -233,6 +234,9 @@ llama_context::llama_context(
+ 
+     cparams.fused_gdn_ar = true;
+     cparams.fused_gdn_ch = true;
++    if (const char * env = std::getenv("LLAMA_GDN_FUSED_CH")) {
++        cparams.fused_gdn_ch = std::strcmp(env, "0") != 0;
++    }
+     cparams.auto_fgdn    = false;
+ 
+     cparams.fused_lid = true;

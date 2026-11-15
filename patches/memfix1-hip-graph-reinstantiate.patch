@@ -1,0 +1,159 @@
+diff --git a/ggml/src/ggml-cuda/common.cuh b/ggml/src/ggml-cuda/common.cuh
+index 5295fc6..0956402 100644
+--- a/ggml/src/ggml-cuda/common.cuh
++++ b/ggml/src/ggml-cuda/common.cuh
+@@ -5,6 +5,7 @@
+ #include "ggml-cuda.h"
+ 
+ #include <cstdint>
++#include <atomic>
+ #include <cstdlib>
+ #include <memory>
+ #include <mutex>
+@@ -1228,9 +1229,27 @@ struct ggml_tensor_extra_gpu {
+ #define USE_CUDA_GRAPH
+ #endif
+ 
++#ifdef USE_CUDA_GRAPH
++// Lifecycle counters of the graph cache, printed by ggml_cuda_graph_stats_log() when GGML_CUDA_GRAPH_STATS is set.
++struct ggml_cuda_graph_stats {
++    std::atomic<uint64_t> captures{0};      // stream captures (one new cudaGraph_t each)
++    std::atomic<uint64_t> instantiates{0};  // cudaGraphInstantiate calls
++    std::atomic<uint64_t> exec_updates{0};  // cudaGraphExecUpdate calls
++    std::atomic<uint64_t> launches{0};      // cudaGraphLaunch calls
++    std::atomic<uint64_t> direct_runs{0};   // graphs evaluated without a cuda graph
++    std::atomic<uint64_t> destroyed{0};     // ggml_cuda_graph objects destroyed (evicted or replaced)
++};
++
++inline ggml_cuda_graph_stats & ggml_cuda_graph_stats_get() {
++    static ggml_cuda_graph_stats stats;
++    return stats;
++}
++#endif
++
+ struct ggml_cuda_graph {
+ #ifdef USE_CUDA_GRAPH
+     ~ggml_cuda_graph() {
++        ggml_cuda_graph_stats_get().destroyed++;
+         if (instance != nullptr) {
+             CUDA_CHECK(cudaGraphExecDestroy(instance));
+         }
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index e76ed87..4c66659 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2720,9 +2720,60 @@ static bool ggml_cuda_graph_update_required(ggml_backend_cuda_context * cuda_ctx
+     return res;
+ }
+ 
++// On ROCm an executable graph never gives back the kernel-argument slots it took, and every
++// hipGraphExecUpdate takes new ones (ROCm/rocm-systems#10713), so an exec that is updated after
++// each re-capture grows until it is destroyed. Destroying and re-instantiating frees the slots.
++// GGML_HIP_GRAPH_EXEC_UPDATE=1 restores the update path on HIP; GGML_CUDA_GRAPH_REINSTANTIATE=1
++// selects re-instantiation on CUDA.
++static bool ggml_cuda_graph_reinstantiate_on_update() {
++#if defined(GGML_USE_HIP)
++    static const bool keep_update = getenv("GGML_HIP_GRAPH_EXEC_UPDATE") != nullptr;
++    return !keep_update;
++#else
++    static const bool reinstantiate = getenv("GGML_CUDA_GRAPH_REINSTANTIATE") != nullptr;
++    return reinstantiate;
++#endif // defined(GGML_USE_HIP)
++}
++
++// GGML_CUDA_GRAPH_STATS=<seconds> prints the graph cache counters at most once per interval (default 60 s).
++static void ggml_cuda_graph_stats_log(ggml_backend_cuda_context * cuda_ctx) {
++    static const int64_t interval_us = [] {
++        const char * env = getenv("GGML_CUDA_GRAPH_STATS");
++        if (env == nullptr) {
++            return (int64_t) 0;
++        }
++        const int secs = atoi(env);
++        return (int64_t) (secs > 0 ? secs : 60) * 1000000;
++    }();
++    if (interval_us == 0) {
++        return;
++    }
++    static std::atomic<int64_t> next_log{0};
++    const int64_t now = ggml_time_us();
++    int64_t expected = next_log.load(std::memory_order_relaxed);
++    if (now < expected || !next_log.compare_exchange_strong(expected, now + interval_us)) {
++        return;
++    }
++    const ggml_cuda_graph_stats & s = ggml_cuda_graph_stats_get();
++    GGML_LOG_INFO("cuda graph stats: live=%zu captures=%llu instantiates=%llu exec_updates=%llu launches=%llu direct=%llu destroyed=%llu reinstantiate_on_update=%d\n",
++        cuda_ctx->cuda_graphs.size(),
++        (unsigned long long) s.captures.load(), (unsigned long long) s.instantiates.load(),
++        (unsigned long long) s.exec_updates.load(), (unsigned long long) s.launches.load(),
++        (unsigned long long) s.direct_runs.load(), (unsigned long long) s.destroyed.load(),
++        ggml_cuda_graph_reinstantiate_on_update() ? 1 : 0);
++}
++
+ static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_ctx, uint64_t graph_key) {
+     ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+ 
++    if (ggml_cuda_graph_reinstantiate_on_update()) {
++        CUDA_CHECK(cudaGraphExecDestroy(graph->instance));
++        graph->instance = nullptr;
++        CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
++        ggml_cuda_graph_stats_get().instantiates++;
++        return;
++    }
++
+ #if CUDART_VERSION >= 12000
+     cudaGraphExecUpdateResultInfo result_info;
+     cudaError_t stat = cudaGraphExecUpdate(graph->instance, graph->graph, &result_info);
+@@ -2743,8 +2794,10 @@ static void ggml_cuda_graph_update_executable(ggml_backend_cuda_context * cuda_c
+         CUDA_CHECK(cudaGraphExecDestroy(graph->instance));
+         graph->instance = nullptr;
+         CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
++        ggml_cuda_graph_stats_get().instantiates++;
+     } else {
+         GGML_ASSERT(stat == cudaSuccess);
++        ggml_cuda_graph_stats_get().exec_updates++;
+     }
+ }
+ #endif // USE_CUDA_GRAPH
+@@ -4623,6 +4676,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+ 
+             CUDA_CHECK(cudaStreamEndCapture(cuda_ctx->stream(), &graph->graph));
+             graph_evaluated_or_captured = true; // CUDA graph has been captured
++            ggml_cuda_graph_stats_get().captures++;
+ 
+             std::lock_guard<std::mutex> lock(ggml_cuda_lock);
+             if (ggml_cuda_lock_counter.fetch_sub(1, std::memory_order_relaxed) == 1) {
+@@ -4630,6 +4684,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+             }
+         } else {
+             graph_evaluated_or_captured = true; // ggml graph has been directly evaluated
++            ggml_cuda_graph_stats_get().direct_runs++;
+         }
+     }
+ 
+@@ -4637,12 +4692,13 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
+         ggml_cuda_graph * graph = cuda_ctx->cuda_graph(graph_key);
+         if (graph->instance == nullptr) { // Create executable graph from captured graph.
+             CUDA_CHECK(cudaGraphInstantiate(&graph->instance, graph->graph, NULL, NULL, 0));
+-        }
+-        if (cuda_graph_update_required) { // Update graph executable
++            ggml_cuda_graph_stats_get().instantiates++;
++        } else if (cuda_graph_update_required) { // Update graph executable (a fresh instance already matches the capture)
+             ggml_cuda_graph_update_executable(cuda_ctx, graph_key);
+         }
+         // Launch graph
+         CUDA_CHECK(cudaGraphLaunch(graph->instance, cuda_ctx->stream()));
++        ggml_cuda_graph_stats_get().launches++;
+ #else
+         GGML_UNUSED(graph_key);
+         graph_evaluated_or_captured = true;
+@@ -4730,6 +4786,10 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend,
+ 
+     ggml_cuda_graph_evaluate_and_capture(cuda_ctx, cgraph, use_cuda_graph, cuda_graph_update_required, graph_key);
+ 
++#ifdef USE_CUDA_GRAPH
++    ggml_cuda_graph_stats_log(cuda_ctx);
++#endif // USE_CUDA_GRAPH
++
+     if (g_op_prof.on) {
+         ggml_cuda_op_prof_flush(cuda_ctx->stream(), prof_t0);
+     }

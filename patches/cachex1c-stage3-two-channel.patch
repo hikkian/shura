@@ -1,0 +1,1062 @@
+# CACHEX1c stage 3 DRAFT: two channels, LRU admission, transient slots, feedback and property invariants.
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2842,11 +2842,11 @@
+         }
+     ).set_env("LLAMA_ARG_MOE_CACHE_PINNED_SOURCE"));
+     add_opt(common_arg(
+-        {"--moe-cache-policy"}, "static|hybrid",
+-        "expert cache policy; static is the default, hybrid enables a profile-pinned set and bounded LRU tail",
+-        [](common_params & params, const std::string & value) {
+-            if (value != "static" && value != "hybrid") {
+-                throw std::invalid_argument("moe cache policy must be static or hybrid");
++        {"--moe-cache-policy"}, "static|hybrid|two-channel",
++        "expert cache policy; two-channel overlaps CPU misses with GPU uploads (qwen35moe)",
++        [](common_params & params, const std::string & value) {
++            if (value != "static" && value != "hybrid" && value != "two-channel") {
++                throw std::invalid_argument("moe cache policy must be static, hybrid, or two-channel");
+             }
+             params.moe_cache_policy = value;
+         }
+--- a/common/common.h
++++ b/common/common.h
+@@ -587,7 +587,7 @@
+     int32_t     moe_cache_slots   = 0;  // MoE expert cache slots per layer (0 = disabled)
+     bool        moe_cache_live_resize = false;
+     bool        moe_cache_pinned_source = false;
+-    std::string moe_cache_policy = "static"; // static (default) or hybrid pinned + LRU tail
++    std::string moe_cache_policy = "static"; // static (default), hybrid, or opt-in two-channel
+     int32_t     moe_cache_pinned_percent = 50; // hybrid profile-pinned share
+     int32_t     moe_cache_inserts_per_layer_token = 1; // hybrid LRU miss insert cap
+ 
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -314,6 +314,11 @@
+     // if the user returns false, the scheduler will cancel the graph compute
+     //
+     typedef bool (*ggml_backend_sched_eval_callback)(struct ggml_tensor * t, bool ask, void * user_data);
++    // Before: inputs are ready. After: GPU work is queued, or CPU work is complete.
++    typedef bool (*ggml_backend_sched_split_callback)(ggml_backend_sched_t sched, ggml_backend_t backend,
++            struct ggml_cgraph * graph, bool before, int64_t elapsed_us, void * user_data);
++    GGML_API void ggml_backend_sched_set_split_callback(ggml_backend_sched_t sched,
++            ggml_backend_sched_split_callback callback, void * user_data);
+ 
+     // Initialize a backend scheduler, backends with low index are given priority over backends with high index
+     GGML_API ggml_backend_sched_t ggml_backend_sched_new(ggml_backend_t * backends, ggml_backend_buffer_type_t * bufts, int n_backends, size_t graph_size, bool parallel, bool op_offload);
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -800,6 +800,9 @@
+     ggml_backend_t          job_backend = nullptr;
+     struct ggml_cgraph *    job_graph   = nullptr;
+     enum ggml_status        job_status  = GGML_STATUS_SUCCESS;
++    ggml_backend_sched_t    job_sched = nullptr;
++    ggml_backend_sched_split_callback job_callback = nullptr;
++    void *                  job_user_data = nullptr;
+     bool                    job_ready   = false;
+     bool                    job_done    = false;
+     bool                    stop        = false;
+@@ -816,9 +819,17 @@
+                 job_ready = false;
+                 ggml_backend_t   backend = job_backend;
+                 ggml_cgraph *    graph   = job_graph;
++                auto callback = job_callback;
++                auto callback_sched = job_sched;
++                void * user_data = job_user_data;
+                 lock.unlock();
+ 
++                const int64_t start_us = callback ? ggml_time_us() : 0;
+                 enum ggml_status status = ggml_backend_graph_compute_async(backend, graph);
++                if (status == GGML_STATUS_SUCCESS && callback &&
++                        !callback(callback_sched, backend, graph, false, ggml_time_us() - start_us, user_data)) {
++                    status = GGML_STATUS_FAILED;
++                }
+ 
+                 lock.lock();
+                 job_status = status;
+@@ -837,11 +848,15 @@
+         worker.join();
+     }
+ 
+-    void launch(ggml_backend_t backend, struct ggml_cgraph * graph) {
++    void launch(ggml_backend_t backend, struct ggml_cgraph * graph, ggml_backend_sched_t sched,
++                ggml_backend_sched_split_callback callback, void * user_data) {
+         {
+             std::lock_guard<std::mutex> lock(mtx);
+             job_backend = backend;
+             job_graph   = graph;
++            job_sched = sched;
++            job_callback = callback;
++            job_user_data = user_data;
+             job_status  = GGML_STATUS_SUCCESS;
+             job_done    = false;
+             job_ready   = true;
+@@ -904,6 +919,8 @@
+ 
+     ggml_backend_sched_eval_callback callback_eval;
+     void * callback_eval_user_data;
++    ggml_backend_sched_split_callback callback_split;
++    void * callback_split_user_data;
+ 
+     char * context_buffer;
+     size_t context_buffer_size;
+@@ -2045,11 +2062,17 @@
+             }
+         }
+ 
++        if (sched->callback_split && !sched->callback_split(sched, split_backend, &split->graph, true, 0,
++                sched->callback_split_user_data)) {
++            return GGML_STATUS_FAILED;
++        }
++        const int64_t split_start_us = sched->callback_split ? ggml_time_us() : 0;
+         if (!sched->callback_eval) {
+             if (sched->cpu_async && split_backend_id == sched->n_backends - 1 && split_prefetch_slot == -1) {
+                 // run the CPU split on the worker; the loop continues launching
+                 // later splits until one depends on this split's outputs
+-                sched->cpu_async->launch(split_backend, &split->graph);
++                sched->cpu_async->launch(split_backend, &split->graph, sched,
++                        sched->callback_split, sched->callback_split_user_data);
+                 continue;
+             }
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+@@ -2095,6 +2118,11 @@
+ 
+                 j0 = j1;
+             }
++        }
++
++        if (sched->callback_split && !sched->callback_split(sched, split_backend, &split->graph, false,
++                ggml_time_us() - split_start_us, sched->callback_split_user_data)) {
++            return GGML_STATUS_FAILED;
+         }
+ 
+         // record the event of this split
+@@ -2318,6 +2346,12 @@
+     }
+ 
+     return ggml_backend_sched_compute_splits(sched);
++}
++
++void ggml_backend_sched_set_split_callback(ggml_backend_sched_t sched,
++        ggml_backend_sched_split_callback callback, void * user_data) {
++    sched->callback_split = callback;
++    sched->callback_split_user_data = user_data;
+ }
+ 
+ void ggml_backend_sched_set_async_cpu(ggml_backend_sched_t sched, bool enable) {
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -5838,6 +5838,34 @@
+ #endif
+ }
+ 
++#ifndef GGML_USE_MUSA
++static ggml_backend_event_t ggml_backend_cuda_device_event_new_timed(ggml_backend_dev_t dev) {
++    auto * ctx = (ggml_backend_cuda_device_context *) dev->context;
++    ggml_cuda_set_device(ctx->device);
++    cudaEvent_t event;
++    CUDA_CHECK(cudaEventCreateWithFlags(&event, 0));
++    return new ggml_backend_event { dev, event };
++}
++
++static bool ggml_backend_cuda_event_elapsed(ggml_backend_event_t first, ggml_backend_event_t last, float * ms) {
++    GGML_ASSERT(first && last && ms && first->device == last->device);
++    auto * ctx = (ggml_backend_cuda_device_context *) first->device->context;
++    ggml_cuda_set_device(ctx->device);
++#ifdef GGML_USE_HIP
++    const auto status = hipEventQuery((cudaEvent_t) last->context);
++    if (status == hipErrorNotReady) return false;
++    CUDA_CHECK(status);
++    CUDA_CHECK(hipEventElapsedTime(ms, (cudaEvent_t) first->context, (cudaEvent_t) last->context));
++#else
++    const auto status = cudaEventQuery((cudaEvent_t) last->context);
++    if (status == cudaErrorNotReady) return false;
++    CUDA_CHECK(status);
++    CUDA_CHECK(cudaEventElapsedTime(ms, (cudaEvent_t) first->context, (cudaEvent_t) last->context));
++#endif
++    return true;
++}
++#endif
++
+ static void ggml_backend_cuda_device_event_free(ggml_backend_dev_t dev, ggml_backend_event_t event) {
+     GGML_UNUSED(dev);
+ 
+@@ -5964,6 +5992,14 @@
+     if (strcmp(name, "ggml_backend_unregister_host_buffer") == 0) {
+         return (void *)ggml_backend_cuda_unregister_host_buffer;
+     }
++#ifndef GGML_USE_MUSA
++    if (strcmp(name, "ggml_backend_event_new_timed") == 0) {
++        return (void *) ggml_backend_cuda_device_event_new_timed;
++    }
++    if (strcmp(name, "ggml_backend_event_elapsed") == 0) {
++        return (void *) ggml_backend_cuda_event_elapsed;
++    }
++#endif
+     if (strcmp(name, "ggml_backend_get_features") == 0) {
+         return (void *)ggml_backend_cuda_get_features;
+     }
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -305,7 +305,7 @@
+         };
+     };
+ 
+-    // Runtime counters for the opt-in hybrid expert-cache policy. The default
++    // Runtime counters for the opt-in hybrid and two-channel expert-cache policies. The default
+     // static policy reports enabled=false and leaves existing responses unchanged.
+     struct llama_moe_cache_stats {
+         bool enabled;
+@@ -315,6 +315,10 @@
+         uint64_t insertions;
+         uint64_t copies;
+         uint64_t copied_bytes;
++        uint64_t uploaded;
++        uint64_t cpu;
++        uint64_t cpu_channel_us;
++        uint64_t gpu_channel_us;
+     };
+ 
+     struct llama_model_tensor_buft_override {
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1413,10 +1413,18 @@
+         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
+     }
+ 
++    const bool channel_cache = model_base && model_base->moe_expert_cache_two_channel_enabled();
++    ggml_backend_sched_set_split_callback(sched.get(), channel_cache ?
++            +[](ggml_backend_sched_t scheduler, ggml_backend_t backend, ggml_cgraph * graph,
++                bool before, int64_t elapsed_us, void * data) {
++                return static_cast<llama_model_base *>(data)->moe_expert_cache_split(
++                        scheduler, backend, graph, before, elapsed_us);
++            } : nullptr, model_base);
+     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
+     if (status != GGML_STATUS_SUCCESS) {
+         if (moe_cache_lock.owns_lock()) {
+             ggml_backend_sched_synchronize(sched.get());
++            if (channel_cache) model_base->finish_moe_expert_cache_channels(false);
+         }
+         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
+         ret = status;
+@@ -1426,6 +1434,10 @@
+     if (moe_cache_lock.owns_lock()) {
+         // Do not release the cache lock while any graph might still read pack tensors.
+         ggml_backend_sched_synchronize(sched.get());
++    }
++    if (channel_cache && !model_base->finish_moe_expert_cache_channels(true)) {
++        ret = GGML_STATUS_FAILED;
++        return nullptr;
+     }
+     if (moe_cache_lock.owns_lock() && !res->moe_cache_routes.empty()) {
+         if (model_base != nullptr) {
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2071,6 +2071,7 @@
+         !up_exps_s && !gate_exps_s && !down_exps_s &&
+         type_op == LLM_FFN_SILU && gate_exps && !up_exps_b && !gate_exps_b && !weight_before_ffn &&
+         (il < 0 || hparams.swiglu_clamp_exp[il] <= 1e-6f) && n_tokens <= 8;
++    const bool two_channel = use_moe_packs && moe_cache->moe_cache_two_channel && arch == LLM_ARCH_QWEN35MOE;
+     if (use_moe_packs) {
+         ggml_tensor * ids_flat = ggml_cont_1d(ctx0, selected_experts, n_expert_used*n_tokens); // topk ids are a strided view
+         if (moe_cache->moe_cache_hybrid && n_tokens <= 8) {
+@@ -2143,7 +2144,7 @@
+         // ops (that migrates the hot pack weights to CPU every layer). Skipped
+         // (-1) rows are zero and swiglu(0,0) = 0, so the two chain outputs are
+         // disjoint and one add reconstructs the exact single-tensor result.
+-        auto build_pack_chain = [&](ggml_tensor * w_gate, ggml_tensor * w_up, ggml_tensor * w_down, ggml_tensor * ids) {
++        auto build_pack_chain = [&](ggml_tensor * w_gate, ggml_tensor * w_up, ggml_tensor * w_down, ggml_tensor * ids, bool cold) {
+             ggml_tensor * gate = ggml_mul_mat_id(ctx0, w_gate, cur, ids);
+             gate->op_params[0] = 1; // ids may contain -1
+             ggml_tensor * up_p = ggml_mul_mat_id(ctx0, w_up, cur, ids);
+@@ -2151,6 +2152,11 @@
+             ggml_tensor * act = ggml_swiglu_split(ctx0, gate, up_p);
+             ggml_tensor * down = ggml_mul_mat_id(ctx0, w_down, act, ids);
+             down->op_params[0] = 1;
++            if (two_channel && cold) {
++                for (ggml_tensor * node : {gate, up_p, act, down}) {
++                    ggml_backend_sched_set_tensor_backend(sched, node, backend_cpu);
++                }
++            }
+             return down;
+         };
+ 
+@@ -2160,11 +2166,11 @@
+         // hot chain (which has no CPU inputs) runs concurrently on the GPU.
+         // pinning the merge to CPU keeps it out of the hot split so the hot
+         // split stays free of cross-backend inputs.
+-        ggml_tensor * cold = build_pack_chain(gate_exps, up_exps, down_exps, ids_cold);
+-        cb(cold, "ffn_moe_down_cold", il);
+-
+-        ggml_tensor * hot = build_pack_chain(moe_cache->ffn_gate_exps_hot, moe_cache->ffn_up_exps_hot, moe_cache->ffn_down_exps_hot, ids_hot);
+-        cb(hot, "ffn_moe_down_hot", il);
++        ggml_tensor * cold = build_pack_chain(gate_exps, up_exps, down_exps, ids_cold, true);
++        cb(cold, two_channel ? "ffn_moe_down_cold_tc" : "ffn_moe_down_cold", il);
++
++        ggml_tensor * hot = build_pack_chain(moe_cache->ffn_gate_exps_hot, moe_cache->ffn_up_exps_hot, moe_cache->ffn_down_exps_hot, ids_hot, false);
++        cb(hot, two_channel ? "ffn_moe_down_hot_tc" : "ffn_moe_down_hot", il);
+ 
+         experts = ggml_add(ctx0, cold, hot);
+         cb(experts, "ffn_moe_down", il);
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-model.h"
+ #include "llama-moe-cache-policy.h"
++#include "llama-moe-cache-two-channel-policy.h"
+ 
+ #include "llama-arch.h"
+ #include "llama-ext.h"
+@@ -1137,6 +1138,21 @@
+     return buft_list;
+ }
+ 
++struct llama_moe_channel_runtime {
++    llama_moe_channel_policy policy;
++    ggml_backend_event_ptr begin;
++    ggml_backend_event_ptr end;
++    std::vector<int32_t> ids;
++    bool active = false;
++    bool gpu_ended = false;
++    bool cpu_ready = false;
++    int64_t start_us = 0;
++    double cpu_us = 0;
++    double cpu_compute_us = 0;
++    double observed_cpu_us = 0;
++    double observed_gpu_us = 0;
++};
++
+ struct llama_model::impl {
+     impl() = default;
+     ~impl() = default;
+@@ -1163,6 +1179,10 @@
+     int32_t moe_cache_slots = 0;
+     uint64_t moe_cache_generation = 0;
+     bool moe_cache_hybrid = false;
++    bool moe_cache_two_channel = false;
++    std::map<int, llama_moe_channel_runtime> moe_channels;
++    ggml_backend_event_t (*moe_event_new_timed)(ggml_backend_dev_t) = nullptr;
++    bool (*moe_event_elapsed)(ggml_backend_event_t, ggml_backend_event_t, float *) = nullptr;
+     int32_t moe_cache_pinned_percent = 50;
+     int32_t moe_cache_inserts_per_layer_token = 1;
+     std::map<int, llama_moe_cache_hybrid_policy> moe_cache_hybrid_layers;
+@@ -1877,7 +1897,12 @@
+     int n_slots = params.moe_cache_slots;
+     const char * cache_policy = params.moe_cache_policy ? params.moe_cache_policy : "static";
+     const bool hybrid = strcmp(cache_policy, "hybrid") == 0;
+-    if (strcmp(cache_policy, "static") != 0 && !hybrid) {
++    const bool two_channel = strcmp(cache_policy, "two-channel") == 0;
++    if (two_channel && (arch != LLM_ARCH_QWEN35MOE || devices.size() != 1 || devices.front().is_meta ||
++            hparams.n_expert_used() > 8)) {
++        throw std::runtime_error("two-channel expert cache requires qwen35moe and one GPU");
++    }
++    if (strcmp(cache_policy, "static") != 0 && !hybrid && !two_channel) {
+         LLAMA_LOG_WARN("%s: unknown expert cache policy '%s'; cache disabled\n", __func__, cache_policy);
+         return;
+     }
+@@ -1887,10 +1912,11 @@
+         return;
+     }
+     pimpl->moe_cache_hybrid = hybrid;
++    pimpl->moe_cache_two_channel = two_channel;
+     pimpl->moe_cache_pinned_percent = params.moe_cache_pinned_percent;
+     pimpl->moe_cache_inserts_per_layer_token = params.moe_cache_inserts_per_layer_token;
+     pimpl->moe_cache_stats = {};
+-    pimpl->moe_cache_stats.enabled = hybrid;
++    pimpl->moe_cache_stats.enabled = hybrid || two_channel;
+     if (profile_path == nullptr || profile_path[0] == '\0') {
+         profile_path = getenv("GGML_MOE_CACHE_PROFILE");
+     }
+@@ -1956,6 +1982,16 @@
+         return;
+     }
+     ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
++    if (two_channel) {
++        auto reg = ggml_backend_dev_backend_reg(dev);
++        pimpl->moe_event_new_timed = (ggml_backend_event_t (*)(ggml_backend_dev_t))
++                ggml_backend_reg_get_proc_address(reg, "ggml_backend_event_new_timed");
++        pimpl->moe_event_elapsed = (bool (*)(ggml_backend_event_t, ggml_backend_event_t, float *))
++                ggml_backend_reg_get_proc_address(reg, "ggml_backend_event_elapsed");
++        if (!pimpl->moe_event_new_timed || !pimpl->moe_event_elapsed) {
++            throw std::runtime_error("two-channel expert cache requires nonblocking GPU timing events");
++        }
++    }
+ 
+     // candidate layers: routed experts resident in host memory
+     std::vector<int> pack_layers;
+@@ -1973,7 +2009,7 @@
+     }
+ 
+     if (n_slots == 0) {
+-        if (params.moe_cache_live_resize || hybrid) {
++        if (params.moe_cache_live_resize || hybrid || two_channel) {
+             for (int il : pack_layers) {
+                 std::vector<std::pair<int64_t, int32_t>> ranked;
+                 for (const auto & [expert, count] : freq[il]) {
+@@ -2018,9 +2054,10 @@
+         const ggml_tensor * d = l.ffn_down_exps;
+         const int64_t n_expert = g->ne[2];
+         const int64_t S = std::min<int64_t>(n_slots, n_expert);
+-        l.ffn_gate_exps_hot = ggml_new_tensor_3d(ctx, g->type, g->ne[0], g->ne[1], S);
+-        l.ffn_up_exps_hot   = ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], S);
+-        l.ffn_down_exps_hot = ggml_new_tensor_3d(ctx, d->type, d->ne[0], d->ne[1], S);
++        const int64_t capacity = S + (two_channel ? llama_moe_channel_policy::transient_slots : 0);
++        l.ffn_gate_exps_hot = ggml_new_tensor_3d(ctx, g->type, g->ne[0], g->ne[1], capacity);
++        l.ffn_up_exps_hot   = ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], capacity);
++        l.ffn_down_exps_hot = ggml_new_tensor_3d(ctx, d->type, d->ne[0], d->ne[1], capacity);
+         l.moe_map_hot       = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, n_expert);
+         l.moe_map_cold      = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, n_expert);
+         ggml_format_name(l.ffn_gate_exps_hot, "blk.%d.ffn_gate_exps_hot", il);
+@@ -2058,7 +2095,7 @@
+     for (int il : pack_layers) {
+         auto & l = layers[il];
+         const int64_t n_expert = l.ffn_gate_exps->ne[2];
+-        const int64_t S = l.ffn_gate_exps_hot->ne[2];
++        const int64_t S = std::min<int64_t>(n_slots, n_expert);
+ 
+         std::vector<std::pair<int64_t, int32_t>> ranked; // (-count, expert)
+         for (const auto & [e, c] : freq[il]) {
+@@ -2068,7 +2105,7 @@
+         }
+         std::sort(ranked.begin(), ranked.end());
+ 
+-        if (params.moe_cache_live_resize || hybrid) {
++        if (params.moe_cache_live_resize || hybrid || two_channel) {
+             auto & order = pimpl->moe_cache_rankings[il];
+             order.reserve(ranked.size());
+             for (const auto & item : ranked) {
+@@ -2138,8 +2175,21 @@
+                 }
+             }
+         }
++        // Retain the legacy GPU lookup node; the CPU hook needs global IDs.
++        if (two_channel) std::iota(map_cold.begin(), map_cold.end(), 0);
+         ggml_backend_tensor_set(l.moe_map_hot,  map_hot.data(),  0, n_expert*sizeof(int32_t));
+         ggml_backend_tensor_set(l.moe_map_cold, map_cold.data(), 0, n_expert*sizeof(int32_t));
++        if (two_channel) {
++            auto & runtime = pimpl->moe_channels.try_emplace(il).first->second;
++            if (!runtime.policy.initialize(int(n_expert), int(S), pimpl->moe_cache_rankings.at(il))) {
++                throw std::runtime_error("invalid two-channel cache seed");
++            }
++            runtime.begin.reset(pimpl->moe_event_new_timed(dev));
++            runtime.end.reset(pimpl->moe_event_new_timed(dev));
++            runtime.ids.reserve(64);
++            if (!runtime.begin || !runtime.end) throw std::runtime_error("failed to create channel timing events");
++            l.moe_cache_two_channel = true;
++        }
+         if (probe_backend && !ranked.empty() && !hybrid) {
+             const int32_t expert = ranked.front().second;
+             const ggml_tensor * sources[] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
+@@ -2173,7 +2223,7 @@
+ }
+ 
+ bool llama_model_base::moe_expert_cache_requires_serialization() const {
+-    return params.moe_cache_live_resize || pimpl->moe_cache_hybrid;
++    return params.moe_cache_live_resize || pimpl->moe_cache_hybrid || pimpl->moe_cache_two_channel;
+ }
+ 
+ uint64_t llama_model_base::moe_expert_cache_generation() const {
+@@ -2392,6 +2442,151 @@
+     return true;
+ }
+ 
++bool llama_model_base::moe_expert_cache_two_channel_enabled() const {
++    return pimpl->moe_cache_two_channel && pimpl->moe_cache_slots > 0 && !pimpl->moe_channels.empty();
++}
++
++bool llama_model_base::moe_expert_cache_split(ggml_backend_sched_t sched, ggml_backend_t backend,
++        ggml_cgraph * graph, bool before, int64_t elapsed_us) {
++    if (!moe_expert_cache_two_channel_enabled()) return true;
++    const bool cpu = ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
++    if (!cpu && before) return true;
++    const char * prefix = cpu ? "ffn_moe_down_cold_tc-" : "ffn_moe_down_hot_tc-";
++    ggml_tensor * output = nullptr;
++    int il = -1;
++    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
++        ggml_tensor * node = ggml_graph_node(graph, i);
++        if (strncmp(node->name, prefix, strlen(prefix)) != 0) continue;
++        char * end = nullptr;
++        const long layer = strtol(node->name + strlen(prefix), &end, 10);
++        if (!end || *end != '\0' || layer < 0 || layer >= long(layers.size()) || output) {
++            LLAMA_LOG_ERROR("invalid two-channel split layout\n");
++            return false;
++        }
++        output = node;
++        il = int(layer);
++    }
++    if (!output) return true;
++    auto found = pimpl->moe_channels.find(il);
++    if (found == pimpl->moe_channels.end()) return false;
++    auto & runtime = found->second;
++    if (!cpu) {
++        if (!runtime.active || runtime.gpu_ended) return false;
++        ggml_backend_event_record(runtime.end.get(), backend);
++        runtime.gpu_ended = true;
++        return true;
++    }
++    if (!before) {
++        if (!runtime.active) return false;
++        runtime.cpu_us = double(std::max<int64_t>(1, ggml_time_us() - runtime.start_us));
++        runtime.cpu_compute_us = double(elapsed_us);
++        runtime.cpu_ready = true;
++        return true;
++    }
++    if (runtime.active || output->op != GGML_OP_MUL_MAT_ID) return false;
++    ggml_tensor * ids = output->src[2];
++    if (!ids || !ids->data || !ids->buffer || !ggml_backend_buffer_is_host(ids->buffer) ||
++            ids->type != GGML_TYPE_I32 || ids->ne[0] < 1 || ids->ne[0] > 8 ||
++            ids->ne[1] < 1 || ids->ne[1] > 8) return false;
++    auto & layer = layers[il];
++    ggml_tensor * sources[] = {layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_down_exps};
++    ggml_tensor * targets[] = {layer.ffn_gate_exps_hot, layer.ffn_up_exps_hot, layer.ffn_down_exps_hot};
++    for (int projection = 0; projection < 3; ++projection) {
++        if (!sources[projection] || !targets[projection] || !sources[projection]->data ||
++                !sources[projection]->buffer || !ggml_backend_buffer_is_host(sources[projection]->buffer) ||
++                sources[projection]->nb[2] != targets[projection]->nb[2] ||
++                targets[projection]->ne[2] != runtime.policy.capacity()) return false;
++    }
++    ggml_backend_t gpu = ggml_backend_sched_get_tensor_backend(sched, layer.moe_map_hot);
++    if (!gpu || ggml_backend_get_device(gpu) != ggml_backend_buft_get_device(
++            ggml_backend_buffer_get_type(layer.ffn_gate_exps_hot->buffer))) return false;
++    runtime.ids.resize(ids->ne[0] * ids->ne[1]);
++    size_t index = 0;
++    for (int64_t token = 0; token < ids->ne[1]; ++token) {
++        for (int64_t k = 0; k < ids->ne[0]; ++k) {
++            runtime.ids[index++] = *(const int32_t *) ((const char *) ids->data + token*ids->nb[1] + k*ids->nb[0]);
++        }
++    }
++    if (!runtime.policy.make_plan(runtime.ids, int(ids->ne[1]), int(ids->ne[0]))) return false;
++    const auto & plan = runtime.policy.latest();
++    runtime.active = true;
++    runtime.cpu_ready = runtime.gpu_ended = false;
++    runtime.start_us = ggml_time_us();
++    ggml_backend_event_record(runtime.begin.get(), gpu);
++    uint64_t bytes = 0, insertions = 0;
++    for (const auto & entry : plan.uploads) {
++        for (int projection = 0; projection < 3; ++projection) {
++            const size_t size = sources[projection]->nb[2];
++            const char * source = (const char *) sources[projection]->data + size_t(entry.expert)*size;
++            ggml_backend_tensor_set_async(gpu, targets[projection], source, size_t(entry.slot)*size, size);
++            bytes += size;
++        }
++        insertions += entry.persistent;
++    }
++    ggml_backend_tensor_set_async(gpu, layer.moe_map_hot, plan.slot_map.data(), 0,
++            plan.slot_map.size()*sizeof(int32_t));
++    index = 0;
++    for (int64_t token = 0; token < ids->ne[1]; ++token) {
++        for (int64_t k = 0; k < ids->ne[0]; ++k) {
++            const int32_t expert = runtime.ids[index++];
++            *(int32_t *) ((char *) ids->data + token*ids->nb[1] + k*ids->nb[0]) =
++                    plan.slot_map[expert] >= 0 ? -1 : expert;
++        }
++    }
++    {
++        std::lock_guard<std::mutex> lock(pimpl->moe_cache_stats_mutex);
++        auto & stats = pimpl->moe_cache_stats;
++        stats.enabled = true;
++        if (il == pimpl->moe_channels.begin()->first) stats.tokens += plan.n_tokens;
++        stats.hits += plan.hits;
++        stats.misses += plan.uploaded + plan.cpu;
++        stats.uploaded += plan.uploaded;
++        stats.cpu += plan.cpu;
++        stats.copies += plan.uploads.size();
++        stats.insertions += insertions;
++        stats.copied_bytes += bytes;
++    }
++    const char * trace = getenv("GGML_MOE_CACHE_TRACE");
++    if (trace && trace[0] == '1') {
++        const auto & cost = runtime.policy.estimate(plan.n_tokens);
++        fprintf(stderr, "moe_cache_layer layer=%d hits=%d uploaded=%d cpu=%d tokens=%d unique_uploads=%zu bytes=%llu "
++                "cpu_us_prev=%.3f gpu_us_prev=%.3f cpu_expert_us=%.3f gpu_upload_us=%.3f samples=%llu\n",
++                il, plan.hits, plan.uploaded, plan.cpu, plan.n_tokens, plan.uploads.size(), (unsigned long long) bytes,
++                runtime.observed_cpu_us, runtime.observed_gpu_us, cost.cpu_expert_us, cost.gpu_upload_us,
++                (unsigned long long) cost.samples);
++    }
++    return true;
++}
++
++bool llama_model_base::finish_moe_expert_cache_channels(bool success) {
++    if (!moe_expert_cache_two_channel_enabled()) return true;
++    bool ok = true;
++    uint64_t cpu_us = 0, gpu_us = 0;
++    for (auto & item : pimpl->moe_channels) {
++        auto & runtime = item.second;
++        if (!runtime.active) continue;
++        float ms = 0;
++        if (success) {
++            if (!runtime.cpu_ready || !runtime.gpu_ended ||
++                    !pimpl->moe_event_elapsed(runtime.begin.get(), runtime.end.get(), &ms)) {
++                LLAMA_LOG_ERROR("missing two-channel timing for layer %d\n", item.first);
++                ok = false;
++            } else {
++                runtime.observed_cpu_us = runtime.cpu_us;
++                runtime.observed_gpu_us = ms*1000.0;
++                runtime.policy.observe(runtime.observed_cpu_us, runtime.observed_gpu_us);
++                cpu_us += uint64_t(runtime.observed_cpu_us);
++                gpu_us += uint64_t(runtime.observed_gpu_us);
++            }
++        }
++        runtime.active = runtime.gpu_ended = runtime.cpu_ready = false;
++    }
++    std::lock_guard<std::mutex> lock(pimpl->moe_cache_stats_mutex);
++    pimpl->moe_cache_stats.cpu_channel_us += cpu_us;
++    pimpl->moe_cache_stats.gpu_channel_us += gpu_us;
++    return ok;
++}
++
+ bool llama_model_base::get_moe_expert_cache_stats(llama_moe_cache_stats & stats) const {
+     std::lock_guard<std::mutex> lock(pimpl->moe_cache_stats_mutex);
+     stats = pimpl->moe_cache_stats;
+@@ -2411,6 +2606,9 @@
+     }
+     if (n_slots == old_slots) {
+         return true;
++    }
++    if (pimpl->moe_cache_two_channel) {
++        return false;
+     }
+ 
+     const bool had_cache = old_slots > 0 && pimpl->moe_cache_bundle_index < pimpl->ctxs_bufs.size();
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -346,6 +346,7 @@
+     struct ggml_tensor * ffn_up_exps_hot   = nullptr;
+     struct ggml_tensor * moe_map_hot       = nullptr; // i32[n_expert]: pack slot or -1
+     struct ggml_tensor * moe_map_cold      = nullptr; // i32[n_expert]: global id or -1
++    bool moe_cache_two_channel = false;
+     bool moe_cache_hybrid = false; // capture routed ids for the opt-in bounded LRU tail
+     struct ggml_tensor * ffn_gate_inp_b    = nullptr;
+     struct ggml_tensor * ffn_gate_exps_b   = nullptr;
+@@ -835,6 +836,10 @@
+     bool resize_moe_expert_cache(int32_t n_slots, int32_t & old_slots,
+             int32_t & new_slots, size_t & released_bytes, size_t & allocated_bytes);
+     bool moe_expert_cache_requires_serialization() const;
++    bool moe_expert_cache_two_channel_enabled() const;
++    bool moe_expert_cache_split(ggml_backend_sched_t sched, ggml_backend_t backend,
++            ggml_cgraph * graph, bool before, int64_t elapsed_us);
++    bool finish_moe_expert_cache_channels(bool success);
+     uint64_t moe_expert_cache_generation() const;
+     std::mutex & moe_expert_cache_mutex() const;
+     bool update_moe_expert_cache_locked(ggml_backend_sched_t sched, const llm_graph_result & graph);
+--- /dev/null
++++ b/src/llama-moe-cache-two-channel-policy.h
+@@ -0,0 +1,229 @@
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdint>
++#include <limits>
++#include <numeric>
++#include <vector>
++
++class llama_moe_channel_policy {
++public:
++    static constexpr int transient_slots = 4;
++
++    struct upload {
++        int32_t expert;
++        int32_t slot;
++        bool persistent;
++    };
++
++    struct plan {
++        std::vector<int32_t> ids;
++        std::vector<int32_t> slot_map;
++        std::vector<upload> uploads;
++        int n_tokens = 0;
++        int cpu_unique = 0;
++        int hits = 0;
++        int uploaded = 0;
++        int cpu = 0;
++    };
++
++    struct costs {
++        double cpu_base_us = 15.0;
++        double cpu_expert_us = 100.0;
++        double gpu_base_us = 30.0;
++        double gpu_upload_us = 60.0;
++        uint64_t samples = 0;
++    };
++
++    bool initialize(int experts, int slots, const std::vector<int32_t> & ranking) {
++        if (experts <= 0 || experts > 4096 || slots < 0 || slots > experts) return false;
++        std::vector<uint8_t> seen(experts, 0);
++        for (int32_t expert : ranking) {
++            if (expert < 0 || expert >= experts || seen[expert]) return false;
++            seen[expert] = 1;
++        }
++        slot_to_expert.clear();
++        n_experts = experts;
++        seed_order = ranking;
++        rank_value.assign(experts, 0);
++        for (size_t i = 0; i < ranking.size(); ++i) {
++            rank_value[ranking[i]] = int(ranking.size() - i);
++        }
++        counts.resize(experts);
++        initial_hits.resize(experts);
++        candidates.reserve(experts);
++        last.ids.reserve(8 * experts);
++        last.slot_map.resize(experts);
++        last.uploads.reserve(experts);
++        epoch = 0;
++        timing = {};
++        return commit_resize(preview_resize(slots));
++    }
++
++    std::vector<int32_t> preview_resize(int slots) const {
++        if (slots < 0 || slots > n_experts) return {};
++        std::vector<int32_t> order;
++        std::vector<uint8_t> seen(n_experts, 0);
++        order.reserve(slots);
++        for (int32_t expert : slot_to_expert) {
++            if (expert >= 0 && !seen[expert] && int(order.size()) < slots) {
++                order.push_back(expert);
++                seen[expert] = 1;
++            }
++        }
++        for (int32_t expert : seed_order) {
++            if (!seen[expert] && int(order.size()) < slots) {
++                order.push_back(expert);
++                seen[expert] = 1;
++            }
++        }
++        order.resize(slots, -1);
++        return order;
++    }
++
++    bool commit_resize(const std::vector<int32_t> & order) {
++        if (int(order.size()) > n_experts) return false;
++        std::vector<uint8_t> seen(n_experts, 0);
++        for (int32_t expert : order) {
++            if (expert < -1 || expert >= n_experts || (expert >= 0 && seen[expert])) return false;
++            if (expert >= 0) seen[expert] = 1;
++        }
++        n_slots = int(order.size());
++        slot_to_expert = order;
++        expert_to_slot.assign(n_experts, -1);
++        ages.assign(n_slots, epoch);
++        protected_slots.resize(n_slots);
++        for (int slot = 0; slot < n_slots; ++slot) {
++            if (order[slot] >= 0) expert_to_slot[order[slot]] = slot;
++        }
++        last.n_tokens = 0;
++        last.uploads.clear();
++        return true;
++    }
++
++    bool make_plan(const std::vector<int32_t> & ids, int tokens, int used) {
++        if (tokens < 1 || tokens > 8 || used < 1 || used > n_experts ||
++                ids.size() != size_t(tokens) * size_t(used)) return false;
++        for (int32_t expert : ids) if (expert < 0 || expert >= n_experts) return false;
++        epoch += tokens;
++        std::fill(counts.begin(), counts.end(), 0);
++        std::fill(initial_hits.begin(), initial_hits.end(), 0);
++        std::fill(protected_slots.begin(), protected_slots.end(), 0);
++        candidates.clear();
++        last.ids = ids;
++        last.n_tokens = tokens;
++        last.hits = last.uploaded = last.cpu = last.cpu_unique = 0;
++        last.uploads.clear();
++        int protected_count = 0;
++        for (int32_t expert : ids) {
++            ++counts[expert];
++            const int slot = expert_to_slot[expert];
++            if (slot >= 0) {
++                ++last.hits;
++                initial_hits[expert] = 1;
++                if (!protected_slots[slot]) {
++                    protected_slots[slot] = 1;
++                    ++protected_count;
++                }
++                ages[slot] = epoch;
++            }
++        }
++        for (int expert = 0; expert < n_experts; ++expert) {
++            if (counts[expert] > 0 && !initial_hits[expert]) candidates.push_back(expert);
++        }
++        std::sort(candidates.begin(), candidates.end(), [&](int32_t a, int32_t b) {
++            return rank_value[a] != rank_value[b] ? rank_value[a] > rank_value[b] : a < b;
++        });
++        const int capacity = n_slots > 0 ? n_slots - protected_count + transient_slots : 0;
++        const int maximum = std::min(int(candidates.size()), capacity);
++        const auto & cost = timing[tokens];
++        int uploads = 0;
++        if (cost.samples == 2) {
++            uploads = std::min(1, maximum);
++        } else if (cost.samples > 2) {
++            double best = std::numeric_limits<double>::infinity();
++            for (int u = 0; u <= maximum; ++u) {
++                const double cpu_us = cost.cpu_base_us + (candidates.size() - u) * cost.cpu_expert_us;
++                const double gpu_us = cost.gpu_base_us + u * cost.gpu_upload_us;
++                const double wall_us = std::max(cpu_us, gpu_us);
++                if (wall_us < best) {
++                    best = wall_us;
++                    uploads = u;
++                }
++            }
++        }
++        int scratch = 0;
++        for (int i = 0; i < uploads; ++i) {
++            const int32_t expert = candidates[i];
++            int victim = -1;
++            for (int slot = 0; slot < n_slots; ++slot) {
++                if (protected_slots[slot]) continue;
++                if (victim < 0 || slot_to_expert[slot] < 0 ||
++                        (slot_to_expert[victim] >= 0 && ages[slot] < ages[victim])) victim = slot;
++                if (slot_to_expert[slot] < 0) break;
++            }
++            if (victim >= 0) {
++                const int32_t old = slot_to_expert[victim];
++                if (old >= 0) expert_to_slot[old] = -1;
++                slot_to_expert[victim] = expert;
++                expert_to_slot[expert] = victim;
++                protected_slots[victim] = 1;
++                ages[victim] = epoch;
++                last.uploads.push_back({expert, victim, true});
++            } else if (scratch < transient_slots) {
++                last.uploads.push_back({expert, n_slots + scratch++, false});
++            }
++        }
++        std::copy(expert_to_slot.begin(), expert_to_slot.end(), last.slot_map.begin());
++        for (const auto & entry : last.uploads) last.slot_map[entry.expert] = entry.slot;
++        for (int expert = 0; expert < n_experts; ++expert) {
++            if (counts[expert] == 0) continue;
++            if (last.slot_map[expert] < 0) {
++                last.cpu += counts[expert];
++                ++last.cpu_unique;
++            } else if (!initial_hits[expert]) {
++                last.uploaded += counts[expert];
++            }
++        }
++        return last.hits + last.uploaded + last.cpu == int(ids.size());
++    }
++
++    void observe(double cpu_us, double gpu_us) {
++        if (last.n_tokens < 1 || !std::isfinite(cpu_us) || !std::isfinite(gpu_us) ||
++                cpu_us <= 0 || gpu_us <= 0) return;
++        auto & cost = timing[last.n_tokens];
++        // The first graph may include backend capture and thread-pool startup.
++        if (cost.samples++ == 0) return;
++        auto update = [](double & value, double sample) {
++            value = 0.8 * value + 0.2 * std::clamp(sample, 1.0, 10000.0);
++        };
++        if (last.cpu_unique > 0) {
++            update(cost.cpu_expert_us, (cpu_us - cost.cpu_base_us) / last.cpu_unique);
++        } else {
++            update(cost.cpu_base_us, cpu_us);
++        }
++        if (!last.uploads.empty()) {
++            update(cost.gpu_upload_us, (gpu_us - cost.gpu_base_us) / last.uploads.size());
++        } else {
++            update(cost.gpu_base_us, gpu_us);
++        }
++    }
++
++    const plan & latest() const { return last; }
++    const std::vector<int32_t> & slots() const { return slot_to_expert; }
++    const costs & estimate(int tokens) const { return timing.at(tokens); }
++    int capacity() const { return n_slots == 0 ? 0 : n_slots + transient_slots; }
++
++private:
++    int n_experts = 0;
++    int n_slots = 0;
++    uint64_t epoch = 0;
++    std::vector<int32_t> seed_order, rank_value, slot_to_expert, expert_to_slot, candidates;
++    std::vector<int> counts;
++    std::vector<uint8_t> initial_hits, protected_slots;
++    std::vector<uint64_t> ages;
++    std::array<costs, 9> timing;
++    plan last;
++};
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -1,3 +1,5 @@
++#include "../src/llama-moe-cache-two-channel-policy.h"
++#include <random>
+ // This file defines tests for various GGML ops and backends.
+ // For the forward pass it asserts that the results of multiple backends computing the same GGML ops are consistent.
+ // For the backward pass it asserts that the gradients from backpropagation are consistent
+@@ -4843,10 +4845,11 @@
+     const int64_t m;
+     const int64_t n;
+     const int64_t k;
++    const bool all_skip;
+     const bool skip_ids; // some ids are -1 (hot/cold expert-pack split)
+ 
+     std::string vars() override {
+-        return VARS_TO_STR9(type_a, type_b, n_mats, n_used, b, m, n, k, skip_ids);
++        return VARS_TO_STR10(type_a, type_b, n_mats, n_used, b, m, n, k, skip_ids, all_skip);
+     }
+ 
+     double max_nmse_err() override {
+@@ -4868,10 +4871,11 @@
+ 
+     test_mul_mat_id(ggml_type type_a = GGML_TYPE_F32, ggml_type type_b = GGML_TYPE_F32,
+             int n_mats = 8, int n_used = 2, bool b = false,
+-            int64_t m = 32, int64_t n = 32, int64_t k = 32, bool skip_ids = false)
++            int64_t m = 32, int64_t n = 32, int64_t k = 32, bool skip_ids = false, bool all_skip = false)
+         : type_a(type_a), type_b(type_b), n_mats(n_mats), n_used(n_used), b(b),
+-            m(m), n(n), k(k), skip_ids(skip_ids) {
++            m(m), n(n), k(k), all_skip(all_skip), skip_ids(skip_ids) {
+             GGML_ASSERT(n_used <= n_mats);
++        GGML_ASSERT(!all_skip || skip_ids);
+         }
+ 
+     ggml_tensor * build_graph(ggml_context * ctx) override {
+@@ -4902,6 +4906,13 @@
+ 
+     void initialize_tensors(ggml_context * ctx) override {
+         init_mul_mat_id_tensors(ctx, n_mats, skip_ids);
++        if (all_skip) {
++            for (ggml_tensor * tensor = ggml_get_first_tensor(ctx); tensor; tensor = ggml_get_next_tensor(ctx, tensor)) {
++                if (strcmp(tensor->name, "ids") != 0) continue;
++                std::vector<int32_t> values(ggml_nelements(tensor), -1);
++                ggml_backend_tensor_set(tensor, values.data(), 0, values.size()*sizeof(int32_t));
++            }
++        }
+     }
+ };
+ 
+@@ -9565,6 +9576,18 @@
+         test_cases.emplace_back(new test_mul_mat_id(ta, GGML_TYPE_F32, 16, 8, false, 256, 64, 256, /*skip_ids=*/true));
+     }
+ 
++    // Cache banks include four transient slots; cover decode and MTP verification shapes.
++    for (ggml_type type : {GGML_TYPE_Q3_K, GGML_TYPE_IQ3_XXS}) {
++        for (int capacity : {14, 24}) {
++            for (int tokens : {1, 2, 3, 4, 8}) {
++                for (bool empty : {false, true}) {
++                    test_cases.emplace_back(new test_mul_mat_id(type, GGML_TYPE_F32, capacity, 8, true, 512, tokens, 2048, true, empty));
++                    test_cases.emplace_back(new test_mul_mat_id(type, GGML_TYPE_F32, capacity, 8, false, 2048, tokens, 512, true, empty));
++                }
++            }
++        }
++    }
++
+     // PREFILLPROF4: MMQ minimal cases without -1 (control for the concentrated-routing hang check)
+     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_0, GGML_TYPE_F32, 16, 8, false, 256, 4, 256, false));
+     test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_0, GGML_TYPE_F32, 16, 8, false, 256, 64, 256, false));
+@@ -11612,7 +11635,87 @@
+     printf("    -j <n> runs tests using <n> parallel worker threads (default: 1, test mode only)\n");
+ }
+ 
++static bool test_moe_channel_policy() {
++    for (uint64_t seed = 0; seed < 256; ++seed) {
++        std::mt19937_64 rng(seed);
++        const int experts = 1 + rng() % 256;
++        std::vector<int32_t> ranking(experts);
++        std::iota(ranking.begin(), ranking.end(), 0);
++        std::shuffle(ranking.begin(), ranking.end(), rng);
++        llama_moe_channel_policy policy;
++        const int initial_slots = seed % 3 == 0 ? 0 : seed % 3 == 1 ? experts : rng() % (experts + 1);
++        if (!policy.initialize(experts, initial_slots, seed % 11 == 0 ? std::vector<int32_t>{} : ranking)) return false;
++        std::vector<int32_t> weights(policy.capacity(), -1);
++        for (size_t slot = 0; slot < policy.slots().size(); ++slot) weights[slot] = policy.slots()[slot];
++        for (int step = 0; step < 128; ++step) {
++            auto check = [&](bool ok, const char * property) {
++                if (!ok) fprintf(stderr, "channel-policy seed=%llu step=%d E=%d: %s\n",
++                        (unsigned long long) seed, step, experts, property);
++                return ok;
++            };
++            if (step > 0 && step % 13 == 0) {
++                const int slots = step % 26 == 0 ? 0 : rng() % (experts + 1);
++                auto order = policy.preview_resize(slots);
++                if (!check(int(order.size()) == slots && policy.commit_resize(order), "resize")) return false;
++                weights.assign(policy.capacity(), -1);
++                for (size_t slot = 0; slot < order.size(); ++slot) weights[slot] = order[slot];
++            }
++            const int tokens = 1 + rng() % 8;
++            const int used = 1 + rng() % std::min(8, experts);
++            std::vector<int32_t> ids;
++            std::vector<uint8_t> was_cached(experts, 0);
++            for (int32_t expert : policy.slots()) if (expert >= 0) was_cached[expert] = 1;
++            for (int token = 0; token < tokens; ++token) {
++                std::shuffle(ranking.begin(), ranking.end(), rng);
++                for (int k = 0; k < used; ++k) {
++                    ids.push_back(step % 17 == 0 ? seed % experts : ranking[k]);
++                }
++            }
++            if (!check(policy.make_plan(ids, tokens, used), "valid plan")) return false;
++            const auto & plan = policy.latest();
++            std::vector<uint8_t> used_slots(weights.size(), 0), copied(experts, 0);
++            for (const auto & entry : plan.uploads) {
++                if (!check(entry.expert >= 0 && entry.expert < experts && entry.slot >= 0 &&
++                        entry.slot < int(weights.size()), "upload bounds")) return false;
++                if (!check(!used_slots[entry.slot] && !copied[entry.expert], "single upload per slot/expert")) return false;
++                used_slots[entry.slot] = copied[entry.expert] = 1;
++                weights[entry.slot] = entry.expert;
++            }
++            int cpu = 0, hits = 0, uploaded = 0;
++            for (int32_t expert : ids) {
++                const int slot = plan.slot_map[expert];
++                if (slot < 0) {
++                    ++cpu;
++                    if (!check(!was_cached[expert], "active hit cannot be evicted")) return false;
++                } else {
++                    if (!check(slot < int(weights.size()) && weights[slot] == expert, "GPU slot owns selected expert")) return false;
++                    if (was_cached[expert]) ++hits;
++                    else {
++                        ++uploaded;
++                        if (!check(copied[expert], "a miss must be copied before GPU use")) return false;
++                    }
++                }
++            }
++            if (!check(plan.cpu == cpu && plan.hits == hits && plan.uploaded == uploaded &&
++                    cpu + hits + uploaded == int(ids.size()), "disjoint exhaustive partition")) return false;
++            for (size_t slot = 0; slot < policy.slots().size(); ++slot) {
++                if (policy.slots()[slot] >= 0 && !check(weights[slot] == policy.slots()[slot], "persistent weights")) return false;
++            }
++            if (policy.slots().empty() && !check(plan.uploads.empty() && cpu == int(ids.size()), "zero cache")) return false;
++            policy.observe(15.0 + plan.cpu_unique * (10 + rng() % 200),
++                           25.0 + plan.uploads.size() * (15 + rng() % 100));
++            const auto saved_slots = policy.slots();
++            if (!check(!policy.make_plan(ids, 0, used) && policy.slots() == saved_slots, "invalid shape is transactional")) return false;
++        }
++    }
++    fprintf(stdout, "channel-policy: 32768 generated route/resize sequences OK (CPU only)\n");
++    return true;
++}
++
+ int main(int argc, char ** argv) {
++    if (argc == 2 && strcmp(argv[1], "--moe-channel-policy-test") == 0) {
++        return test_moe_channel_policy() ? 0 : 1;
++    }
+     test_mode mode = MODE_TEST;
+     output_formats output_format = CONSOLE;
+     const char * op_names_filter = nullptr;
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2172,7 +2172,7 @@
+         res->generation_params = slot.task->params; // copy the parameters
+ 
+         llama_moe_cache_stats moe_cache_stats = {};
+-        if (params_base.moe_cache_policy == "hybrid" &&
++        if ((params_base.moe_cache_policy == "hybrid" || params_base.moe_cache_policy == "two-channel") &&
+                 llama_model_get_moe_cache_stats(llama_get_model(ctx_tgt), &moe_cache_stats)) {
+             const uint64_t routes = moe_cache_stats.hits + moe_cache_stats.misses;
+             const double hit_rate = routes > 0 ? double(moe_cache_stats.hits) / double(routes) : 0.0;
+@@ -2181,7 +2181,11 @@
+             const double copied_bytes_per_token = moe_cache_stats.tokens > 0
+                     ? double(moe_cache_stats.copied_bytes) / double(moe_cache_stats.tokens) : 0.0;
+             res->moe_cache_stats = json {
+-                {"policy", "hybrid"},
++                {"policy", params_base.moe_cache_policy},
++                {"uploaded", moe_cache_stats.uploaded},
++                {"cpu", moe_cache_stats.cpu},
++                {"cpu_channel_us", moe_cache_stats.cpu_channel_us},
++                {"gpu_channel_us", moe_cache_stats.gpu_channel_us},
+                 {"tokens", moe_cache_stats.tokens},
+                 {"hits", moe_cache_stats.hits},
+                 {"misses", moe_cache_stats.misses},
+@@ -2192,7 +2196,8 @@
+                 {"copied_bytes", moe_cache_stats.copied_bytes},
+                 {"copied_bytes_per_token", copied_bytes_per_token},
+             };
+-            LOG_INF("hybrid moe cache: hits=%llu misses=%llu insertions=%llu copies=%llu copies/token=%.3f copied_bytes/token=%.1f\n",
++            LOG_INF("%s moe cache: hits=%llu misses=%llu insertions=%llu copies=%llu copies/token=%.3f copied_bytes/token=%.1f\n",
++                    params_base.moe_cache_policy.c_str(),
+                     (unsigned long long) moe_cache_stats.hits,
+                     (unsigned long long) moe_cache_stats.misses,
+                     (unsigned long long) moe_cache_stats.insertions,

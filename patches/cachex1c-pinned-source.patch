@@ -1,0 +1,184 @@
+# CACHEX1c stage 2: opt-in pinned expert sources for qwen35moe; live copy probe and route counters.
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -356,6 +356,7 @@
+         const char * moe_cache_profile; // routing profile CSV from llama-moe-trace (NULL = disabled)
+         int32_t      moe_cache_slots;   // experts cached per layer (0 = disabled)
+         bool         moe_cache_live_resize; // allow the local server to resize the expert cache
++        bool         moe_cache_pinned_source; // opt-in GPU host buffers for CPU experts (qwen35moe)
+         const char * moe_cache_policy; // static (default) or opt-in hybrid pinned + LRU tail
+         int32_t      moe_cache_pinned_percent; // percent of cache slots pinned to profile ranking
+         int32_t      moe_cache_inserts_per_layer_token; // hybrid LRU insertion cap
+--- a/common/common.h
++++ b/common/common.h
+@@ -586,6 +586,7 @@
+     std::string moe_cache_profile = ""; // MoE expert cache routing profile CSV (empty = disabled)
+     int32_t     moe_cache_slots   = 0;  // MoE expert cache slots per layer (0 = disabled)
+     bool        moe_cache_live_resize = false;
++    bool        moe_cache_pinned_source = false;
+     std::string moe_cache_policy = "static"; // static (default) or hybrid pinned + LRU tail
+     int32_t     moe_cache_pinned_percent = 50; // hybrid profile-pinned share
+     int32_t     moe_cache_inserts_per_layer_token = 1; // hybrid LRU miss insert cap
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1699,6 +1699,7 @@
+     }
+     mparams.moe_cache_slots = params.moe_cache_slots;
+     mparams.moe_cache_live_resize = params.moe_cache_live_resize;
++    mparams.moe_cache_pinned_source = params.moe_cache_pinned_source;
+     mparams.moe_cache_policy = params.moe_cache_policy.c_str();
+     mparams.moe_cache_pinned_percent = params.moe_cache_pinned_percent;
+     mparams.moe_cache_inserts_per_layer_token = params.moe_cache_inserts_per_layer_token;
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2835,6 +2835,13 @@
+         }
+     ).set_env("LLAMA_ARG_MOE_CACHE_LIVE_RESIZE"));
+     add_opt(common_arg(
++        {"--moe-cache-pinned-source"},
++        "use pinned GPU host buffers for CPU expert weights (qwen35moe, default: disabled)",
++        [](common_params & params) {
++            params.moe_cache_pinned_source = true;
++        }
++    ).set_env("LLAMA_ARG_MOE_CACHE_PINNED_SOURCE"));
++    add_opt(common_arg(
+         {"--moe-cache-policy"}, "static|hybrid",
+         "expert cache policy; static is the default, hybrid enables a profile-pinned set and bounded LRU tail",
+         [](common_params & params, const std::string & value) {
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -83,6 +83,7 @@
+     bool check_tensors;
+     bool no_alloc;
+     bool load_mtp;
++    ggml_backend_buffer_type_t moe_cache_pinned_buft = nullptr;
+ 
+     // handle TENSOR_READ_LAZY
+     // use case: keep PLE / engrams embd tensors on disk, read them on demand
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1321,9 +1321,19 @@
+             }
+         }
+ 
+-        // avoid using a host buffer when using mmap
++        const bool expert_weight = tn.tensor == LLM_TENSOR_FFN_GATE_EXPS ||
++                                   tn.tensor == LLM_TENSOR_FFN_UP_EXPS ||
++                                   tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS;
++        const bool pinned_source = moe_cache_pinned_buft && expert_weight &&
++                                   tn.suffix && strcmp(tn.suffix, "weight") == 0 &&
++                                   ggml_backend_buft_is_host(buft);
++        if (pinned_source) {
++            buft = moe_cache_pinned_buft;
++        }
++
++        // Pinned expert sources must remain real allocations, not mmap views.
+         auto * buft_dev = ggml_backend_buft_get_device(buft);
+-        if (use_mmap && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
++        if (use_mmap && !pinned_source && buft_dev && buft == ggml_backend_dev_host_buffer_type(buft_dev)) {
+             auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+             if (!cpu_dev) {
+                 throw std::runtime_error("no CPU backend found");
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1442,6 +1442,18 @@
+     LLAMA_LOG_INFO("%s: loading model tensors, this can take a while... (load_mode = %s)\n",
+         __func__, load_mode_name);
+ 
++    if (params.moe_cache_pinned_source) {
++        if (arch != LLM_ARCH_QWEN35MOE || devices.size() != 1 || devices.front().is_meta || params.no_host) {
++            throw std::runtime_error("pinned expert sources require qwen35moe, one GPU, and host buffers");
++        }
++        ml.moe_cache_pinned_buft = ggml_backend_dev_host_buffer_type(devices.front().dev);
++        if (!ml.moe_cache_pinned_buft) {
++            throw std::runtime_error("the GPU backend has no pinned host buffer type");
++        }
++        LLAMA_LOG_INFO("%s: CPU expert source buffer: %s (pinned, opt-in)\n",
++                __func__, ggml_backend_buft_name(ml.moe_cache_pinned_buft));
++    }
++
+     // build a list of buffer types for the CPU and GPU devices
+     pimpl->cpu_buft_list = make_cpu_buft_list(devices, params.use_extra_bufts, params.no_host);
+     for (const auto & dev : devices) {
+@@ -1792,6 +1804,9 @@
+         }
+ 
+         for (auto & buf : bufs) {
++            if (!ml.no_alloc && ml.moe_cache_pinned_buft == buft && ggml_backend_buffer_get_type(buf.get()) != buft) {
++                throw std::runtime_error("pinned expert allocation fell back to pageable memory");
++            }
+             // indicate that this buffer contains weights
+             // this is used by ggml_backend_sched to improve op scheduling: ops that use a weight are preferably scheduled to the backend that contains the weight
+             ggml_backend_buffer_set_usage(buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+@@ -2031,6 +2046,10 @@
+     // assignment - without it a CPU-assigned consumer can drag the hot
+     // matmuls (and a per-layer weight copy) onto the CPU
+     ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++
++    const char * probe_env = getenv("GGML_MOE_CACHE_COPY_PROBE");
++    const int probe_copies = probe_env ? std::max(0, std::min(1000, atoi(probe_env))) : 0;
++    ggml_backend_ptr probe_backend{probe_copies > 0 ? ggml_backend_dev_init(dev, nullptr) : nullptr};
+ 
+     // fill packs (expert dim is outermost: one contiguous slab per expert)
+     std::vector<uint8_t> slab;
+@@ -2121,6 +2140,27 @@
+         }
+         ggml_backend_tensor_set(l.moe_map_hot,  map_hot.data(),  0, n_expert*sizeof(int32_t));
+         ggml_backend_tensor_set(l.moe_map_cold, map_cold.data(), 0, n_expert*sizeof(int32_t));
++        if (probe_backend && !ranked.empty() && !hybrid) {
++            const int32_t expert = ranked.front().second;
++            const ggml_tensor * sources[] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
++            ggml_tensor * targets[] = { l.ffn_gate_exps_hot, l.ffn_up_exps_hot, l.ffn_down_exps_hot };
++            size_t bytes = 0;
++            ggml_backend_synchronize(probe_backend.get());
++            const int64_t start_us = ggml_time_us();
++            for (int copy = 0; copy < probe_copies; ++copy) {
++                for (int projection = 0; projection < 3; ++projection) {
++                    const size_t size = sources[projection]->nb[2];
++                    const char * source = (const char *) sources[projection]->data + size_t(expert)*size;
++                    ggml_backend_tensor_set_async(probe_backend.get(), targets[projection], source, 0, size);
++                    bytes += size;
++                }
++            }
++            ggml_backend_synchronize(probe_backend.get());
++            const int64_t elapsed_us = std::max<int64_t>(1, ggml_time_us() - start_us);
++            LLAMA_LOG_INFO("moe_cache_copy_probe: layer=%d source=%s copies=%d bytes=%zu us=%lld GBps=%.3f\n",
++                    il, ggml_backend_buffer_name(l.ffn_gate_exps->buffer), probe_copies, bytes,
++                    (long long) elapsed_us, double(bytes)/double(elapsed_us)/1000.0);
++        }
+     }
+ 
+     pimpl->ctxs_bufs.emplace_back(ggml_context_ptr{ctx}, std::vector<ggml_backend_buffer_ptr>{});
+@@ -3537,6 +3577,7 @@
+         /*.moe_cache_profile           =*/ nullptr,
+         /*.moe_cache_slots             =*/ 0,
+         /*.moe_cache_live_resize       =*/ false,
++        /*.moe_cache_pinned_source     =*/ false,
+         /*.moe_cache_policy            =*/ "static",
+         /*.moe_cache_pinned_percent    =*/ 50,
+         /*.moe_cache_inserts_per_layer_token =*/ 1,
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1596,6 +1596,22 @@
+     const struct ggml_tensor * src1 = dst->src[1];
+     const struct ggml_tensor * ids = dst->src[2];
+ 
++    const char * trace = getenv("GGML_MOE_CACHE_TRACE");
++    const char * prefix = "ffn_moe_down_cold-";
++    if (params->ith == 0 && trace && trace[0] == '1' && strncmp(dst->name, prefix, strlen(prefix)) == 0) {
++        int64_t cpu = 0;
++        int64_t hits = 0;
++        for (int64_t token = 0; token < ids->ne[1]; ++token) {
++            for (int64_t slot = 0; slot < ids->ne[0]; ++slot) {
++                const int32_t id = *(const int32_t *) ((const char *) ids->data + token*ids->nb[1] + slot*ids->nb[0]);
++                if (id < 0) ++hits;
++                else ++cpu;
++            }
++        }
++        fprintf(stderr, "moe_cache_layer layer=%s hits=%lld uploaded=0 cpu=%lld tokens=%lld\n",
++                dst->name + strlen(prefix), (long long) hits, (long long) cpu, (long long) ids->ne[1]);
++    }
++
+     GGML_TENSOR_BINARY_OP_LOCALS
+ 
+     const int ith = params->ith;

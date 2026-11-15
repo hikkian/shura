@@ -2,6 +2,7 @@
 import json
 import shutil
 import socketserver
+import subprocess
 import sys
 import tempfile
 import threading
@@ -12,8 +13,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bench" / "agentic-eval"))
+sys.path.insert(0, str(ROOT / "tests" / "support"))
 import analyze  # noqa: E402
 import harness  # noqa: E402
+import live_guard  # noqa: E402
 import overnight  # noqa: E402
 import safety  # noqa: E402
 import proxy  # noqa: E402
@@ -129,8 +132,17 @@ class Proxy(unittest.TestCase):
 
     def test_usage_scanner_handles_json_sse_and_garbage(self):
         self.assertEqual(proxy.scan_usage(b'{"usage":{"completion_tokens":4}}')["usage"]["completion_tokens"], 4)
-        self.assertEqual(proxy.scan_usage(b"data: nonsense\n\ndata: [DONE]\n"), {})
+        self.assertEqual(proxy.scan_usage(b"data: nonsense\n\ndata: [DONE]\n"), {"done": True})
         self.assertEqual(proxy.scan_usage(b""), {})
+
+    def test_usage_scanner_says_whether_the_answer_finished(self):
+        stream = (b'data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}\n\n'
+                  b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n')
+        self.assertEqual(proxy.scan_usage(stream), {"done": True, "finish_reason": "stop"})
+        cut = b'data: {"choices":[{"delta":{"content":"a"},"finish_reason":null}]}\n\n'
+        self.assertEqual(proxy.scan_usage(cut), {})
+        whole = b'{"choices":[{"message":{"content":"a"},"finish_reason":"length"}]}'
+        self.assertEqual(proxy.scan_usage(whole), {"finish_reason": "length", "done": True})
 
 
 def runs_for(shifts, tasks=40, reps=2, seed=1):
@@ -213,12 +225,16 @@ class Tasks(unittest.TestCase):
 class Sandbox(unittest.TestCase):
     """An unattended agent must not be able to touch anything outside its scratch folder."""
 
+    def setUp(self):
+        self.live = live_guard.hermetic(self)
+
     def run_in(self, script):
-        import subprocess
         with tempfile.TemporaryDirectory(dir="/dev/shm") as scratch:
             (Path(scratch) / "work").mkdir()
             (Path(scratch) / "home").mkdir()
-            argv = harness.sandboxed(["sh", "-c", script], scratch, Path(scratch) / "work")
+            (Path(scratch) / "engine").mkdir()     # the sandbox binds the engine's folder; use a folder of the test's own
+            argv = harness.sandboxed(["sh", "-c", script], scratch, Path(scratch) / "work",
+                                     engine=Path(scratch) / "engine" / "shuracode")
             r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
             return r, sorted(p.name for p in (Path(scratch) / "work").iterdir())
 
@@ -325,8 +341,36 @@ class Plumbing(unittest.TestCase):
         self.assertFalse(stop)
 
 
+class FakeWatchdog:
+    """Stands in for the heat, RAM and disk watchdog: reads no GPU telemetry and never trips."""
+
+    def __init__(self, *args, **kwargs):
+        self.tripped = threading.Event()
+        self.reason = ""
+        self.peak = {"gpu_c": 0, "cpu_c": 0, "vram_used_mib": 0}
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+_real_run = subprocess.run
+
+
+def refusing_run(argv, *args, **kwargs):
+    """The night's cleanup runs `pkill` and `rm` on shared paths. In tests they are refused: nothing is killed or deleted."""
+    if argv and argv[0] in ("pkill", "rm"):
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    return _real_run(argv, *args, **kwargs)
+
+
 class Rehearsal(unittest.TestCase):
     """The whole night, with a stand-in for the agent and for the server: every step runs, nothing touches the GPU or the system."""
+
+    def setUp(self):
+        self.live = live_guard.hermetic(self)
 
     @unittest.skipUnless(Path("/usr/bin/bwrap").exists(), "the night refuses to run an agent without the bubblewrap sandbox")
     def test_the_night_end_to_end(self):
@@ -361,6 +405,8 @@ class Rehearsal(unittest.TestCase):
                        mock.patch.object(overnight, "shura", side_effect=lambda c: calls.append(c) or True),
                        mock.patch.object(overnight.rx, "start_server", return_value=Proc()),
                        mock.patch.object(overnight.rx, "stop_server", return_value=None),
+                       mock.patch.object(overnight.safety, "Watchdog", FakeWatchdog),
+                       mock.patch.object(overnight.subprocess, "run", refusing_run),
                        mock.patch.object(harness, "ENGINE", sys.executable)]
             for p in patches:
                 p.start()
@@ -386,6 +432,8 @@ class Rehearsal(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/dev/shm") as d:
             with mock.patch.object(overnight, "wait_for_free_gpu", return_value=False), \
                     mock.patch.object(overnight, "shura", side_effect=lambda c: calls.append(c) or True), \
+                    mock.patch.object(overnight.safety, "Watchdog", FakeWatchdog), \
+                    mock.patch.object(overnight.subprocess, "run", refusing_run), \
                     mock.patch.object(harness, "ENGINE", sys.executable):
                 code = overnight.main(["--out", d + "/out", "--max-hours", "0.01"])
             self.assertEqual(code, 1)

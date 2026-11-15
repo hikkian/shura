@@ -1,0 +1,15 @@
+Vulkan Instance Version: 1.4.309
+
+
+Devices:
+========
+GPU0:
+	apiVersion         = 1.4.305
+	driverVersion      = 25.1.0
+	vendorID           = 0x1002
+	deviceID           = 0x747e
+	deviceType         = PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+	deviceName         = AMD Radeon RX 7800 XT (RADV NAVI32)
+	driverID           = DRIVER_ID_MESA_RADV
+	driverName         = radv
+	driverInfo         = Mesa 25.1.0

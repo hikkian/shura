@@ -22,6 +22,14 @@ QUANT="" MODEL="" QUICK="" DESKTOP_RAM=6 SEARCH=1 YES=""
 say()  { printf '\n\033[1;36m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+GATEWAY_STOPPED_BY_SETUP=""
+restart_gateway_we_stopped() {  # setup stops the gateway to measure VRAM: any exit before the install step must give it back
+  if [ -n "$GATEWAY_STOPPED_BY_SETUP" ]; then
+    GATEWAY_STOPPED_BY_SETUP=""
+    if systemctl --user start ai-gateway 2>/dev/null; then info "restarted the gateway that setup had stopped"; fi
+  fi
+}
+trap restart_gateway_we_stopped EXIT
 ask()  {  # ask "question" -> 0 for yes
   [ -n "$YES" ] && return 0
   local reply; read -r -p "    $1 [Y/n] " reply </dev/tty || reply=y
@@ -30,9 +38,10 @@ ask()  {  # ask "question" -> 0 for yes
 
 # ---------------------------------------------------------------------------------------- distro
 detect_family() {
-  [ -r /etc/os-release ] || die "cannot read /etc/os-release"
+  local release="${SHURA_OS_RELEASE:-/etc/os-release}"
+  [ -r "$release" ] || die "cannot read $release"
   # shellcheck disable=SC1091
-  . /etc/os-release
+  . "$release"
   OS_ID="$ID" OS_VER="${VERSION_ID:-}" OS_NAME="${PRETTY_NAME:-$ID}"
   case " $ID ${ID_LIKE:-} " in
     *" fedora "*|*" rhel "*) FAMILY=fedora ;;
@@ -40,6 +49,44 @@ detect_family() {
     *" arch "*) FAMILY=arch ;;
     *) FAMILY=unsupported ;;
   esac
+}
+
+preflight_checks() {  # read-only checks; called before clone, mkdir, package changes, or any sudo
+  say "Read-only preflight checks"
+  [ "$FAMILY" != unsupported ] || die "unsupported distribution ($OS_NAME). Supported: Fedora, Ubuntu/Debian, Arch."
+  [ "$(uname -s 2>/dev/null)" = Linux ] || die "setup.sh requires Linux"
+  [ "$(uname -m 2>/dev/null)" = x86_64 ] || die "setup.sh requires x86_64"
+  info "OS: $OS_NAME ($FAMILY), architecture x86_64"
+
+  local ram_kb disk_probe meminfo="${SHURA_MEMINFO:-/proc/meminfo}"
+  ram_kb="$(awk '/MemTotal/ {print $2; exit}' "$meminfo" 2>/dev/null || true)"
+  [[ "$ram_kb" =~ ^[0-9]+$ ]] && [ "$ram_kb" -gt 0 ] || die "could not read system RAM from /proc/meminfo"
+  [ "$ram_kb" -ge $((16 * 1024 * 1024)) ] || die "setup.sh needs at least 16 GiB RAM (detected $((ram_kb / 1048576)) GiB)"
+  info "RAM: $((ram_kb / 1048576)) GiB"
+
+  disk_probe="$SHURA_HOME"
+  while [ ! -e "$disk_probe" ] && [ "$disk_probe" != / ]; do disk_probe="$(dirname "$disk_probe")"; done
+  local free_gb
+  free_gb="$(df -BG --output=avail "$disk_probe" 2>/dev/null | tail -1 | tr -dc 0-9)"
+  [[ "$free_gb" =~ ^[0-9]+$ ]] && [ "$free_gb" -ge 30 ] || die "need at least 30 GB free near $SHURA_HOME (detected ${free_gb:-unknown} GB)"
+  info "Disk: ${free_gb} GB free near $SHURA_HOME"
+
+  command -v nvidia-smi >/dev/null || die "nvidia-smi is missing; install the NVIDIA driver, reboot and rerun setup.sh"
+  GPU="$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | head -1 || true)"
+  [ -n "$GPU" ] || die "no working NVIDIA GPU/driver found; install the driver, reboot and rerun setup.sh"
+  DRIVER_CUDA="$(nvidia-smi 2>/dev/null | grep -oE 'CUDA (UMD )?Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)"
+  info "GPU: $GPU (driver CUDA ${DRIVER_CUDA:-version unknown})"
+
+  if command -v curl >/dev/null; then
+    curl -fsSI --max-time 8 https://github.com/ -o /dev/null || die "cannot reach GitHub; check the network before rerunning setup.sh"
+    curl -fsSI --max-time 8 https://huggingface.co/ -o /dev/null || die "cannot reach Hugging Face; check the network before rerunning setup.sh"
+  elif command -v python3 >/dev/null; then
+    python3 -c 'import urllib.request; urllib.request.urlopen("https://github.com/", timeout=8).close(); urllib.request.urlopen("https://huggingface.co/", timeout=8).close()' \
+      || die "cannot reach GitHub and Hugging Face; check the network before rerunning setup.sh"
+  else
+    die "need curl or Python 3 to check network access before making system changes"
+  fi
+  info "Network: GitHub and Hugging Face reachable"
 }
 
 build_packages() {  # build tools per distro family (Docker and CUDA are handled separately)
@@ -59,22 +106,29 @@ cuda_repo_url() {  # NVIDIA CUDA repository (Fedora .repo / Debian+Ubuntu keyrin
   esac
 }
 
-pkg_install() {  # pkg_install pkg...
+pkg_cmd() {  # pkg_cmd pkg... -> the exact install command for this distribution (text only, never executed)
   case "$FAMILY" in
-    fedora) sudo dnf install -y "$@" ;;
-    debian) sudo apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
-    arch)   sudo pacman -S --needed --noconfirm "$@" ;;
+    fedora) echo "sudo dnf install -y $*" ;;
+    debian) echo "sudo apt-get update && sudo apt-get install -y $*" ;;
+    arch)   echo "sudo pacman -S --needed $*" ;;
   esac
+}
+
+pkg_install() {  # pkg_install pkg...  Never installs: prints the command for the user and returns 1.
+  info "Run this yourself with administrator rights:"
+  info "  $(pkg_cmd "$@")"
+  return 1
 }
 
 # --------------------------------------------------------------------------------------- bootstrap
 [ "${SHURA_SOURCE_ONLY:-}" = 1 ] && return 0
 detect_family
+preflight_checks
 SELF="${BASH_SOURCE[0]:-}"
 if [ -z "$SELF" ] || [ ! -f "$(dirname "$SELF")/installer/shura_setup.py" ]; then
   # Piped from curl: fetch the repository, then run the real script from it.
   [ "$FAMILY" = unsupported ] && die "unsupported distribution ($OS_NAME). Supported: Fedora, Ubuntu/Debian, Arch."
-  command -v git >/dev/null || { echo "Installing git..."; pkg_install git; }
+  command -v git >/dev/null || { pkg_install git; die "git is required to fetch Shura. Install it with the command above, then rerun this script."; }
   if [ -d "$SHURA_HOME/app/.git" ]; then git -C "$SHURA_HOME/app" pull --ff-only -q
   else git clone -q --depth 1 "$REPO_URL" "$SHURA_HOME/app"; fi
   exec bash "$SHURA_HOME/app/setup.sh" "$@" </dev/tty
@@ -101,25 +155,7 @@ exec > >(tee -a "$HOME/.cache/shura/setup.log") 2>&1
 printf '\n\033[1;36m  Shura · شورى\033[0m  local AI coding workstation setup\n'
 
 # ---------------------------------------------------------------------------------------- checks
-say "Checking this machine"
-[ "$FAMILY" = unsupported ] && die "unsupported distribution ($OS_NAME). Supported: Fedora, Ubuntu/Debian, Arch."
-[ "$(uname -m)" = x86_64 ] || die "only x86_64 is supported"
-info "system: $OS_NAME ($FAMILY family)"
-if ! command -v nvidia-smi >/dev/null || ! nvidia-smi >/dev/null 2>&1; then
-  info "No working NVIDIA driver found. Install it first, reboot, then rerun this script:"
-  case "$FAMILY" in
-    fedora) info "  RPM Fusion: sudo dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda" ;;
-    debian) info "  Ubuntu: sudo ubuntu-drivers install    Debian: see wiki.debian.org/NvidiaGraphicsDrivers" ;;
-    arch)   info "  sudo pacman -S nvidia-open (or nvidia-open-dkms)" ;;
-  esac
-  die "Shura needs an NVIDIA GPU with the proprietary driver (the MoE expert cache is CUDA-only)."
-fi
-GPU="$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1)"
-DRIVER_CUDA="$(nvidia-smi | grep -oE 'CUDA (UMD )?Version: [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
-info "GPU: $GPU (driver supports CUDA ${DRIVER_CUDA:-?})"
-info "RAM: $(awk '/MemTotal/ {printf "%.0f GB", $2/1048576}' /proc/meminfo), CPU: $(lscpu -p=Core,Socket 2>/dev/null | grep -vc '^#') physical cores"
-free_gb=$(df -BG --output=avail "$SHURA_HOME" | tail -1 | tr -dc 0-9)
-[ "$free_gb" -ge 30 ] || die "need ~30-45 GB free in $SHURA_HOME (have ${free_gb} GB)"
+say "Preflight passed; proceeding with setup"
 
 # ------------------------------------------------------------------------------------- packages
 say "System packages"
@@ -129,24 +165,26 @@ for p in cmake git curl node npm python3; do command -v "$p" >/dev/null || missi
 command -v ninja >/dev/null || command -v ninja-build >/dev/null || missing+=(ninja)
 if [ ${#missing[@]} -gt 0 ]; then
   info "missing: ${missing[*]}"
-  info "will run: sudo package install ${PKGS[*]}"
-  ask "Install them now?" || die "cannot continue without build tools"
+  info "setup never runs sudo itself; install the packages, then rerun setup.sh"
   pkg_install "${PKGS[@]}"
+  die "build tools are missing (${missing[*]}). Run the command printed above, then rerun setup.sh"
 else
   info "build tools already installed"
 fi
 
 DOCKER=""
 if [ -n "$SEARCH" ]; then
-  if command -v docker >/dev/null; then
-    if docker info >/dev/null 2>&1; then DOCKER="docker"; else DOCKER="sudo docker"; fi
-  elif ask "Web search needs Docker (for a private SearXNG). Install Docker?"; then
-    case "$FAMILY" in fedora) pkg_install moby-engine ;; debian) pkg_install docker.io ;; arch) pkg_install docker ;; esac
-    sudo systemctl enable --now docker
-    DOCKER="sudo docker"
+  if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+    DOCKER="docker"
   else
     SEARCH=""
-    info "skipping web search (rerun with Docker installed to add it)"
+    info "skipping web search: Docker is not usable without administrator rights (setup never calls sudo)"
+    if ! command -v docker >/dev/null; then
+      case "$FAMILY" in fedora) pkg_name=moby-engine ;; debian) pkg_name=docker.io ;; arch) pkg_name=docker ;; esac
+      pkg_install "$pkg_name" || true
+      info "then enable it:  sudo systemctl enable --now docker"
+    fi
+    info "and allow your user to use it:  sudo usermod -aG docker \$USER   (log out and in), then rerun setup.sh"
   fi
 fi
 
@@ -154,22 +192,19 @@ fi
 say "CUDA toolkit"
 for d in /usr/local/cuda/bin /opt/cuda/bin; do [ -x "$d/nvcc" ] && export PATH="$d:$PATH"; done
 if ! command -v nvcc >/dev/null; then
-  info "nvcc not found - installing the CUDA toolkit (the driver is left untouched)"
-  ask "Add NVIDIA's CUDA repository and install cuda-toolkit?" || die "the CUDA toolkit is required to build llama.cpp"
+  info "nvcc not found: the CUDA toolkit is not installed (the driver is left untouched)"
+  info "setup never runs sudo itself. To install the toolkit, run these yourself with administrator rights:"
   case "$FAMILY" in
     fedora)
-      repo="$(cuda_repo_url)"
-      curl -fsI "$repo" >/dev/null || die "NVIDIA has no CUDA repository for Fedora $OS_VER yet ($repo)"
-      sudo dnf config-manager addrepo --from-repofile="$repo" 2>/dev/null || sudo dnf config-manager --add-repo "$repo"
-      sudo dnf install -y cuda-toolkit ;;
+      info "  sudo dnf config-manager addrepo --from-repofile=$(cuda_repo_url)"
+      info "  sudo dnf install -y cuda-toolkit" ;;
     debian)
-      keyring="$(cuda_repo_url)"
-      curl -fsSL "$keyring" -o /tmp/cuda-keyring.deb || die "NVIDIA has no CUDA repository for $OS_NAME ($keyring)"
-      sudo dpkg -i /tmp/cuda-keyring.deb && sudo apt-get update -qq && sudo apt-get install -y cuda-toolkit ;;
-    arch) pkg_install cuda ;;
+      info "  wget $(cuda_repo_url) -O /tmp/cuda-keyring.deb"
+      info "  sudo dpkg -i /tmp/cuda-keyring.deb"
+      info "  sudo apt-get update && sudo apt-get install -y cuda-toolkit" ;;
+    arch) info "  $(pkg_cmd cuda)" ;;
   esac
-  for d in /usr/local/cuda/bin /opt/cuda/bin; do [ -x "$d/nvcc" ] && export PATH="$d:$PATH"; done
-  command -v nvcc >/dev/null || die "nvcc still not found after installing the CUDA toolkit"
+  die "this setup builds llama.cpp with CUDA, so it cannot continue without nvcc. Install the toolkit, then rerun; or run ./scripts/shura install for the Vulkan/CPU path that needs no CUDA"
 fi
 NVCC_VER="$(nvcc --version | grep -oE 'release [0-9]+\.[0-9]+' | grep -oE '[0-9.]+$')"
 info "nvcc $NVCC_VER"
@@ -193,6 +228,7 @@ say "Choosing the model size for your hardware"
 if systemctl --user is-active --quiet ai-gateway 2>/dev/null; then
   info "stopping the running gateway so VRAM can be measured"
   systemctl --user stop ai-gateway
+  GATEWAY_STOPPED_BY_SETUP=1
 fi
 PLAN="$(python3 "$PY" plan ${QUANT:+--quant "$QUANT"} --desktop-ram-gb "$DESKTOP_RAM")" || die "planning failed"
 jget() {  # jget JSON key [key...]
@@ -236,6 +272,7 @@ RESULT="$(tail -1 "$HOME/.cache/shura/autotune.json")"
 # ----------------------------------------------------------------------------------- services
 say "Installing Shura"
 SHURA_DOCKER="$DOCKER" "$REPO_DIR/scripts/install.sh" ${SEARCH:---no-searxng}
+GATEWAY_STOPPED_BY_SETUP=""       # install.sh started it again
 
 say "Done"
 speed="$(jget "$RESULT" decode_compare) tok/s at ${QUICK:+12k}${QUICK:-100k} context"

@@ -1,0 +1,132 @@
+# fattn2: WMMA flash attention для D<=256 на RDNA3 (перенос PR #28102 «CUDA/HIP: Flash Attention tuning (gfx1201)»).
+# Источник: upstream llama.cpp PR #28102, лицензия MIT; перенос и измерения — reports/REPORT-FATTN2.md.
+diff --git a/ggml/src/ggml-cuda/fattn-common.cuh b/ggml/src/ggml-cuda/fattn-common.cuh
+index 7442bc22af20..48b631e60fb4 100644
+--- a/ggml/src/ggml-cuda/fattn-common.cuh
++++ b/ggml/src/ggml-cuda/fattn-common.cuh
+@@ -1133,12 +1133,21 @@ void launch_fattn(
+ 
+     dim3 blocks_num;
+     if (stream_k) {
+-        // For short contexts it can be faster to have the SMs work on whole tiles because this lets us skip the fixup.
+-        const int max_blocks = max_blocks_per_sm*nsm;
+-        const int tiles_nwaves = (ntiles_dst + max_blocks - 1) / max_blocks;
+-        const int tiles_efficiency_percent = 100 * ntiles_dst / (max_blocks*tiles_nwaves);
++        auto should_use_stream_k = [](const int cc, const int ntiles_dst, const int max_blocks, const int DKQ) {
++            const int tiles_nwaves             = (ntiles_dst + max_blocks - 1) / max_blocks;
++            const int tiles_efficiency_percent = 100 * ntiles_dst / (max_blocks*tiles_nwaves);
+ 
+-        const bool use_stream_k = cc >= GGML_CUDA_CC_ADA_LOVELACE || amd_wmma_available(cc) || tiles_efficiency_percent < 75;
++            if (GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE) {
++                return true;
++            }
++            if (amd_wmma_available(cc) && DKQ == 64) {
++                return true; // TODO better configuration
++            }
++            return tiles_efficiency_percent < 75;
++        };
++
++        const int  max_blocks   = max_blocks_per_sm*nsm;
++        const bool use_stream_k = should_use_stream_k(cc, ntiles_dst, max_blocks, Q->ne[0]);
+ 
+         blocks_num.x = ntiles_dst;
+         blocks_num.y = 1;
+diff --git a/ggml/src/ggml-cuda/fattn-mma-f16.cuh b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+index bc5060e813e5..578f6cf79c25 100644
+--- a/ggml/src/ggml-cuda/fattn-mma-f16.cuh
++++ b/ggml/src/ggml-cuda/fattn-mma-f16.cuh
+@@ -158,8 +158,8 @@ static constexpr __host__ __device__ fattn_mma_config ggml_cuda_fattn_mma_get_co
+ 
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256,  8,  64, 2,  32, 128, 128, 128, 1, true);
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 16,  64, 2,  32, 128, 128, 128, 1, true);
+-    GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 32, 128, 2,  64, 128, 128,  64, 1, true);
+-    GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 64, 128, 2,  64, 128, 128,  64, 1, true);
++    GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 32, 256, 2,  64, 128, 128,  64, 1, true);
++    GGML_CUDA_FATTN_MMA_CONFIG_CASE(256, 256, 64, 256, 2,  64, 128, 128,  64, 1, true);
+ 
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(320, 256, 32, 128, 2,  32, 160, 128, 128, 1, true);
+     GGML_CUDA_FATTN_MMA_CONFIG_CASE(320, 256, 64, 128, 2,  32, 160, 128, 128, 1, true);
+@@ -1826,7 +1826,7 @@ static __global__ void flash_attn_ext_f16(
+ #endif // __CUDA_ARCH__ == GGML_CUDA_CC_TURING
+ 
+ #if defined(AMD_WMMA_AVAILABLE)
+-    if (ncols1*ncols2 < 16 || ncols2 == 1 || DKQ > 128) {
++    if (ncols1*ncols2 < 16 || ncols2 == 1 || DKQ > 256) {
+         NO_DEVICE_CODE;
+         return;
+     }
+diff --git a/ggml/src/ggml-cuda/fattn.cu b/ggml/src/ggml-cuda/fattn.cu
+index d11a964d59a3..ceb4727931d4 100644
+--- a/ggml/src/ggml-cuda/fattn.cu
++++ b/ggml/src/ggml-cuda/fattn.cu
+@@ -221,6 +221,24 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
+         }
+     }
+ 
++    // On RDNA it is preferable to minimize wasted compute vs. duplicate I/O for the mask.
++    if (amd_wmma_available(cc)) {
++        if (use_gqa_opt && gqa_ratio % 8 == 0) {
++            ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
++            return;
++        }
++
++        if (use_gqa_opt && gqa_ratio % 4 == 0) {
++            ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 4>(ctx, dst);
++            return;
++        }
++
++        if (use_gqa_opt && gqa_ratio % 2 == 0) {
++            ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 2>(ctx, dst);
++            return;
++        }
++    }
++
+     if (use_gqa_opt && gqa_ratio > 4) {
+         ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
+         return;
+@@ -646,8 +664,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
+         }
+     }
+ 
+-    // AMD WMMA is always faster than the tile kernel if the full tile width of 16 can be utilized.
+-    if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 128) && Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[1] * gqa_ratio_eff > 8) {
++    // AMD WMMA is faster than the tile kernel if the wide tiles with high arithmetic intensity can be utilized.
++    if ((amd_wmma_available(cc) && gqa_opt_applies && Q->ne[0] <= 256) && Q->ne[0] != 40 && Q->ne[0] != 72 &&
++            Q->ne[1] * gqa_ratio_eff > (Q->ne[0] <= 128 ? 8 : 16)) {
+         return BEST_FATTN_KERNEL_MMA_F16;
+     }
+ 
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 2deb90f6ab1e..ec8de9963f3c 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -10658,6 +10658,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+                                                         GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+     }
+ 
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1},   512, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1},  4096,  64, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1},  4096,  16, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {2, 1},  4096, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {4, 1},  4096, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {12, 1}, 4096, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++
+     // dense-allocated (non-view) quant K/V at batch >= 64, in cache and native layouts
+     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {1, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
+     test_cases.emplace_back(new test_flash_attn_ext(64, 64, 4, {4, 1}, 512, 75, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, {0, 2, 1, 3}, false));
+@@ -11124,6 +11131,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+ 
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 4096, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 4096, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 16384, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 16384, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 65536, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 65536, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, 131072, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
++
+     for (int kv : { 4096, 8192, 16384,32768, 65536, }) {
+         for (int hs : { 64, 128, 256, 576, }) {
+             const int  hsv    = hs == 576 ? 512 : hs;

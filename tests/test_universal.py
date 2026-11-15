@@ -20,7 +20,24 @@ GiB = 1024 ** 3
 
 
 def plan(name, cat=REAL, **kw):
+    config = {"native_backends": True, **(kw.pop("config", None) or {})}
+    kw["config"] = config
     return planner.plan(HW[name], cat, **kw)
+
+
+class BackendDefaults(unittest.TestCase):
+    def test_universal_plan_defaults_to_vulkan_then_cpu_with_safe_flags(self):
+        p = planner.plan(HW["rx7900xtx_24g_64g"], REAL, menu=False)
+        self.assertEqual(p["backend_candidates"], ["vulkan", "cpu"])
+        self.assertFalse(p["needs_probe"])
+        self.assertEqual(p["settings"]["kv_type"], "q8_0")
+        self.assertFalse(p["settings"].get("mtp"))
+        self.assertEqual(p["tier"], "standard")
+
+    def test_native_vendor_backends_are_available_only_after_opt_in(self):
+        p = planner.plan(HW["rx7900xtx_24g_64g"], REAL, config={"native_backends": True}, menu=False)
+        self.assertEqual(p["backend_candidates"][:2], ["rocm", "vulkan"])
+        self.assertTrue(p["needs_probe"])
 
 
 class Schemas(unittest.TestCase):
@@ -85,7 +102,7 @@ class ReferenceMachine(unittest.TestCase):
     def test_headless_gpu_gets_more_experts_on_the_gpu_than_a_display_gpu(self):
         headless = copy.deepcopy(HW["ref_rtx4070s_12g_32g"])
         headless["gpus"][0]["display"], headless["gpus"][0]["vram_used"] = False, 0
-        self.assertLess(planner.plan(headless, REAL)["settings"]["n_cpu_moe"],
+        self.assertLess(planner.plan(headless, REAL, config={"native_backends": True})["settings"]["n_cpu_moe"],
                         plan("ref_rtx4070s_12g_32g")["settings"]["n_cpu_moe"])
 
 

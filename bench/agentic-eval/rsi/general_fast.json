@@ -1,0 +1,39 @@
+{
+ "rule": "general dev part: per category the family with the smallest sha256(\"20261021:<idea>\") and in it the task with the smallest sha256(\"20261021:<task id>\"); web tasks (needs) left out unless GEVAL_SEARXNG=1; pre-registered for RSI1",
+ "seed": 20261021,
+ "families": {
+  "clarify": "ga_language",
+  "design": "gd_card",
+  "diagnosis": "gx_diag",
+  "document": "gu_onepager",
+  "files": "gf_config_key",
+  "instructions": "gi_format",
+  "long_context": "gl_keyword",
+  "media": "gm_trim",
+  "orchestration": "go_schedule",
+  "posts": "gb_post",
+  "questions": "gq_ar_sarf",
+  "reasoning": "gr_logic",
+  "review_code": "gc_review2",
+  "review_text": "gt_review",
+  "writing": "gw_post"
+ },
+ "tasks": [
+  "ga_language-general-01",
+  "gb_post-general-03",
+  "gc_review2-general-03",
+  "gd_card-general-01",
+  "gf_config_key-general-02",
+  "gi_format-general-02",
+  "gl_keyword-general-02",
+  "gm_trim-general-02",
+  "go_schedule-general-02",
+  "gq_ar_sarf-general-03",
+  "gr_logic-general-01",
+  "gt_review-general-02",
+  "gu_onepager-general-03",
+  "gw_post-general-04",
+  "gx_diag-general-03"
+ ],
+ "expected_tasks": 15
+}

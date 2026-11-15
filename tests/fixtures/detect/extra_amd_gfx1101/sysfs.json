@@ -1,0 +1,14 @@
+{
+ "/opt/rocm/.info/version": "7.2.4-45\n",
+ "/proc/swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/swapfile                               file\t\t4194300\t\t0\t\t-2\n",
+ "/sys/class/drm/card0-DP-1/status": "connected\n",
+ "/sys/class/drm/card0-HDMI-A-1/status": "disconnected\n",
+ "/sys/class/drm/card0/device/boot_vga": "1\n",
+ "/sys/class/drm/card0/device/uevent": "DRIVER=amdgpu\nPCI_ID=1002:747E\nPCI_SLOT_NAME=0000:2d:00.0\n",
+ "/sys/class/drm/card0/device/vendor": "0x1002\n",
+ "/sys/class/kfd/kfd/topology/nodes/0/properties": "cpu_cores_count 16\nsimd_count 0\ngfx_target_version 0\n",
+ "/sys/class/kfd/kfd/topology/nodes/1/properties": "cpu_cores_count 0\nsimd_count 120\ngfx_target_version 110001\nvendor_id 4098\n",
+ "/sys/class/power_supply/AC/online": "1\n",
+ "/sys/class/power_supply/AC/type": "Mains\n",
+ "/sys/fs/cgroup/cgroup.controllers": "cpuset cpu io memory hugetlb pids rdma misc\n"
+}

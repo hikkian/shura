@@ -1,0 +1,4 @@
+{
+  "_note": "Installer settings. release_manifest_url: address (https URL or file path) of release-manifest.json, filled by RELBIN1; empty = no prebuilt choice by manifest. The SHURA_RELEASE_MANIFEST environment variable overrides it.",
+  "release_manifest_url": ""
+}

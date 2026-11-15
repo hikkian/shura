@@ -1,0 +1,39 @@
+{
+ "seed": 20261109,
+ "rule": "sha256(seed:family)[:2]/65536 < 0.4 -> holdout, else work; whole families; frozen once written",
+ "frozen_at": "2026-11-08",
+ "families": {
+  "bash_logrotate": "holdout",
+  "js_html_escape_security": "holdout",
+  "js_http_api_paging": "work",
+  "js_state_store": "work",
+  "py_asyncio_pool_bug": "work",
+  "py_cli_taskrunner": "work",
+  "py_csv_etl_orders": "holdout",
+  "py_dal_nplus1": "work",
+  "py_fileserver_security": "work",
+  "py_logfmt_query": "holdout",
+  "py_patch_apply": "work",
+  "py_rest_orders": "work",
+  "py_sqlite_ledger_bug": "holdout",
+  "sql_gaps_islands": "holdout",
+  "sql_schema_migration": "holdout"
+ },
+ "tasks": {
+  "bash_logrotate": 1,
+  "js_html_escape_security": 1,
+  "js_http_api_paging": 1,
+  "js_state_store": 1,
+  "py_asyncio_pool_bug": 1,
+  "py_cli_taskrunner": 1,
+  "py_csv_etl_orders": 1,
+  "py_dal_nplus1": 1,
+  "py_fileserver_security": 1,
+  "py_logfmt_query": 1,
+  "py_patch_apply": 1,
+  "py_rest_orders": 1,
+  "py_sqlite_ledger_bug": 1,
+  "sql_gaps_islands": 1,
+  "sql_schema_migration": 1
+ }
+}

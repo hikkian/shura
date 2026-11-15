@@ -1,0 +1,47 @@
+--- a/bench/agentic-eval/run_experiment.py
++++ b/bench/agentic-eval/run_experiment.py
+@@ -135 +135,6 @@
+-def interim(runs, arms):
++def _family_mean_runs(runs):
++    """Map related variants to their family cluster before the unchanged analyzer averages them."""
++    return [{**row, "task": row.get("family", row["task"])} for row in runs]
++
++
++def interim(runs, arms, family_clusters=False):
+@@ -137,3 +142,4 @@
+-    if len({r["task"] for r in runs}) < 20:
+-        return False, "fewer than 20 tasks done: no interim look yet"
+-    res = analyze.compare(runs, flips=20000, boot=2000)
++    analysis_runs = _family_mean_runs(runs) if family_clusters else runs
++    if len({r["task"] for r in analysis_runs}) < 20:
++        return False, "fewer than 20 analysis units done: no interim look yet"
++    res = analyze.compare(analysis_runs, flips=20000, boot=2000)
+@@ -157,0 +164 @@
++    ap.add_argument("--tasks-v2", action="store_true", help="use only the separate tasks_v2 set; never combine it with v1")
+@@ -162 +169,12 @@
+-    tasks = harness.all_tasks()
++    tasks_root = harness.HERE / "tasks_v2" if a.tasks_v2 else harness.TASKS
++    tasks = harness.all_tasks(tasks_root)
++    task_ids = sorted(t["id"] for t in tasks)
++    dataset = {"set": "v2" if a.tasks_v2 else "v1", "task_ids": task_ids}
++    marker = out / "dataset.json"
++    if marker.exists():
++        if json.loads(marker.read_text()) != dataset:
++            raise SystemExit("output directory belongs to another task set; refusing to mix results")
++    elif (out / "results.jsonl").exists():
++        raise SystemExit("existing results have no dataset marker; choose a fresh output directory")
++    else:
++        marker.write_text(json.dumps(dataset, indent=2) + "\n")
+@@ -174 +192 @@
+-                return finish(out)
++                return finish(out, family_clusters=a.tasks_v2)
+@@ -178 +196 @@
+-        stop, text = interim(complete, [x["name"] for x in cfg["arms"]]) if complete else (False, "nothing complete")
++        stop, text = interim(complete, [x["name"] for x in cfg["arms"]], family_clusters=a.tasks_v2) if complete else (False, "nothing complete")
+@@ -186 +204 @@
+-def finish(out):
++def finish(out, family_clusters=False):
+@@ -196 +214,2 @@
+-    text = analyze.report(complete)[0]
++    analysis_runs = _family_mean_runs(complete) if family_clusters else complete
++    text = analyze.report(analysis_runs)[0]

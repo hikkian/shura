@@ -10,6 +10,7 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -24,7 +25,7 @@ jobs:
           ruff check gateway bench installer tests --select E,F,W,B --ignore E501
 
       - name: Installer unit tests
-        run: python -m unittest discover -s tests -v
+        run: python tests/run_suite.py discover -s tests -v   # a test hanging over 10 min prints all stacks
 
       - name: Shell scripts
         run: shellcheck setup.sh scripts/*.sh scripts/shura tests/*.sh
@@ -43,6 +44,7 @@ jobs:
   distro-packages:
     # Installs the build packages setup.sh would install, in each supported distro, and checks the CUDA repo.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -52,10 +54,76 @@ jobs:
       - name: ${{ matrix.image }}
         run: docker run --rm -v "$PWD:/repo:ro" "${{ matrix.image }}" bash /repo/tests/distro-packages.sh
 
+  full-path:
+    # The path a user takes on Linux, in each distro's own container: the build packages setup.sh would install, then the
+    # scripts/shura entry point (check, install --dry-run), then the pinned llama.cpp build run on the 19 MB model.
+    # One container per distro stays up and each command is its own step. No secrets: the repository is mounted read-only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "archlinux:latest", "fedora:44"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: ${{ matrix.image }} - build packages, repository copied in
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci"
+          cat > "$RUNNER_TEMP/ci/prepare.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # Runs inside the distro container. The repository is mounted read-only at /src; the work happens in a copy at /work,
+          # so the installer's own folders never touch the checkout.
+          set -euo pipefail
+          if ! command -v sudo >/dev/null; then  # containers run as root without sudo
+            printf '#!/bin/sh\nexec "$@"\n' > /usr/local/bin/sudo
+            chmod +x /usr/local/bin/sudo
+          fi
+          cp -a /src /work
+          cd /work
+          # shellcheck disable=SC1091  # setup.sh is the copied repository's own script
+          SHURA_SOURCE_ONLY=1 . ./setup.sh
+          detect_family
+          echo "== $OS_NAME ($FAMILY)"
+          [ "$FAMILY" != unsupported ] || { echo "unsupported distribution"; exit 1; }
+          read -ra PKGS <<< "$(build_packages)"
+          PKGS+=(ca-certificates)  # Python's HTTPS downloads need a CA bundle; minimal images may lack one
+          case "$FAMILY" in  # Mesa's software Vulkan driver (lavapipe) and the loader, for the Vulkan step
+            debian) PKGS+=(mesa-vulkan-drivers libvulkan1) ;;
+            fedora) PKGS+=(mesa-vulkan-drivers vulkan-loader) ;;
+            arch)   PKGS+=(vulkan-swrast vulkan-icd-loader) ;;
+          esac
+          case "$FAMILY" in arch) pacman -Sy --noconfirm >/dev/null ;; esac
+          pkg_install "${PKGS[@]}" >/tmp/pkg.log 2>&1 || { tail -20 /tmp/pkg.log; exit 1; }
+          for t in git curl node npm python3; do command -v "$t" >/dev/null || { echo "MISSING $t"; exit 1; }; done
+          echo "python $(python3 --version | awk '{print $2}')"
+          EOF
+          docker run -d --name shura-ci -v "$PWD:/src:ro" -v "$RUNNER_TEMP/ci:/ci:ro" "${{ matrix.image }}" sleep infinity
+          docker exec shura-ci bash /ci/prepare.sh
+
+      - name: ${{ matrix.image }} - scripts/shura check
+        continue-on-error: true   # a 16 GB CPU-only runner gets NO PLAN (PUB1: cpu_ryzen5_3500_16g needs 19.0 GiB of RAM); reported, not gating
+        run: docker exec shura-ci bash -c 'cd /work && scripts/shura check --no-measure'
+
+      - name: ${{ matrix.image }} - scripts/shura install --dry-run
+        continue-on-error: true   # the same reason as the check above: a refused plan exits 1 and is reported, not gating
+        run: docker exec shura-ci bash -c 'cd /work && scripts/shura install --dry-run --no-measure'
+
+      - name: ${{ matrix.image }} - self-test, real llama-server on the 19 MB model (CPU)
+        run: docker exec shura-ci bash -c 'cd /work && python3 installer/universal/cli.py selftest --backend cpu'
+
+      - name: ${{ matrix.image }} - self-test on Mesa lavapipe (Vulkan, experimental)
+        continue-on-error: true   # the same status as the vulkan-software job: not gating until it has passed a few times
+        run: docker exec -e GGML_VK_DISABLE_F16=1 -e GGML_VK_DISABLE_COOPMAT=1 shura-ci bash -c 'cd /work && python3 installer/universal/cli.py selftest --backend vulkan'
+
+      - name: Remove the container
+        if: always()
+        run: docker rm -f shura-ci
+
   universal:
     # The universal installer core on every OS we target: unit tests, then a real download and self-test of the CPU
     # build of llama.cpp on a 19 MB model. Proves the detect -> resolve -> download -> run path, not GPU speed.
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -82,6 +150,12 @@ jobs:
       - name: Install dry run (plan, sizes, disk; downloads nothing)
         run: python installer/universal/cli.py install --dry-run --no-measure
         continue-on-error: true
+      - name: Entry point scripts/shura (macOS only; Linux runs it in full-path, Windows has no bash wrapper step)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/shura check --no-measure
+          scripts/shura install --dry-run --no-measure
+        continue-on-error: true   # a plan can legitimately be a refusal on a small runner, as in the two steps above
       - name: Self-test the real llama.cpp build (download + run; Metal on macOS, CPU elsewhere)
         continue-on-error: ${{ matrix.os == 'macos-latest' }}   # Metal inside a CI VM is not guaranteed; the result is reported
         shell: bash
@@ -99,6 +173,7 @@ jobs:
     # Experimental until it has passed a few times, hence continue-on-error.
     runs-on: ubuntu-24.04
     continue-on-error: true
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

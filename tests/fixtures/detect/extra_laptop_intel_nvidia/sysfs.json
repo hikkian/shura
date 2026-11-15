@@ -1,0 +1,22 @@
+{
+ "/proc/swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/zram0                              partition\t8388604\t\t1048576\t\t100\n",
+ "/sys/block/zram0/comp_algorithm": "lzo lzo-rle lz4 lz4hc [zstd] 842\n",
+ "/sys/block/zram0/disksize": "8589934592\n",
+ "/sys/block/zram0/mm_stat": "2147483648 536870912 570425344 0 600000000 12 0 0\n",
+ "/sys/class/drm/card0-HDMI-A-1/status": "disconnected\n",
+ "/sys/class/drm/card0-eDP-1/status": "connected\n",
+ "/sys/class/drm/card0/device/boot_vga": "1\n",
+ "/sys/class/drm/card0/device/uevent": "DRIVER=i915\nPCI_CLASS=30000\nPCI_ID=8086:46A6\nPCI_SLOT_NAME=0000:00:02.0\n",
+ "/sys/class/drm/card0/device/vendor": "0x8086\n",
+ "/sys/class/drm/card1-HDMI-A-2/status": "disconnected\n",
+ "/sys/class/drm/card1/device/boot_vga": "0\n",
+ "/sys/class/drm/card1/device/uevent": "DRIVER=nvidia\nPCI_CLASS=30200\nPCI_ID=10DE:25A2\nPCI_SLOT_NAME=0000:01:00.0\n",
+ "/sys/class/drm/card1/device/vendor": "0x10de\n",
+ "/sys/class/power_supply/AC/online": "0\n",
+ "/sys/class/power_supply/AC/type": "Mains\n",
+ "/sys/class/power_supply/BAT0/status": "Discharging\n",
+ "/sys/class/power_supply/BAT0/type": "Battery\n",
+ "/sys/fs/cgroup/cgroup.controllers": "cpuset cpu io memory hugetlb pids rdma misc\n",
+ "/usr/share/vulkan/icd.d/intel_icd.x86_64.json": "{}\n",
+ "/usr/share/vulkan/icd.d/nvidia_icd.json": "{}\n"
+}

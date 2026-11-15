@@ -21,6 +21,17 @@ class LaunchError(Exception):
     pass
 
 
+class AlreadyRunning(LaunchError):
+    """A Shura server started earlier is still up. Not a failure of the build or of the settings."""
+
+
+class PortBusy(LaunchError):
+    """The port is held by another program (typically the Shura gateway on 8080): not a verdict on the build or the settings."""
+
+
+HOME_MARKER = ".shura-home"      # written by `shura install`: this folder belongs to the universal installer
+
+
 def home_dir(env=None, platform=None):
     """Where Shura keeps engines, models, logs and state. `SHURA_HOME` wins; otherwise the usual place of each OS."""
     env, platform = os.environ if env is None else env, platform or sys.platform
@@ -76,21 +87,61 @@ def health(port, host="127.0.0.1", timeout=2):
         return False
 
 
+def _is_llama_server(pid):
+    """Is `pid` a llama-server? A pid from an old server.pid can belong to anything after a reboot or a crash; we must never
+    signal a process that is not ours. True when it cannot be told (no /proc, no ps): the old behaviour."""
+    try:
+        if sys.platform.startswith("linux") and Path("/proc/self/cmdline").exists():
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+            return b"llama" in cmd.lower()
+        if sys.platform == "darwin":
+            out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=5).stdout
+            return "llama" in out.lower()
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        return False
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return True
+
+
 def alive(pid):
+    """Is `pid` a running Shura server? A live process that is not a llama-server (a recycled pid) does not count."""
     if not pid:
         return False
     if pid in _PROCS:
         return _PROCS[pid].poll() is None
     if os.name == "nt":
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-        return str(pid) in out
+        return str(pid) in out and "llama" in out.lower()
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return False                  # a process of another user cannot be our server
+    return _is_llama_server(pid)
+
+
+def port_free(port, host="127.0.0.1"):
+    """Can we listen on host:port? False when something (for instance the Shura gateway on 8080) already holds it."""
+    import socket
+    with socket.socket() as s:
+        if os.name != "nt":
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)     # a port in TIME_WAIT after our last test launch is free
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
     return True
+
+
+def mark_home(home):
+    """Remember that this folder is a Shura home of the universal installer (`shura uninstall` checks for it)."""
+    home = Path(home)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / HOME_MARKER).write_text("created by `shura install`; `shura uninstall` only deletes inside folders that have this file\n")
 
 
 def read_pid(home):
@@ -105,7 +156,10 @@ def start(home, argv, port, *, env=None, wait_s=900, log_name="server.log"):
     home = Path(home)
     pid = read_pid(home)
     if alive(pid) and health(port):
-        raise LaunchError(f"already running (pid {pid}); `shura stop` first")
+        raise AlreadyRunning(f"already running (pid {pid}); `shura stop` first")
+    if not port_free(port):
+        raise PortBusy(f"port {port} is already in use by another program (the Shura gateway uses 8080): "
+                       f"pass another one with --port")
     (home / "logs").mkdir(parents=True, exist_ok=True)
     log_path = home / "logs" / log_name
     kw = {"start_new_session": True} if os.name != "nt" else {
@@ -133,6 +187,15 @@ def tail(path, n=1500):
         return ""
 
 
+def _signal(pid, sig):
+    """Signal the server's process group (it leads its own, see `start`); a pid that does not lead one gets only itself."""
+    try:
+        group = os.getpgid(pid) == pid
+    except ProcessLookupError:
+        return
+    (os.killpg if group else os.kill)(pid, sig)
+
+
 def stop(home, timeout=15):
     """Stop the server started by `start`. Returns True if something was stopped."""
     pid = read_pid(home)
@@ -143,7 +206,7 @@ def stop(home, timeout=15):
         if os.name == "nt":
             subprocess.run(["taskkill", "/PID", str(pid), "/T"], capture_output=True)
         else:
-            os.killpg(pid, signal.SIGTERM)
+            _signal(pid, signal.SIGTERM)
     except OSError:
         pass
     deadline = time.monotonic() + timeout
@@ -154,7 +217,7 @@ def stop(home, timeout=15):
             if os.name == "nt":
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
             else:
-                os.killpg(pid, signal.SIGKILL)
+                _signal(pid, signal.SIGKILL)
         except OSError:
             pass
     (Path(home) / "server.pid").unlink(missing_ok=True)

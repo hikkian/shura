@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from . import netsafe
+
 CHUNK = 1 << 20
 SLACK = 2 * 1024 ** 3                  # disk space kept free on top of the file
 
@@ -26,7 +28,7 @@ def _open(url, headers=None, timeout=60, allow_local=False):
         raise StoreError(f"refusing a non-HTTPS URL: {url}")
     h = {"User-Agent": "shura-installer"}
     h.update(headers or {})
-    return urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout)
+    return netsafe.urlopen(urllib.request.Request(url, headers=h), timeout=timeout)
 
 
 def listing(repo, *, allow_local=False, base="https://huggingface.co"):

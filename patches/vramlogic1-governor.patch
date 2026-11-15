@@ -1,0 +1,2045 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index b66b153..6afa9a9 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2834,6 +2834,89 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.moe_cache_live_resize = true;
+         }
+     ).set_env("LLAMA_ARG_MOE_CACHE_LIVE_RESIZE"));
++    add_opt(common_arg(
++        {"--vram-governor"},
++        "VRAM governor: owns the expert cache and keeps free card VRAM at or above --vram-reserve-mib (requires --moe-cache-live-resize)",
++        [](common_params & params) {
++            params.vram_governor = true;
++            params.moe_cache_live_resize = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_VRAM_GOVERNOR"));
++    add_opt(common_arg(
++        {"--vram-reserve-mib"}, "N",
++        string_format("free card VRAM kept for the desktop, MiB (default: %d)", 1536),
++        [](common_params & params, int value) {
++            params.vram_reserve_mib = value;
++            // the gateway starts the governor by passing the reserve; --vram-governor is the explicit form
++            params.vram_governor = true;
++            params.moe_cache_live_resize = true;
++        }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_VRAM_RESERVE_MIB"));
++    add_opt(common_arg(
++        {"--warmup-shapes"}, "LIST",
++        "governor warm-up shapes, comma separated (prefill_ub, decode_draft, vision); the server always runs the prefill and the draft decode",
++        [](common_params & params, const std::string & value) { params.vram_warmup_shapes = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-hysteresis-mib"}, "N",
++        string_format("the cache grows only into room above reserve + this value, MiB (default: %d)", 256),
++        [](common_params & params, int value) { params.vram_hysteresis_mib = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-grow-seconds"}, "N",
++        string_format("calm seconds after a trim before the cache grows again (default: %d)", 30),
++        [](common_params & params, int value) { params.vram_grow_seconds = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-pause-floor-mib"}, "N",
++        string_format("with the cache at its minimum, free VRAM below this for two polls pauses the server with a checkpoint, MiB (default: %d)", 768),
++        [](common_params & params, int value) { params.vram_pause_floor_mib = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-pause-after-seconds"}, "N",
++        string_format("with the cache at its minimum, free VRAM below the reserve for this many seconds pauses the server (0 = off, default: %d)", 2),
++        [](common_params & params, int value) { params.vram_pause_after_seconds = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-min-chunks"}, "N",
++        "the governor never trims the cache below this many chunks (default: 0)",
++        [](common_params & params, int value) { params.vram_min_chunks = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-poll-ms"}, "N",
++        string_format("governor polling period, ms (default: %d)", 200),
++        [](common_params & params, int value) { params.vram_poll_ms = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--moe-cache-chunk-slots"}, "N",
++        string_format("expert cache slots per governor step (default: %d)", 4),
++        [](common_params & params, int value) { params.moe_cache_chunk_slots = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-sysfs-card"}, "PATH|auto",
++        "amdgpu sysfs device directory with mem_info_vram_used/total (default: auto)",
++        [](common_params & params, const std::string & value) { params.vram_sysfs_card = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-pause-dir"}, "DIR",
++        "directory for governor pause checkpoints",
++        [](common_params & params, const std::string & value) { params.vram_pause_dir = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--host-pinned-max-mib"}, "N",
++        "limit for pinned host buffers created after the warm-up; beyond it buffers use pageable memory (0 = no limit)",
++        [](common_params & params, int value) { params.host_pinned_max_mib = value; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--drop-file-cache"},
++        "drop the model files from the page cache once the weights are loaded (does not evict the browser's pages)",
++        [](common_params & params) { params.drop_file_cache = true; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
++    add_opt(common_arg(
++        {"--vram-test-hooks"},
++        "enable POST /vram/simulate and POST /moe-cache/chunks (stand only)",
++        [](common_params & params) { params.vram_test_hooks = true; }
++    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+     add_opt(common_arg(
+         {"--moe-cache-pinned-source"},
+         "use pinned GPU host buffers for CPU expert weights (qwen35moe, default: disabled)",
+diff --git a/common/common.h b/common/common.h
+index 8888d9d..e92cf13 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -586,6 +586,23 @@ struct common_params {
+     std::string moe_cache_profile = ""; // MoE expert cache routing profile CSV (empty = disabled)
+     int32_t     moe_cache_slots   = 0;  // MoE expert cache slots per layer (0 = disabled)
+     bool        moe_cache_live_resize = false;
++    // VRAMLOGIC1: VRAM governor (owns the expert cache; keeps the card above a free-VRAM reserve)
++    bool        vram_governor = false;
++    int32_t     vram_reserve_mib = 1536;
++    int32_t     vram_hysteresis_mib = 256;
++    int32_t     vram_grow_seconds = 30;
++    int32_t     vram_pause_floor_mib = 768;
++    int32_t     vram_pause_after_seconds = 2;
++    int32_t     vram_min_chunks = 0;
++    int32_t     vram_poll_ms = 200;
++    int32_t     moe_cache_chunk_slots = 4;
++    bool        vram_test_hooks = false;
++    std::string vram_sysfs_card = "auto";
++    std::string vram_warmup_shapes = "prefill_ub,decode_draft,vision";
++    std::string vram_pause_dir = "";
++    // RAMGUARD1f
++    int32_t     host_pinned_max_mib = 0;      // pinned host buffers beyond this (after warm-up) fall back to pageable memory; 0 = no limit
++    bool        drop_file_cache = false;      // posix_fadvise(DONTNEED) on the model files once the weights are loaded
+     bool        moe_cache_pinned_source = false;
+     std::string moe_cache_policy = "static"; // static (default), hybrid, or opt-in two-channel
+     int32_t     moe_cache_pinned_percent = 50; // hybrid profile-pinned share
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 2a7325f..2ae631e 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -1764,6 +1764,7 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+ }
+ 
+ static void ggml_backend_sched_prefetch_disable(ggml_backend_sched_t sched, ggml_backend_t split_backend) {
++    GGML_LOG_WARN("%s: expert prefetch disabled for this scheduler (slot allocation failed)\n", __func__);
+     sched->prefetch_experts = false;
+     if (sched->prefetch_backend) {
+         ggml_backend_synchronize(split_backend);
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 0ee466e..60374fd 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -422,6 +422,39 @@ const ggml_cuda_device_info & ggml_cuda_info() {
+ // #define DEBUG_CUDA_MALLOC
+ 
+ // buffer pool for cuda (legacy)
++// VRAMLOGIC1: pool growth accounting. After warm-up the server freezes the pools: any later growth is counted and
++// logged (vram_pool_overflow) instead of happening silently; the allocation itself still succeeds.
++static std::atomic<bool>     g_pool_frozen{false};
++static std::atomic<uint64_t> g_pool_overflows{0};
++static std::atomic<uint64_t> g_pool_bytes{0};
++
++static void ggml_cuda_pool_note_growth(const char * kind, int device, size_t bytes) {
++    g_pool_bytes += bytes;
++    if (g_pool_frozen.load()) {
++        ++g_pool_overflows;
++        GGML_LOG_WARN("vram_pool_overflow: %s pool[%d] grew by %.2f MiB after warm-up (pool total %.2f MiB)\n",
++                kind, device, bytes/1024.0/1024.0, g_pool_bytes.load()/1024.0/1024.0);
++    }
++}
++
++static std::atomic<uint64_t> g_host_pinned_bytes{0};
++static std::atomic<uint64_t> g_host_pinned_denied{0};
++static std::atomic<uint64_t> g_host_pinned_max_bytes{0}; // 0 = unlimited; applies after the pools were frozen (after warm-up)
++
++static void ggml_backend_cuda_host_set_limit(uint64_t max_bytes) { g_host_pinned_max_bytes.store(max_bytes); }
++
++static void ggml_backend_cuda_host_stats(uint64_t * pinned_bytes, uint64_t * denied) {
++    if (pinned_bytes) { *pinned_bytes = g_host_pinned_bytes.load(); }
++    if (denied)       { *denied       = g_host_pinned_denied.load(); }
++}
++
++static void ggml_backend_cuda_pool_freeze(bool frozen) { g_pool_frozen.store(frozen); }
++
++static void ggml_backend_cuda_pool_stats(uint64_t * overflows, uint64_t * pool_bytes) {
++    if (overflows)  { *overflows  = g_pool_overflows.load(); }
++    if (pool_bytes) { *pool_bytes = g_pool_bytes.load(); }
++}
++
+ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+     static const int MAX_BUFFERS = 256;
+ 
+@@ -513,6 +546,7 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
+         }
+         CUDA_CHECK(err);
+         *actual_size = look_ahead_size;
++        ggml_cuda_pool_note_growth("legacy", device, look_ahead_size);
+         pool_size += look_ahead_size;
+ #ifdef DEBUG_CUDA_MALLOC
+         GGML_LOG_INFO("%s[%d]: %d buffers, max_size = %u MB, pool_size = %u MB, requested %u MB\n", __func__, device, nnz,
+@@ -655,6 +689,7 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
+             }
+ 
+             // add to the pool
++            ggml_cuda_pool_note_growth("vmm", device, reserve_size);
+             pool_size += reserve_size;
+ 
+             //printf("cuda pool[%d]: size increased to %llu MB (reserved %llu MB)\n",
+@@ -1281,6 +1316,7 @@ static bool ggml_backend_buft_is_cuda_host(ggml_backend_buffer_type_t buft) {
+ }
+ 
+ static void ggml_backend_cuda_host_buffer_free_buffer(ggml_backend_buffer_t buffer) {
++    g_host_pinned_bytes -= ggml_backend_buffer_get_size(buffer);
+     CUDA_CHECK(cudaFreeHost(buffer->context));
+ }
+ 
+@@ -1303,7 +1339,17 @@ static void * ggml_cuda_host_malloc(size_t size) {
+ }
+ 
+ static ggml_backend_buffer_t ggml_backend_cuda_host_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
+-    void * ptr = ggml_cuda_host_malloc(size);
++    void * ptr = nullptr;
++    const uint64_t max_pinned = g_host_pinned_max_bytes.load();
++    if (max_pinned > 0 && g_pool_frozen.load() && g_host_pinned_bytes.load() + size > max_pinned) {
++        // RAMGUARD1f: over the pinned-memory limit after warm-up: pageable memory instead of unbounded growth of pinned buffers
++        ++g_host_pinned_denied;
++    } else {
++        ptr = ggml_cuda_host_malloc(size);
++        if (ptr != nullptr) {
++            g_host_pinned_bytes += size;
++        }
++    }
+ 
+     if (ptr == nullptr) {
+         // fallback to cpu buffer
+@@ -6010,6 +6056,18 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
+         return (void *) ggml_backend_cuda_event_elapsed;
+     }
+ #endif
++    if (strcmp(name, "ggml_backend_cuda_host_set_limit") == 0) {
++        return (void *)ggml_backend_cuda_host_set_limit;
++    }
++    if (strcmp(name, "ggml_backend_cuda_host_stats") == 0) {
++        return (void *)ggml_backend_cuda_host_stats;
++    }
++    if (strcmp(name, "ggml_backend_cuda_pool_freeze") == 0) {
++        return (void *)ggml_backend_cuda_pool_freeze;
++    }
++    if (strcmp(name, "ggml_backend_cuda_pool_stats") == 0) {
++        return (void *)ggml_backend_cuda_pool_stats;
++    }
+     if (strcmp(name, "ggml_backend_get_features") == 0) {
+         return (void *)ggml_backend_cuda_get_features;
+     }
+diff --git a/include/llama.h b/include/llama.h
+index 38300bf..d27c89f 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -610,6 +610,11 @@ extern "C" {
+     // Caller must serialize this with inference; the server does so at decode boundaries.
+     LLAMA_API bool llama_model_moe_cache_resize(const struct llama_model * model, int32_t n_slots,
+             int32_t * old_slots, int32_t * new_slots, size_t * released_bytes, size_t * allocated_bytes);
++    // VRAMLOGIC1: expert cache geometry; false when the model has no expert cache rankings
++    // VRAMLOGIC1: forget what the two-channel cache learned (called after the governor's warm-up)
++    LLAMA_API void llama_model_moe_cache_reset_learning(const struct llama_model * model);
++    LLAMA_API bool llama_model_moe_cache_info(const struct llama_model * model,
++            int32_t * slots, size_t * slot_bytes, int32_t * max_slots);
+     LLAMA_API bool llama_model_get_moe_cache_stats(const struct llama_model * model,
+             struct llama_moe_cache_stats * stats);
+     LLAMA_API           llama_memory_t   llama_get_memory  (const struct llama_context * ctx);
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 1d3812c..f916338 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -17,6 +17,8 @@
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
++#include <chrono>
++#include <thread>
+ #include <limits>
+ #include <mutex>
+ #include <stdexcept>
+@@ -1345,6 +1347,10 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     if (model_base != nullptr && model_base->moe_expert_cache_requires_serialization()) {
+         // A resize or hybrid slot update may rewrite/free pack storage. Hold the
+         // model cache lock from scheduler invalidation through graph sync/update.
++        // let a pending resize (the VRAM governor) take the lock between two ubatches
++        for (int i = 0; i < 20000 && model_base->moe_expert_cache_resize_pending(); i++) {
++            std::this_thread::sleep_for(std::chrono::microseconds(100));
++        }
+         moe_cache_lock = std::unique_lock<std::mutex>(model_base->moe_expert_cache_mutex());
+         const uint64_t generation = model_base->moe_expert_cache_generation();
+         if (generation != moe_cache_generation) {
+diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
+index 96c3a45..833c18a 100644
+--- a/src/llama-mmap.cpp
++++ b/src/llama-mmap.cpp
+@@ -174,6 +174,8 @@ struct llama_file::impl {
+         return true;
+     }
+ 
++    void drop_cache() {}
++
+     ~impl() {
+         if (fp && owns_fp) {
+             std::fclose(fp);
+@@ -373,6 +375,15 @@ struct llama_file::impl {
+         return fd != -1 && alignment > 1;
+     }
+ 
++    void drop_cache() {
++#ifdef __linux__
++        int f = fd != -1 ? fd : (fp ? fileno(fp) : -1);
++        if (f != -1) {
++            (void) posix_fadvise(f, 0, 0, POSIX_FADV_DONTNEED);
++        }
++#endif
++    }
++
+     ~impl() {
+         if (fd != -1) {
+             close(fd);
+@@ -407,6 +418,7 @@ size_t llama_file::size() const { return pimpl->size; }
+ 
+ size_t llama_file::read_alignment() const { return pimpl->read_alignment(); }
+ bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
++void llama_file::drop_cache() { pimpl->drop_cache(); }
+ 
+ int llama_file::file_id() const {
+ #ifdef _WIN32
+diff --git a/src/llama-mmap.h b/src/llama-mmap.h
+index 5a36db8..d2e3cf3 100644
+--- a/src/llama-mmap.h
++++ b/src/llama-mmap.h
+@@ -36,6 +36,9 @@ struct llama_file {
+ 
+     size_t read_alignment() const;
+     bool has_direct_io() const;
++
++    // RAMGUARD1f: ask the kernel to drop this file's pages from the page cache (posix_fadvise DONTNEED; Linux only)
++    void drop_cache();
+ private:
+     struct impl;
+     std::unique_ptr<impl> pimpl;
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 86e4e1d..7b3123f 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1873,6 +1873,12 @@ bool llama_model_loader::load_all_data(
+                 }
+             }
+         }
++        // RAMGUARD1f: the weights are on the device (or in pinned copies) now; do not leave a second copy in the page cache
++        if (getenv("LLAMA_DROP_FILE_CACHE") != nullptr) {
++            for (auto & f : files) {
++                f->drop_cache();
++            }
++        }
+         if (progress_callback) {
+             // Even though the model is done loading, we still honor
+             // cancellation since we need to free allocations.
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index f8c6808..80a4d74 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -28,6 +28,7 @@
+ #include "ggml-cpp.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cassert>
+ #include <cfloat>
+ #include <climits>
+@@ -1188,6 +1189,7 @@ struct llama_model::impl {
+     int32_t moe_cache_inserts_per_layer_token = 1;
+     std::map<int, llama_moe_cache_hybrid_policy> moe_cache_hybrid_layers;
+     mutable std::mutex moe_cache_mutex;
++    std::atomic<int> moe_cache_resize_waiters{0};
+     mutable std::mutex moe_cache_stats_mutex;
+     llama_moe_cache_stats moe_cache_stats = {};
+ 
+@@ -2238,10 +2240,41 @@ bool llama_model_base::moe_expert_cache_requires_serialization() const {
+     return params.moe_cache_live_resize || pimpl->moe_cache_hybrid || pimpl->moe_cache_two_channel;
+ }
+ 
++void llama_model_base::reset_moe_expert_cache_learning() {
++    std::lock_guard<std::mutex> cache_lock(pimpl->moe_cache_mutex);
++    for (auto & [il, runtime] : pimpl->moe_channels) {
++        runtime.policy.reset_timing();
++    }
++}
++
++bool llama_model_base::moe_expert_cache_info(int32_t & slots, size_t & slot_bytes, int32_t & max_slots) const {
++    // lock-free on purpose: the governor polls this while a decode holds the cache lock for a whole ubatch.
++    // The rankings and the tensor shapes never change after load; the slot count is a single int.
++    slots = __atomic_load_n(&pimpl->moe_cache_slots, __ATOMIC_RELAXED);
++    slot_bytes = 0;
++    max_slots = 0;
++    if (pimpl->moe_cache_rankings.empty()) {
++        return false;
++    }
++    int64_t max_s = INT32_MAX;
++    for (const auto & [il, _] : pimpl->moe_cache_rankings) {
++        const auto & l = layers[il];
++        const ggml_tensor * g = moe_cache_gate(l);
++        slot_bytes += g->nb[2] + (l.ffn_up_exps ? l.ffn_up_exps->nb[2] : 0) + l.ffn_down_exps->nb[2];
++        max_s = std::min<int64_t>(max_s, g->ne[2]);
++    }
++    max_slots = (int32_t) max_s;
++    return true;
++}
++
+ uint64_t llama_model_base::moe_expert_cache_generation() const {
+     return pimpl->moe_cache_generation;
+ }
+ 
++bool llama_model_base::moe_expert_cache_resize_pending() const {
++    return pimpl->moe_cache_resize_waiters.load() > 0;
++}
++
+ std::mutex & llama_model_base::moe_expert_cache_mutex() const {
+     return pimpl->moe_cache_mutex;
+ }
+@@ -2610,6 +2643,11 @@ bool llama_model_base::get_moe_expert_cache_stats(llama_moe_cache_stats & stats)
+ 
+ bool llama_model_base::resize_moe_expert_cache(int32_t n_slots, int32_t & old_slots,
+         int32_t & new_slots, size_t & released_bytes, size_t & allocated_bytes) {
++    struct waiter_guard {
++        std::atomic<int> & n;
++        explicit waiter_guard(std::atomic<int> & n) : n(n) { ++n; }
++        ~waiter_guard() { --n; }
++    } waiting(pimpl->moe_cache_resize_waiters);
+     std::lock_guard<std::mutex> cache_lock(pimpl->moe_cache_mutex);
+     old_slots = pimpl->moe_cache_slots;
+     new_slots = old_slots;
+@@ -3915,6 +3953,30 @@ bool llama_model_moe_cache_resize(const llama_model * model, int32_t n_slots,
+     return ok;
+ }
+ 
++void llama_model_moe_cache_reset_learning(const llama_model * model) {
++    auto * base = model ? dynamic_cast<llama_model_base *>(const_cast<llama_model *>(model)) : nullptr;
++    if (base != nullptr) {
++        base->reset_moe_expert_cache_learning();
++    }
++}
++
++bool llama_model_moe_cache_info(const llama_model * model, int32_t * slots, size_t * slot_bytes, int32_t * max_slots) {
++    if (slots) { *slots = 0; }
++    if (slot_bytes) { *slot_bytes = 0; }
++    if (max_slots) { *max_slots = 0; }
++    auto * base = model ? dynamic_cast<llama_model_base *>(const_cast<llama_model *>(model)) : nullptr;
++    if (base == nullptr) {
++        return false;
++    }
++    int32_t s = 0, m = 0;
++    size_t b = 0;
++    const bool ok = base->moe_expert_cache_info(s, b, m);
++    if (slots) { *slots = s; }
++    if (slot_bytes) { *slot_bytes = b; }
++    if (max_slots) { *max_slots = m; }
++    return ok;
++}
++
+ bool llama_model_get_moe_cache_stats(const llama_model * model, llama_moe_cache_stats * stats) {
+     if (stats == nullptr) {
+         return false;
+diff --git a/src/llama-model.h b/src/llama-model.h
+index d9b489b..4e03992 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -836,12 +836,17 @@ struct llama_model_base : public llama_model {
+     bool resize_moe_expert_cache(int32_t n_slots, int32_t & old_slots,
+             int32_t & new_slots, size_t & released_bytes, size_t & allocated_bytes);
+     bool moe_expert_cache_requires_serialization() const;
++    void reset_moe_expert_cache_learning();
++    // VRAMLOGIC1: current slot count, bytes of VRAM per slot across all cached layers, largest valid slot count
++    bool moe_expert_cache_info(int32_t & slots, size_t & slot_bytes, int32_t & max_slots) const;
+     bool moe_expert_cache_two_channel_enabled() const;
+     bool moe_expert_cache_split(ggml_backend_sched_t sched, ggml_backend_t backend,
+             ggml_cgraph * graph, bool before, int64_t elapsed_us);
+     bool finish_moe_expert_cache_channels(bool success);
+     uint64_t moe_expert_cache_generation() const;
+     std::mutex & moe_expert_cache_mutex() const;
++    // VRAMLOGIC1: true while a resize waits for the cache lock; decode must not take the lock again meanwhile (fair hand-off)
++    bool moe_expert_cache_resize_pending() const;
+     bool update_moe_expert_cache_locked(ggml_backend_sched_t sched, const llm_graph_result & graph);
+     bool get_moe_expert_cache_stats(llama_moe_cache_stats & stats) const;
+ 
+diff --git a/src/llama-moe-cache-two-channel-policy.h b/src/llama-moe-cache-two-channel-policy.h
+index 58f04ea..1674c98 100644
+--- a/src/llama-moe-cache-two-channel-policy.h
++++ b/src/llama-moe-cache-two-channel-policy.h
+@@ -211,6 +211,9 @@ public:
+         }
+     }
+ 
++    // VRAMLOGIC1: forget the timings learned so far (the governor's warm-up runs random tokens)
++    void reset_timing() { timing = {}; }
++
+     const plan & latest() const { return last; }
+     const std::vector<int32_t> & slots() const { return slot_to_expert; }
+     const costs & estimate(int tokens) const { return timing.at(tokens); }
+diff --git a/tests/test-vram-governor.cpp b/tests/test-vram-governor.cpp
+new file mode 100644
+index 0000000..ec5f734
+--- /dev/null
++++ b/tests/test-vram-governor.cpp
+@@ -0,0 +1,151 @@
++// VRAMLOGIC1: scripted-card tests of the governor decision logic (no GPU).
++#include "../tools/server/server-vram-governor.h"
++
++#include <cstdio>
++#include <cstdlib>
++
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #c); exit(1); } } while (0)
++
++struct sim {
++    vram_governor_core gov;
++    vram_cache_geometry g;
++    double t = 0;
++    int32_t desk_mib = 0;       // everything on the card that is not the cache
++    int32_t total_mib = 12282;
++    bool busy = false, ready = true, big = false;
++    int32_t free_mib() const { return total_mib - desk_mib - g.chunks * g.chunk_mib; }
++    vram_action tick(double dt = 0.2) {
++        t += dt;
++        vram_inputs in; in.now_s = t; in.free_mib = free_mib(); in.ready = ready; in.busy = busy; in.big_prefill = big;
++        vram_action a = gov.step(in, g);
++        if (a.kind == vram_action_kind::SET_CHUNKS) {
++            const int32_t before = g.chunks;
++            g.chunks = a.chunks;
++            gov.note_applied(a, before, g.chunks, t);
++        }
++        return a;
++    }
++};
++
++static sim make(int32_t desk) {
++    sim s;
++    s.g.chunks = 0; s.g.chunk_slots = 4; s.g.chunk_mib = 52; s.g.max_chunks = 64;
++    s.desk_mib = desk;
++    return s;
++}
++
++int main() {
++    // 1. fills the room above reserve + hysteresis on the first poll after READY, then holds
++    {
++        sim s = make(9000);                   // free 3282 with an empty cache
++        s.ready = false; s.tick();
++        CHECK(s.gov.state == vram_state::WARMUP);
++        s.ready = true; s.tick();
++        CHECK(s.g.chunks == (3282 - 1536 - 256) / 52);
++        CHECK(s.free_mib() >= 1536 + 256 - 0 && s.free_mib() < 1536 + 256 + 52);
++        for (int i = 0; i < 100; i++) { s.tick(); }
++        CHECK(s.g.chunks == (3282 - 1536 - 256) / 52);   // no flapping
++        CHECK(s.gov.trims == 0);
++    }
++    // 2. a desktop jump is absorbed by dropping chunks within one poll, no pause
++    {
++        sim s = make(9000); s.tick(); const int32_t full = s.g.chunks;
++        s.desk_mib += 700;                    // free = ~1792 - 700 + ... below reserve
++        CHECK(s.free_mib() < 1536);
++        s.tick();
++        CHECK(s.free_mib() >= 1536);
++        CHECK(s.g.chunks < full);
++        CHECK(s.gov.state == vram_state::TRIM);
++        CHECK(s.gov.pauses == 0);
++        CHECK(s.gov.below_reserve_max_s <= 0.2 + 1e-9);
++    }
++    // 3. no regrowth for grow_seconds after a trim, then regrow when idle; never while busy
++    {
++        sim s = make(9000); s.tick(); s.desk_mib += 700; s.tick(); const int32_t after_trim = s.g.chunks;
++        s.desk_mib -= 700;                    // desk went back
++        for (int i = 0; i < 100; i++) { s.tick(); }          // 20 s < 30 s calm
++        CHECK(s.g.chunks == after_trim);
++        for (int i = 0; i < 70; i++) { s.tick(); }           // 34 s total
++        CHECK(s.g.chunks > after_trim);
++        sim b = make(9000); b.tick(); b.desk_mib += 700; b.tick(); b.desk_mib -= 700; b.busy = true;
++        const int32_t keep = b.g.chunks;
++        for (int i = 0; i < 400; i++) { b.tick(); }
++        CHECK(b.g.chunks == keep);            // busy: no growth
++    }
++    // 4. cache exhausted and the card still short: pause only below the floor, after two polls
++    {
++        sim s = make(9000); s.tick();
++        s.desk_mib = 12282 - 1000 - 0;        // free = 1000 even with an empty cache? cache keeps shrinking
++        for (int i = 0; i < 3; i++) { s.tick(); }
++        CHECK(s.g.chunks == 0);
++        CHECK(s.gov.pauses == 0 || s.gov.state == vram_state::PAUSING);
++        // free 1000 > pause floor 768: MIN, no pause
++        CHECK(s.gov.state == vram_state::MIN);
++        s.desk_mib = 12282 - 700;             // free 700 < 768
++        vram_action a = s.tick(); CHECK(a.kind == vram_action_kind::NONE);
++        a = s.tick(); CHECK(a.kind == vram_action_kind::PAUSE);
++        CHECK(s.gov.state == vram_state::PAUSING);
++    }
++    // 4b. short for pause_after_seconds with the cache at its minimum: pause even above the floor
++    {
++        sim s = make(9000); s.tick();
++        s.desk_mib = 12282 - 1000;            // free 1000 with an empty cache (floor 768 not hit)
++        s.tick();
++        vram_action a;
++        for (int i = 0; i < 30; i++) { a = s.tick(); if (a.kind == vram_action_kind::PAUSE) break; }
++        CHECK(a.kind == vram_action_kind::PAUSE);
++        CHECK(a.reason == "short_stall");
++        CHECK(s.t < 3.5);                     // 2 s + the polls it took to get to the minimum
++        sim off = make(9000); off.gov.policy.pause_after_seconds = 0; off.tick();
++        off.desk_mib = 12282 - 1000;
++        for (int i = 0; i < 200; i++) { CHECK(off.tick().kind != vram_action_kind::PAUSE); }
++    }
++    // 4c. a shortfall within the slack is not a stall
++    {
++        sim s = make(9000); s.tick();
++        s.desk_mib = 12282 - 1536 + 30;        // short by 30 MiB with an empty cache
++        for (int i = 0; i < 100; i++) { CHECK(s.tick().kind != vram_action_kind::PAUSE); }
++        s.desk_mib = 12282 - 1536 + 100;       // short by 100 MiB
++        vram_action a; for (int i = 0; i < 30; i++) { a = s.tick(); if (a.kind == vram_action_kind::PAUSE) break; }
++        CHECK(a.kind == vram_action_kind::PAUSE);
++    }
++    // 5. game mode (max_chunks = 0) drops everything and keeps it off; policy cap raise allows regrowth
++    {
++        sim s = make(9000); s.tick(); CHECK(s.g.chunks > 0);
++        s.gov.policy.max_chunks = 0; s.tick();
++        CHECK(s.g.chunks == 0);
++        for (int i = 0; i < 400; i++) { s.tick(); }
++        CHECK(s.g.chunks == 0);
++        s.gov.policy.max_chunks = -1;
++        for (int i = 0; i < 200; i++) { s.tick(); }
++        CHECK(s.g.chunks > 0);
++    }
++    // 6. min_chunks is a floor for trimming
++    {
++        sim s = make(9000); s.gov.policy.min_chunks = 5; s.tick();
++        s.desk_mib += 5000;
++        for (int i = 0; i < 5; i++) { s.tick(); }
++        CHECK(s.g.chunks == 5);
++    }
++    // 6b. prefill_yield: release during a big prefill, refill at once afterwards (no calm period)
++    {
++        sim s = make(9000); s.gov.policy.prefill_yield = true; s.tick(); const int32_t full = s.g.chunks; CHECK(full > 0);
++        s.busy = true; s.big = true; s.tick();
++        CHECK(s.g.chunks == 0);
++        for (int i = 0; i < 50; i++) { s.tick(); }
++        CHECK(s.g.chunks == 0);
++        s.big = false; s.busy = true; s.tick();          // the request moved on to decoding: still busy
++        CHECK(s.g.chunks == full);
++        CHECK(s.gov.trims == 1);              // counted, but the calm timer is not restarted
++        sim off = make(9000); off.tick(); off.big = true; off.busy = true;
++        for (int i = 0; i < 20; i++) { off.tick(); }
++        CHECK(off.g.chunks > 0);              // policy off: the cache stays
++    }
++    // 7. hard geometry limit
++    {
++        sim s = make(2000); s.g.max_chunks = 10; s.tick();
++        CHECK(s.g.chunks == 10);
++    }
++    printf("test-vram-governor: all passed\n");
++    return 0;
++}
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index 280bd9e..574f567 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -14,6 +14,8 @@ add_library(${TARGET} STATIC
+     server-common.cpp
+     server-common.h
+     server-context.cpp
++    server-vram.cpp
++    server-vram.h
+     server-context.h
+     server-stream.cpp
+     server-stream.h
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 2ac98b6..4bd9dde 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -48,6 +48,10 @@ json format_error_response(const std::string & message, const enum error_type ty
+             type_str = "unavailable_error";
+             code = 503;
+             break;
++        case ERROR_TYPE_VRAM_PAUSE:
++            type_str = "vram_pause";
++            code = 503;
++            break;
+         case ERROR_TYPE_EXCEED_CONTEXT_SIZE:
+             type_str = "exceed_context_size_error";
+             code = 400;
+diff --git a/tools/server/server-common.h b/tools/server/server-common.h
+index 6c681a2..62a9028 100644
+--- a/tools/server/server-common.h
++++ b/tools/server/server-common.h
+@@ -62,6 +62,7 @@ enum error_type {
+     ERROR_TYPE_UNAVAILABLE, // custom error
+     ERROR_TYPE_NOT_SUPPORTED, // custom error
+     ERROR_TYPE_EXCEED_CONTEXT_SIZE, // custom error
++    ERROR_TYPE_VRAM_PAUSE, // custom error: the VRAM governor paused the server (VRAMLOGIC1)
+ };
+ 
+ // thin wrapper around common_grammar_trigger with (de)serialization functions
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index bf52654..12ce824 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -6,6 +6,8 @@
+ #include "server-queue.h"
+ #include "server-schema.h"
+ #include "server-stream.h"
++#include "server-vram.h"
++#include "../../src/llama-ext.h"
+ 
+ #include "build-info.h"
+ #include "common.h"
+@@ -24,6 +26,8 @@
+ #include <memory>
+ #include <filesystem>
+ #include <random>
++#include <sstream>
++#include <set>
+ #include <utility>
+ #include <fstream>
+ 
+@@ -877,6 +881,58 @@ public:
+ 
+     server_state_callback_t callback_state = [](server_state, json) -> void {};
+ 
++    // VRAMLOGIC1: VRAM governor (owns the expert cache); null unless --vram-governor
++    std::unique_ptr<server_vram> vram;
++    std::atomic<int> busy_flag{0};
++    std::atomic<int> big_prefill_flag{0};
++    std::atomic<int64_t> ckpt_bytes{0};
++
++    void start_vram() {
++        if (!params_base.vram_governor || ctx_tgt == nullptr) {
++            return;
++        }
++        auto fixed = [this]() {
++            server_vram::fixed_parts fp;
++            auto gpu_sum = [](const llama_context * c, int32_t & model, int32_t & context, int32_t & compute) {
++                if (c == nullptr) { return; }
++                for (const auto & [buft, data] : llama_get_memory_breakdown(c)) {
++                    if (ggml_backend_buft_is_host(buft)) { continue; }
++                    model   += (int32_t) (data.model   / (1024 * 1024));
++                    context += (int32_t) (data.context / (1024 * 1024));
++                    compute += (int32_t) (data.compute / (1024 * 1024));
++                }
++            };
++            int32_t m = 0, k = 0, c = 0;
++            gpu_sum(ctx_tgt, m, k, c);
++            int32_t dm = 0, dk = 0, dc = 0;
++            if (ctx_dft != nullptr && ctx_dft != ctx_tgt) { gpu_sum(ctx_dft, dm, dk, dc); }
++            fp.weights = m; fp.kv = k; fp.sched = c; fp.draft = dk + dc; (void) dm; // the MTP draft context shares the weights
++            return fp;
++        };
++        vram = std::make_unique<server_vram>(params_base, llama_get_model(ctx_tgt),
++                [this]() { return busy_flag.load() != 0; }, fixed);
++        if (!vram->available()) {
++            vram.reset();
++            return;
++        }
++        vram->set_host_callback([this]() {
++            server_vram::host_parts hp;
++            hp.checkpoints_mib = (int32_t) (ckpt_bytes.load() / (1024 * 1024));
++            hp.prompt_cache_mib = prompt_cache ? (int32_t) (prompt_cache->size() / (1024 * 1024)) : 0;
++            return hp;
++        });
++        vram->set_big_prefill_callback([this]() { return big_prefill_flag.load() != 0; });
++        vram->set_pause_callback([this](const std::string & reason, const std::string & checkpoint) {
++            server_task task(SERVER_TASK_TYPE_VRAM_PAUSE);
++            task.id = queue_tasks.get_new_id();
++            task.vram_reason = reason;
++            task.slot_action.filename = checkpoint;
++            task.slot_action.filepath = params_base.slot_save_path + checkpoint;
++            queue_tasks.post(std::move(task), /*front=*/ true);
++        });
++        vram->start();
++    }
++
+     server_context_impl() {
+         mtmd_helper_log_set(common_log_default_callback, nullptr);
+     }
+@@ -961,6 +1017,7 @@ private:
+     int64_t t_last_load_progress_ms = 0;
+ 
+     void destroy() {
++        vram.reset(); // stops the governor thread before the model goes away
+         spec.reset();
+         spec_init.reset();
+ 
+@@ -1412,7 +1469,11 @@ private:
+         params = params_base;
+ 
+         if (!is_resume) {
+-            return init();
++            const bool ok = init();
++            if (ok) {
++                start_vram();
++            }
++            return ok;
+         }
+ 
+         if (callback_state) {
+@@ -2773,6 +2834,73 @@ private:
+ 
+                     queue_results.send(std::move(res));
+                 } break;
++            case SERVER_TASK_TYPE_VRAM_PAUSE:
++                {
++                    // Save every slot that holds tokens, tell the clients of running requests, and exit with code 75.
++                    // The gateway restarts the server in a smaller layout and restores the checkpoint.
++                    SRV_WRN("vram pause (%s): saving slots to %s\n", task.vram_reason.c_str(), task.slot_action.filepath.c_str());
++                    const int64_t t_start = ggml_time_us();
++                    for (auto & slot : slots) {
++                        if (slot.prompt.tokens.size() == 0) {
++                            continue;
++                        }
++                        std::string filename = task.slot_action.filename;
++                        std::string filepath = task.slot_action.filepath;
++                        if (slots.size() > 1) {
++                            filename += "." + std::to_string(slot.id);
++                            filepath += "." + std::to_string(slot.id);
++                        }
++                        bool saved = false;
++                        size_t nwrite = 0;
++                        try {
++                            std::vector<char> packed = slot.prompt.tokens.serialize();
++                            nwrite = llama_state_seq_save_file(ctx_tgt, filepath.c_str(), slot.id,
++                                    reinterpret_cast<const llama_token *>(packed.data()), packed.size() / sizeof(llama_token));
++                            saved = nwrite > 0 && save_slot_checkpoints(filepath, slot) != SIZE_MAX;
++                        } catch (const std::exception & err) {
++                            SRV_ERR("vram pause: saving slot %d failed: %s\n", slot.id, err.what());
++                        }
++                        // sidecar for byte-exact continuation: the exact token ids of the slot and the request parameters
++                        if (saved) {
++                            try {
++                                json side = {
++                                    {"slot", slot.id}, {"reason", task.vram_reason},
++                                    {"n_past", (int64_t) slot.prompt.tokens.size()},
++                                    {"tokens", slot.prompt.tokens.get_text_tokens()},
++                                    {"multimodal", slot.prompt.tokens.size() != slot.prompt.tokens.get_text_tokens().size()},
++                                    {"processing", slot.is_processing()},
++                                    {"generated_tokens", (int64_t) slot.stats.n_gen},
++                                };
++                                if (slot.is_processing() && slot.task) {
++                                    side["params"] = slot.task->params.to_json();
++                                    json preserved = json::array();
++                                    for (const auto t : slot.task->params.sampling.preserved_tokens) { preserved.push_back((int64_t) t); }
++                                    side["preserved_tokens"] = preserved;
++                                    side["n_predict"] = slot.task->params.n_predict;
++                                    side["n_predict_left"] = slot.task->params.n_predict < 0 ? -1
++                                            : std::max<int64_t>(0, (int64_t) slot.task->params.n_predict - (int64_t) slot.stats.n_gen);
++                                }
++                                std::ofstream f(filepath + ".tokens.json");
++                                f << side.dump();
++                            } catch (const std::exception & err) {
++                                SRV_ERR("vram pause: writing the sidecar of slot %d failed: %s\n", slot.id, err.what());
++                            }
++                        }
++                        if (slot.is_processing() && slot.task) {
++                            json info = {
++                                {"checkpoint", saved ? filename : ""}, {"slot", slot.id}, {"reason", task.vram_reason},
++                                {"n_past", (int64_t) slot.prompt.tokens.size()}, {"generated_tokens", (int64_t) slot.stats.n_gen},
++                                {"saved", saved}, {"tokens_file", saved ? filename + ".tokens.json" : ""},
++                            };
++                            send_error(slot.task->id, info.dump(), ERROR_TYPE_VRAM_PAUSE);
++                        }
++                    }
++                    SRV_WRN("vram pause: slots saved in %.0f ms, exiting with code 75\n", (ggml_time_us() - t_start) / 1000.0);
++                    // let the HTTP threads flush the error frames
++                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
++                    fflush(nullptr);
++                    std::_Exit(75);
++                } break;
+             case SERVER_TASK_TYPE_SLOT_SAVE:
+                 {
+                     const int id_slot = task.slot_action.id_slot;
+@@ -3064,6 +3192,24 @@ private:
+                 }
+             }
+ 
++            busy_flag.store(all_idle ? 0 : 1);
++            {
++                bool big = false;
++                for (auto & slot : slots) {
++                    if (slot.is_processing() && (slot.state == SLOT_STATE_PROCESSING_PROMPT || slot.state == SLOT_STATE_STARTED) && slot.task &&
++                            slot.task->n_tokens() - slot.prompt.n_tokens() >= 4096) {
++                        big = true;
++                        break;
++                    }
++                }
++                big_prefill_flag.store(big ? 1 : 0);
++                int64_t cb = 0;
++                for (auto & slot : slots) {
++                    for (const auto & ckpt : slot.prompt.checkpoints) { cb += (int64_t) ckpt.size(); }
++                }
++                ckpt_bytes.store(cb);
++            }
++
+             if (all_idle) {
+                 SRV_TRC("%s", "all slots are idle\n");
+ 
+@@ -4548,6 +4694,52 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
+             inputs = tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, prompt, true, true, ctx_server.init_opt);
+         }
+ 
++        // VRAMLOGIC1 resume: continue a request that was paused by the VRAM governor. The prompt is the exact token
++        // list saved at the pause (prompt + generated), the slot was restored by the caller, the HTTP-side parser starts
++        // from the generated text, and n_predict is what was left.
++        std::string resume_base_text;
++        std::vector<std::string> resume_tool_call_ids;
++        int64_t resume_n_predict_left = -2;
++        if (data.contains("resume") && data["resume"].is_object()) {
++            if (inputs.size() != 1) {
++                throw std::runtime_error("resume requires a single prompt");
++            }
++            const std::string name = json_value(data["resume"], "tokens_file", std::string());
++            if (name.empty() || name.find('/') != std::string::npos || name.find("..") != std::string::npos || params.slot_save_path.empty()) {
++                throw std::runtime_error("resume.tokens_file must be a plain file name inside --slot-save-path");
++            }
++            std::ifstream f(params.slot_save_path + name);
++            if (!f) {
++                throw std::runtime_error("resume.tokens_file not found");
++            }
++            std::stringstream side_text;
++            side_text << f.rdbuf();
++            const json side = json::parse(side_text.str());
++            if (side.value("multimodal", false) || !side.contains("tokens") || !side["tokens"].is_array()) {
++                throw std::runtime_error("this pause cannot be continued exactly (multimodal slot or no tokens)");
++            }
++            llama_tokens toks = side["tokens"].get<llama_tokens>();
++            const int64_t n_past = side.value("n_past", (int64_t) toks.size());
++            const int64_t n_gen  = side.value("generated_tokens", (int64_t) 0);
++            if ((int64_t) toks.size() != n_past || n_gen < 0 || n_gen > n_past) {
++                throw std::runtime_error("resume file is inconsistent");
++            }
++            // text generated before the pause: the same pieces the slot appended to its generated text
++            const json preserved = side.value("preserved_tokens", json::array());
++            std::set<llama_token> keep;
++            for (const auto & t : preserved) { if (t.is_number_integer()) { keep.insert((llama_token) t.get<int64_t>()); } }
++            for (int64_t i = n_past - n_gen; i < n_past; i++) {
++                resume_base_text += common_token_to_piece(ctx_server.vocab, toks[i], params.special || keep.count(toks[i]) > 0);
++            }
++            inputs[0] = server_tokens(toks, ctx_server.mctx != nullptr);
++            resume_n_predict_left = side.value("n_predict_left", (int64_t) -1);
++            if (data["resume"].contains("tool_call_ids") && data["resume"]["tool_call_ids"].is_array()) {
++                for (const auto & id : data["resume"]["tool_call_ids"]) { resume_tool_call_ids.push_back(id.get<std::string>()); }
++            }
++            SRV_INF("resume: %lld tokens (%lld generated before the pause), %lld left to predict\n",
++                    (long long) n_past, (long long) n_gen, (long long) resume_n_predict_left);
++        }
++
+         // tasks.reserve(inputs.size()); // TODO: this is inaccurate due to child tasks
+ 
+         // message delimiters for checkpointing
+@@ -4568,6 +4760,13 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
+                     data);
+ 
+             task.params.message_spans = task.tokens.find_message_spans(delimiters);
++            if (resume_n_predict_left > -2) {
++                if (resume_n_predict_left >= 0) {
++                    task.params.n_predict = (int32_t) resume_n_predict_left;
++                }
++                task.resume_base_text = resume_base_text;
++                task.resume_tool_call_ids = resume_tool_call_ids;
++            }
+ 
+             task.id_slot = json_value(data, "id_slot", -1);
+             sse_ping_interval = task.params.sse_ping_interval;
+@@ -5233,6 +5432,127 @@ void server_routes::init_routes() {
+         return res;
+     };
+ 
++    // VRAMLOGIC1 endpoints (see reports/vramlogic1/API.md)
++    this->get_vram = [this](const server_http_req &) {
++        auto res = create_response();
++        if (!ctx_server.vram) {
++            res->error(format_error_response("VRAM governor is not running", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        res->ok(ctx_server.vram->status());
++        return res;
++    };
++    this->get_vram_policy = [this](const server_http_req &) {
++        auto res = create_response();
++        if (!ctx_server.vram) {
++            res->error(format_error_response("VRAM governor is not running", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        res->ok(ctx_server.vram->policy_json());
++        return res;
++    };
++    this->post_vram_policy = [this](const server_http_req & req) {
++        auto res = create_response();
++        if (!ctx_server.vram) {
++            res->error(format_error_response("VRAM governor is not running", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (const std::exception &) {
++            res->error(format_error_response("invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        std::string err;
++        if (!ctx_server.vram->set_policy(body, err)) {
++            res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        res->ok(ctx_server.vram->policy_json());
++        return res;
++    };
++    this->post_vram_pause = [this](const server_http_req & req) {
++        auto res = create_response();
++        if (!ctx_server.vram) {
++            res->error(format_error_response("VRAM governor is not running", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        json body = json::object();
++        if (!req.body.empty()) {
++            try {
++                body = json::parse(req.body);
++            } catch (const std::exception &) {
++                res->error(format_error_response("invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++        }
++        std::string checkpoint = body.value("checkpoint", std::string("vram-pause.bin"));
++        if (checkpoint.empty() || checkpoint.find('/') != std::string::npos || checkpoint.find("..") != std::string::npos) {
++            res->error(format_error_response("checkpoint must be a plain file name", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (params.slot_save_path.empty()) {
++            res->error(format_error_response("the server runs without --slot-save-path", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        if (!ctx_server.vram->request_pause(body.value("reason", std::string("gateway")), checkpoint)) {
++            res->error(format_error_response("a pause is already in progress", ERROR_TYPE_UNAVAILABLE));
++            return res;
++        }
++        res->status = 202;
++        res->data = json{{"state", "PAUSING"}}.dump();
++        return res;
++    };
++    this->post_moe_cache_chunks = [this](const server_http_req & req) {
++        auto res = create_response();
++        if (!ctx_server.vram || !ctx_server.vram->test_hooks()) {
++            res->error(format_error_response("test hooks are not enabled", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (const std::exception &) {
++            res->error(format_error_response("invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (!body.contains("chunks") || !body["chunks"].is_number_integer()) {
++            res->error(format_error_response("chunks must be an integer", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        std::string err;
++        const json out = ctx_server.vram->set_chunks_manual((int32_t) body["chunks"].get<int64_t>(), err);
++        if (!err.empty()) {
++            res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        res->ok(out);
++        return res;
++    };
++    this->post_vram_simulate = [this](const server_http_req & req) {
++        auto res = create_response();
++        if (!ctx_server.vram || !ctx_server.vram->test_hooks()) {
++            res->error(format_error_response("test hooks are not enabled", ERROR_TYPE_NOT_SUPPORTED));
++            return res;
++        }
++        json body;
++        try {
++            body = json::parse(req.body);
++        } catch (const std::exception &) {
++            res->error(format_error_response("invalid JSON body", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        if (!body.contains("free_delta_mib") || !body["free_delta_mib"].is_number_integer() ||
++                !body.contains("seconds") || !body["seconds"].is_number()) {
++            res->error(format_error_response("free_delta_mib (integer) and seconds (number) are required", ERROR_TYPE_INVALID_REQUEST));
++            return res;
++        }
++        ctx_server.vram->simulate((int32_t) body["free_delta_mib"].get<int64_t>(), body["seconds"].get<double>());
++        res->ok(json{{"ok", true}});
++        return res;
++    };
++
+     this->post_moe_cache_resize = [this](const server_http_req & req) {
+         auto res = create_response();
+         if (!params.moe_cache_live_resize) {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 74600fb..4b9e77a 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -141,6 +141,12 @@ struct server_routes {
+     server_http_context::handler_t post_chat_completions_tok;
+     server_http_context::handler_t post_control;
+     server_http_context::handler_t post_moe_cache_resize;
++    server_http_context::handler_t get_vram;
++    server_http_context::handler_t get_vram_policy;
++    server_http_context::handler_t post_vram_policy;
++    server_http_context::handler_t post_vram_pause;
++    server_http_context::handler_t post_moe_cache_chunks;
++    server_http_context::handler_t post_vram_simulate;
+     server_http_context::handler_t post_responses_oai;
+     server_http_context::handler_t post_responses_tok_oai;
+     server_http_context::handler_t post_transcriptions_oai;
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index cfb789c..1a32601 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -159,6 +159,25 @@ task_result_state::task_result_state(const common_chat_parser_params & chat_pars
+     }
+ }
+ 
++task_result_state server_task::create_state() const {
++    task_result_state st(params.chat_parser_params);
++    if (!resume_base_text.empty()) {
++        st.generated_text = resume_base_text;
++        st.generated_tool_call_ids = resume_tool_call_ids;
++        auto base = common_chat_parse(st.generated_text, true, st.chat_parser_params);
++        if (!base.empty()) {
++            base.set_tool_call_ids(st.generated_tool_call_ids, gen_tool_call_id);
++            st.chat_msg = base;
++            for (size_t i = 0; i < st.chat_msg.tool_calls.size(); i++) {
++                if (!st.chat_msg.tool_calls[i].name.empty()) {
++                    st.sent_tool_call_names.insert(i);
++                }
++            }
++        }
++    }
++    return st;
++}
++
+ common_chat_msg task_result_state::update_chat_msg(
+         const std::string & text_added,
+         bool is_partial,
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index f1e1a9e..9575dd6 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -28,6 +28,7 @@ enum server_task_type {
+     SERVER_TASK_TYPE_GET_LORA,
+     SERVER_TASK_TYPE_SET_LORA,
+     SERVER_TASK_TYPE_MOE_CACHE_RESIZE,
++    SERVER_TASK_TYPE_VRAM_PAUSE,
+ };
+ 
+ // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
+@@ -170,6 +171,9 @@ struct server_task {
+     };
+     slot_action slot_action;
+ 
++    // used by SERVER_TASK_TYPE_VRAM_PAUSE
++    std::string vram_reason;
++
+     // used by SERVER_TASK_TYPE_METRICS
+     bool metrics_reset_bucket = false;
+ 
+@@ -249,9 +253,12 @@ struct server_task {
+ 
+     // the task will be moved into queue, then onto slots
+     // however, the state must be kept by caller (e.g., HTTP thread)
+-    task_result_state create_state() const {
+-        return task_result_state(params.chat_parser_params);
+-    }
++    task_result_state create_state() const;
++
++    // VRAMLOGIC1 "resume": the text generated before a pause. The HTTP-side state starts from it, so only
++    // the deltas beyond it reach the client. The tool call ids are the ones the client already got.
++    std::string resume_base_text;
++    std::vector<std::string> resume_tool_call_ids;
+ 
+     bool is_parent() const {
+         return child_tasks.size() > 0;
+diff --git a/tools/server/server-vram-governor.h b/tools/server/server-vram-governor.h
+new file mode 100644
+index 0000000..d2cdcc4
+--- /dev/null
++++ b/tools/server/server-vram-governor.h
+@@ -0,0 +1,244 @@
++#pragma once
++
++// VRAMLOGIC1: decision logic of the VRAM governor. Pure arithmetic, no GPU or server dependencies,
++// so it can be tested with a scripted card (tests/test-vram-governor.cpp). All sizes are MiB.
++//
++// The governor owns the expert cache: it keeps card free VRAM >= reserve by dropping cache chunks
++// (a chunk is chunk_slots cache slots), and grows the cache into the room above reserve + hysteresis
++// only while the server is idle. When the cache is at its minimum and the card is still short, it asks
++// for a pause with a checkpoint (the gateway then restarts the server in a smaller layout).
++
++#include <algorithm>
++#include <cstdint>
++#include <string>
++
++struct vram_policy {
++    int32_t reserve_mib     = 1536;
++    int32_t hysteresis_mib  = 256;
++    int32_t grow_seconds    = 30;
++    int32_t pause_floor_mib = 768;
++    int32_t pause_after_seconds = 2; // cache at its minimum and free < reserve for this long: pause (0 = off)
++    int32_t stall_slack_mib = 48;    // a shortfall up to this much does not count as a stall (the reserve is a comfort figure)
++    int32_t min_chunks      = 0;
++    int32_t max_chunks      = -1;     // -1 = unlimited (JSON null); 0 = cache fully released ("game")
++    bool    prefill_yield   = false;
++    int32_t poll_ms         = 200;
++};
++
++enum class vram_state {
++    WARMUP,
++    FULL,
++    TRIM,
++    MIN,
++    GROW,
++    PAUSING,
++    PAUSED,
++};
++
++static inline const char * vram_state_name(vram_state s) {
++    switch (s) {
++        case vram_state::WARMUP:  return "WARMUP";
++        case vram_state::FULL:    return "FULL";
++        case vram_state::TRIM:    return "TRIM";
++        case vram_state::MIN:     return "MIN";
++        case vram_state::GROW:    return "GROW";
++        case vram_state::PAUSING: return "PAUSING";
++        case vram_state::PAUSED:  return "PAUSED";
++    }
++    return "?";
++}
++
++struct vram_inputs {
++    double  now_s       = 0;  // monotonic seconds
++    int32_t free_mib    = 0;  // card free VRAM
++    bool    ready       = false;
++    bool    busy        = false; // a request is being processed
++    bool    big_prefill = false; // a large new prompt is being processed (prefill_yield policy)
++};
++
++struct vram_cache_geometry {
++    int32_t chunks      = 0;  // current number of chunks
++    int32_t chunk_slots = 4;
++    int32_t chunk_mib   = 52;
++    int32_t max_chunks  = 0;  // hard limit from the model (n_expert / chunk_slots)
++};
++
++enum class vram_action_kind { NONE, SET_CHUNKS, PAUSE };
++
++struct vram_action {
++    vram_action_kind kind = vram_action_kind::NONE;
++    int32_t chunks = 0;
++    std::string reason;
++};
++
++class vram_governor_core {
++public:
++    vram_policy policy;
++    vram_state  state = vram_state::WARMUP;
++    std::string last_reason;
++
++    // counters
++    uint64_t trims = 0, chunks_dropped = 0, grows = 0, chunks_grown = 0, pauses = 0;
++    uint64_t below_reserve_events = 0;
++    double   below_reserve_max_s  = 0;
++
++    // Decide the next action from the current observation. The caller applies it and then calls
++    // note_applied() with the resulting chunk count (the actual result may differ on a failed resize).
++    vram_action step(const vram_inputs & in, const vram_cache_geometry & g) {
++        vram_action act;
++        const int32_t cap = effective_max(g);
++        const int32_t floor_chunks = std::min(policy.min_chunks, cap);
++        track_below(in);
++
++        if (state == vram_state::PAUSING || state == vram_state::PAUSED) {
++            return act;
++        }
++        if (!in.ready) {
++            state = vram_state::WARMUP;
++            return act;
++        }
++        if (state == vram_state::WARMUP) {
++            state = vram_state::FULL;
++            calm_since_ = in.now_s - policy.grow_seconds; // the first fill after READY does not wait
++            last_reason = "ready";
++        }
++
++        // 0. prefill yield: the cache slows a large prefill down (hot/cold split path), so release it for the duration
++        //    of the prefill and refill at once afterwards
++        if (policy.prefill_yield && in.big_prefill) {
++            yielding_ = true;
++            if (g.chunks > floor_chunks) {
++                return set_chunks(act, floor_chunks, "prefill_yield", vram_state::TRIM, g, in);
++            }
++            return act;
++        }
++        if (yielding_) {
++            yielding_ = false;
++            refill_now_ = true; // grow back at once, even though the request is still decoding
++            calm_since_ = in.now_s - policy.grow_seconds; // no calm period after a yield
++            last_reason = "prefill_done";
++        }
++
++        // 1. policy cap (game mode, lowered max_chunks)
++        if (g.chunks > cap) {
++            return set_chunks(act, cap, "policy_cap", vram_state::TRIM, g, in);
++        }
++
++        // 2. short on free VRAM: drop chunks
++        if (in.free_mib < policy.reserve_mib) {
++            calm_since_ = in.now_s;
++            const int32_t need = policy.reserve_mib - in.free_mib;
++            const int32_t drop = (need + g.chunk_mib - 1) / std::max(1, g.chunk_mib);
++            const int32_t target = std::max(floor_chunks, g.chunks - drop);
++            if (target < g.chunks) {
++                low_polls_ = 0;
++                return set_chunks(act, target, "short_" + std::to_string(need) + "mib", vram_state::TRIM, g, in);
++            }
++            // nothing left to drop
++            state = vram_state::MIN;
++            last_reason = "min_short_" + std::to_string(need) + "mib";
++            if (need <= policy.stall_slack_mib) {
++                stall_since_ = -1;
++            } else if (stall_since_ < 0) {
++                stall_since_ = in.now_s;
++            }
++            if (in.free_mib < policy.pause_floor_mib) {
++                ++low_polls_;
++            } else {
++                low_polls_ = 0;
++            }
++            const bool floor_hit = low_polls_ >= 2;
++            const bool stalled = policy.pause_after_seconds > 0 && stall_since_ >= 0 && in.now_s - stall_since_ >= policy.pause_after_seconds;
++            if (floor_hit || stalled) {
++                act.kind = vram_action_kind::PAUSE;
++                act.reason = floor_hit ? "pause_floor" : "short_stall";
++                state = vram_state::PAUSING;
++                ++pauses;
++                last_reason = act.reason;
++            }
++            return act;
++        }
++        low_polls_ = 0;
++        stall_since_ = -1;
++
++        // 3. grow into the room above reserve + hysteresis, only when idle and calm
++        const int32_t room = in.free_mib - policy.reserve_mib - policy.hysteresis_mib;
++        if ((!in.busy || refill_now_) && room >= g.chunk_mib && g.chunks < cap &&
++                in.now_s - calm_since_ >= policy.grow_seconds) {
++            refill_now_ = false;
++            const int32_t add = std::min(cap - g.chunks, room / std::max(1, g.chunk_mib));
++            if (add > 0) {
++                return set_chunks(act, g.chunks + add, "room_" + std::to_string(room) + "mib", vram_state::GROW, g, in);
++            }
++        }
++
++        // 4. steady state
++        if (g.chunks <= floor_chunks && in.free_mib < policy.reserve_mib + policy.hysteresis_mib) {
++            state = floor_chunks > 0 ? vram_state::FULL : vram_state::MIN;
++        } else if (state == vram_state::MIN || state == vram_state::TRIM || state == vram_state::GROW) {
++            state = vram_state::FULL;
++        }
++        return act;
++    }
++
++    // report the chunk count after an applied (or failed) action
++    void note_applied(const vram_action & act, int32_t before, int32_t after, double now_s) {
++        if (act.kind != vram_action_kind::SET_CHUNKS) {
++            return;
++        }
++        if (after < before) {
++            ++trims;
++            chunks_dropped += uint64_t(before - after);
++        } else if (after > before) {
++            ++grows;
++            chunks_grown += uint64_t(after - before);
++        }
++        if (act.chunks < before && act.reason != "prefill_yield") {
++            calm_since_ = now_s; // a trim restarts the calm period (hysteresis against flapping)
++        }
++    }
++
++    void set_state(vram_state s, const std::string & why) {
++        state = s;
++        last_reason = why;
++    }
++
++    void reset_calm(double now_s) { calm_since_ = now_s; }
++
++private:
++    double  calm_since_ = 0;
++    int32_t low_polls_  = 0;
++    double  stall_since_ = -1;
++    bool    yielding_ = false;
++    bool    refill_now_ = false;
++    bool    below_       = false;
++    double  below_since_ = 0;
++
++    int32_t effective_max(const vram_cache_geometry & g) const {
++        const int32_t m = policy.max_chunks < 0 ? g.max_chunks : std::min(policy.max_chunks, g.max_chunks);
++        return std::max(0, m);
++    }
++
++    vram_action & set_chunks(vram_action & act, int32_t target, const std::string & why, vram_state st,
++            const vram_cache_geometry &, const vram_inputs &) {
++        act.kind = vram_action_kind::SET_CHUNKS;
++        act.chunks = target;
++        act.reason = why;
++        state = st;
++        last_reason = why;
++        return act;
++    }
++
++    void track_below(const vram_inputs & in) {
++        if (in.free_mib < policy.reserve_mib) {
++            if (!below_) {
++                below_ = true;
++                below_since_ = in.now_s;
++                ++below_reserve_events;
++            }
++            below_reserve_max_s = std::max(below_reserve_max_s, in.now_s - below_since_);
++        } else {
++            below_ = false;
++        }
++    }
++};
+diff --git a/tools/server/server-vram.cpp b/tools/server/server-vram.cpp
+new file mode 100644
+index 0000000..4bcfc78
+--- /dev/null
++++ b/tools/server/server-vram.cpp
+@@ -0,0 +1,461 @@
++#include "server-vram.h"
++
++#include "common.h"
++#include <cpp-httplib/httplib.h>
++#include "ggml-backend.h"
++#include "llama.h"
++#include "log.h"
++
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <cstring>
++#include <dirent.h>
++#include <fstream>
++#include <set>
++#include <sstream>
++
++static double mono_s() {
++    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++
++static bool read_int64_file(const std::string & path, int64_t & out) {
++    std::ifstream f(path);
++    if (!f) { return false; }
++    f >> out;
++    return bool(f);
++}
++
++static std::string read_text_file(const std::string & path) {
++    std::ifstream f(path);
++    std::stringstream ss;
++    ss << f.rdbuf();
++    return ss.str();
++}
++
++// find an amdgpu card: the one with the largest VRAM among vendor 0x1002
++static std::string find_card_dir() {
++    std::string best;
++    int64_t best_total = 0;
++    DIR * d = opendir("/sys/class/drm");
++    if (!d) { return best; }
++    while (dirent * e = readdir(d)) {
++        const std::string name = e->d_name;
++        if (name.rfind("card", 0) != 0 || name.find('-') != std::string::npos) { continue; }
++        const std::string dir = "/sys/class/drm/" + name + "/device";
++        int64_t total = 0;
++        if (!read_int64_file(dir + "/mem_info_vram_total", total)) { continue; }
++        if (total > best_total) {
++            best_total = total;
++            best = dir;
++        }
++    }
++    closedir(d);
++    return best;
++}
++
++server_vram::server_vram(const common_params & params, const llama_model * model, std::function<bool()> busy,
++        std::function<fixed_parts()> fixed)
++    : model_(model), busy_(std::move(busy)), fixed_cb_(std::move(fixed)) {
++    host_ = params.hostname.empty() ? "127.0.0.1" : params.hostname;
++    port_ = params.port;
++    n_ubatch_ = params.n_ubatch;
++    n_ctx_ = params.n_ctx;
++    warmup_enabled_ = getenv("LLAMA_VRAM_NO_WARMUP") == nullptr;
++    core_.policy.reserve_mib     = params.vram_reserve_mib;
++    core_.policy.hysteresis_mib  = params.vram_hysteresis_mib;
++    core_.policy.grow_seconds    = params.vram_grow_seconds;
++    core_.policy.pause_floor_mib = params.vram_pause_floor_mib;
++    core_.policy.pause_after_seconds = params.vram_pause_after_seconds;
++    core_.policy.min_chunks      = params.vram_min_chunks;
++    core_.policy.poll_ms         = params.vram_poll_ms;
++    chunk_slots_ = std::max(1, params.moe_cache_chunk_slots);
++    test_hooks_  = params.vram_test_hooks;
++    sysfs_card_  = params.vram_sysfs_card;
++    marker_dir_  = params.slot_save_path;
++    host_pinned_max_mib_ = params.host_pinned_max_mib;
++    uptime0_s_   = mono_s();
++
++    std::string dir = sysfs_card_ == "auto" ? find_card_dir() : sysfs_card_;
++    if (!dir.empty()) {
++        mem_used_path_  = dir + "/mem_info_vram_used";
++        mem_total_path_ = dir + "/mem_info_vram_total";
++        int64_t total = 0;
++        if (read_int64_file(mem_total_path_, total)) {
++            card_total_mib_ = (int32_t) (total / (1024 * 1024));
++        }
++    }
++    int32_t slots = 0, max_slots = 0;
++    size_t slot_bytes = 0;
++    if (llama_model_moe_cache_info(model_, &slots, &slot_bytes, &max_slots) && slot_bytes > 0) {
++        slot_bytes_ = slot_bytes;
++        max_slots_  = max_slots;
++        geometry_ok_ = true;
++        refresh_geometry(geom_);
++    }
++    if (!available()) {
++        LOG_WRN("vram governor: unavailable (card_total_mib=%d, expert cache geometry %s)\n",
++                card_total_mib_, geometry_ok_ ? "ok" : "missing");
++    } else {
++        LOG_INF("vram governor: card %d MiB, reserve %d MiB, hysteresis %d MiB, chunk %d slots = %d MiB, up to %d chunks\n",
++                card_total_mib_, core_.policy.reserve_mib, core_.policy.hysteresis_mib, chunk_slots_,
++                geom_.chunk_mib, geom_.max_chunks);
++    }
++}
++
++server_vram::~server_vram() { stop(); }
++
++void server_vram::start() {
++    if (!available() || thread_.joinable()) { return; }
++    // pool freeze/overflow hooks of the GPU backend (absent in CPU-only builds)
++    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) { continue; }
++        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
++        pool_freeze_ = (pfn_pool_freeze) ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_pool_freeze");
++        pool_stats_  = (pfn_pool_stats)  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_pool_stats");
++        host_limit_  = (pfn_host_limit)  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_set_limit");
++        host_stats_  = (pfn_host_stats)  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_host_stats");
++        if (host_limit_ && host_pinned_max_mib_ > 0) { host_limit_((uint64_t) host_pinned_max_mib_ * 1024 * 1024); }
++        break;
++    }
++    thread_ = std::thread([this] { loop(); });
++    if (warmup_enabled_) {
++        warm_thread_ = std::thread([this] { warmup(); });
++    } else {
++        core_ready_.store(true);
++        ready_.store(true);
++    }
++}
++
++// one synthetic request through the real server path (slot, sampler, speculative drafting), random token ids
++void server_vram::warm_request(int n_prompt, int n_predict) {
++    json prompt = json::array();
++    uint32_t x = 12345u;
++    for (int i = 0; i < n_prompt; i++) {
++        x = x * 1664525u + 1013904223u;
++        prompt.push_back(1000 + (int) ((x >> 8) % 30000));
++    }
++    json body = {{"prompt", prompt}, {"n_predict", n_predict}, {"temperature", 0.0}, {"cache_prompt", false}, {"stream", false}};
++    httplib::Client cli(host_, port_);
++    cli.set_read_timeout(900, 0);
++    cli.set_connection_timeout(10, 0);
++    auto r = cli.Post("/completion", body.dump(), "application/json");
++    if (!r || r->status != 200) {
++        LOG_WRN("vram governor: warm-up request (%d prompt tokens) failed: %s\n", n_prompt,
++                r ? std::to_string(r->status).c_str() : "no response");
++    }
++}
++
++void server_vram::warmup() {
++    const double t0 = mono_s();
++    {   // wait until the HTTP server is up
++        httplib::Client cli(host_, port_);
++        cli.set_connection_timeout(2, 0);
++        for (int i = 0; i < 600 && !stop_.load(); i++) {
++            auto r = cli.Get("/health");
++            if (r && r->status == 200) { break; }
++            std::this_thread::sleep_for(std::chrono::milliseconds(500));
++        }
++    }
++    int n_prompt = std::max(16, std::min(2 * n_ubatch_, n_ctx_ - 256));
++    if (const char * e = getenv("LLAMA_VRAM_WARM_TOKENS")) { n_prompt = std::max(8, atoi(e)); }  // stand experiments
++    const bool skip_second = getenv("LLAMA_VRAM_WARM_SKIP2") != nullptr;
++    const bool skip_first  = getenv("LLAMA_VRAM_WARM_SKIP1") != nullptr;
++    // 1. worst-case shapes with the cache empty: the pools reach their size (this also covers the cold path)
++    if (!skip_first) { warm_request(n_prompt, 48); }
++    warm_shapes_ = {"prefill_" + std::to_string(n_prompt), "decode_draft"};
++    // 2. let the governor fill the cache, then run the same shapes at the final cache size; if the pools grew,
++    //    the governor trims the cache back to the reserve
++    core_ready_.store(true);
++    for (int i = 0; i < 100 && !stop_.load(); i++) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(200));
++        std::lock_guard<std::mutex> lk(mu_);
++        if (core_.state == vram_state::FULL) { break; }
++    }
++    if (!skip_second) { warm_request(n_prompt, 48); }
++    std::this_thread::sleep_for(std::chrono::milliseconds(2 * std::max(50, core_.policy.poll_ms)));
++    llama_model_moe_cache_reset_learning(model_); // the warm-up routed random tokens: do not keep what it taught the channel policy
++    if (pool_freeze_) { pool_freeze_(true); pool_frozen_.store(true); }
++    warm_seconds_ = mono_s() - t0;
++    ready_.store(true);
++    LOG_INF("vram governor: warm-up done in %.1f s; pools frozen, cache %d chunks\n", warm_seconds_, geom_.chunks);
++}
++
++void server_vram::stop() {
++    stop_.store(true);
++    if (warm_thread_.joinable()) { warm_thread_.join(); }
++    if (thread_.joinable()) { thread_.join(); }
++}
++
++void server_vram::refresh_geometry(vram_cache_geometry & g) {
++    int32_t slots = 0, max_slots = 0;
++    size_t slot_bytes = 0;
++    llama_model_moe_cache_info(model_, &slots, &slot_bytes, &max_slots);
++    g.chunk_slots = chunk_slots_;
++    g.chunk_mib   = (int32_t) (((size_t) chunk_slots_ * slot_bytes_ + (1024 * 1024 - 1)) / (1024 * 1024));
++    g.chunks      = (slots + chunk_slots_ / 2) / chunk_slots_;
++    g.max_chunks  = max_slots_ / chunk_slots_;
++}
++
++bool server_vram::read_card(int32_t & free_mib, int32_t & total_mib, int32_t & used_mib) {
++    int64_t used = 0, total = 0;
++    if (!read_int64_file(mem_used_path_, used) || !read_int64_file(mem_total_path_, total)) {
++        return false;
++    }
++    total_mib = (int32_t) (total / (1024 * 1024));
++    used_mib  = (int32_t) (used / (1024 * 1024));
++    free_mib  = total_mib - used_mib;
++    return true;
++}
++
++// VRAM of this process: sum of drm-memory-vram over distinct drm clients in /proc/self/fdinfo
++int32_t server_vram::read_proc_vram_mib() {
++    DIR * d = opendir("/proc/self/fdinfo");
++    if (!d) { return 0; }
++    std::set<std::string> seen;
++    int64_t kib = 0;
++    while (dirent * e = readdir(d)) {
++        if (e->d_name[0] == '.') { continue; }
++        const std::string text = read_text_file(std::string("/proc/self/fdinfo/") + e->d_name);
++        if (text.find("drm-driver:\tamdgpu") == std::string::npos) { continue; }
++        auto field = [&](const char * key) -> std::string {
++            const size_t p = text.find(key);
++            if (p == std::string::npos) { return ""; }
++            const size_t b = p + strlen(key);
++            return text.substr(b, text.find('\n', b) - b);
++        };
++        const std::string id = field("drm-client-id:\t");
++        if (!id.empty() && !seen.insert(id).second) { continue; }
++        const std::string v = field("drm-memory-vram:\t");
++        if (!v.empty()) { kib += atoll(v.c_str()); }
++    }
++    closedir(d);
++    return (int32_t) (kib / 1024);
++}
++
++bool server_vram::apply_chunks(int32_t chunks, const std::string & why, double now_s) {
++    const int32_t before = geom_.chunks;
++    const int32_t slots = chunks * chunk_slots_;
++    int32_t old_slots = 0, new_slots = 0;
++    size_t released = 0, allocated = 0;
++    const double t0 = mono_s();
++    const bool ok = llama_model_moe_cache_resize(model_, slots, &old_slots, &new_slots, &released, &allocated);
++    const double ms = (mono_s() - t0) * 1000.0;
++    last_resize_ms_ = (uint64_t) ms;
++    refresh_geometry(geom_);
++    LOG_INF("vram governor: cache %d -> %d chunks (%d -> %d slots, %s) in %.0f ms, free %d MiB%s\n",
++            before, geom_.chunks, old_slots, new_slots, why.c_str(), ms, last_free_mib_, ok ? "" : " [resize failed]");
++    if (!ok) {
++        core_.reset_calm(now_s);
++    }
++    return ok;
++}
++
++void server_vram::loop() {
++    while (!stop_.load()) {
++        const int poll_ms = std::max(20, core_.policy.poll_ms);
++        std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
++        int32_t free_mib = 0, total_mib = 0, used_mib = 0;
++        if (!read_card(free_mib, total_mib, used_mib)) { continue; }
++        const double now = mono_s();
++        std::string pause_why;
++        {
++        std::lock_guard<std::mutex> lk(mu_);
++        if (sim_until_s_ > now) { free_mib += sim_delta_mib_; }
++        last_free_mib_ = free_mib;
++        window_min_free_ = std::min(window_min_free_, free_mib);
++
++        vram_inputs in;
++        in.now_s = now; in.free_mib = free_mib; in.ready = core_ready_.load(); in.busy = busy_ ? busy_() : false; in.big_prefill = big_prefill_ ? big_prefill_() : false;
++        refresh_geometry(geom_);
++        const vram_action act = core_.step(in, geom_);
++        if (act.kind == vram_action_kind::SET_CHUNKS && act.chunks != geom_.chunks) {
++            const int32_t before = geom_.chunks;
++            apply_chunks(act.chunks, act.reason, now);
++            core_.note_applied(act, before, geom_.chunks, now);
++        } else if (act.kind == vram_action_kind::PAUSE) {
++            pause_why = act.reason;
++            LOG_WRN("vram governor: pause requested (%s), free %d MiB with the cache at its minimum\n",
++                    act.reason.c_str(), free_mib);
++        }
++        }
++        if (!pause_why.empty()) {
++            request_pause(pause_why, "");
++        }
++    }
++}
++
++bool server_vram::request_pause(const std::string & reason, const std::string & checkpoint) {
++    if (!pause_cb_ || pause_requested_.exchange(true)) {
++        return false;
++    }
++    {
++        std::lock_guard<std::mutex> lk(mu_);
++        core_.set_state(vram_state::PAUSING, reason);
++    }
++    // marker for the gateway: why the process is about to exit with code 75 and what the card looked like
++    if (!marker_dir_.empty()) {
++        try {
++            json m = status();
++            m["exit_reason"] = reason;
++            m["exit_code"] = 75;
++            std::ofstream f(marker_dir_ + "vram-exit.json");
++            f << m.dump();
++        } catch (...) {
++        }
++    }
++    pause_cb_(reason, checkpoint.empty() ? "vram-pause.bin" : checkpoint);
++    return true;
++}
++
++server_vram::json server_vram::policy_locked() const {
++    const auto & p = core_.policy;
++    return {
++        {"reserve_mib", p.reserve_mib}, {"hysteresis_mib", p.hysteresis_mib}, {"grow_seconds", p.grow_seconds},
++        {"pause_floor_mib", p.pause_floor_mib}, {"pause_after_seconds", p.pause_after_seconds}, {"min_chunks", p.min_chunks},
++        {"max_chunks", p.max_chunks < 0 ? json(nullptr) : json(p.max_chunks)},
++        {"prefill_yield", p.prefill_yield}, {"poll_ms", p.poll_ms},
++    };
++}
++
++server_vram::json server_vram::policy_json() {
++    std::lock_guard<std::mutex> lk(mu_);
++    return policy_locked();
++}
++
++bool server_vram::set_policy(const json & body, std::string & err) {
++    if (!body.is_object()) { err = "body must be a JSON object"; return false; }
++    vram_policy p;
++    {
++        std::lock_guard<std::mutex> lk(mu_);
++        p = core_.policy;
++    }
++    auto num = [&](const char * key, int32_t lo, int32_t hi, int32_t & out) -> bool {
++        if (!body.contains(key)) { return true; }
++        const auto & v = body[key];
++        if (!v.is_number_integer()) { err = std::string(key) + " must be an integer"; return false; }
++        const int64_t x = v.get<int64_t>();
++        if (x < lo || x > hi) { err = std::string(key) + " out of range"; return false; }
++        out = (int32_t) x;
++        return true;
++    };
++    static const std::set<std::string> known = {"reserve_mib", "hysteresis_mib", "grow_seconds", "pause_floor_mib",
++        "min_chunks", "max_chunks", "prefill_yield", "poll_ms", "pause_after_seconds"};
++    for (auto it = body.begin(); it != body.end(); ++it) {
++        if (!known.count(it.key())) { err = "unknown field " + it.key(); return false; }
++    }
++    if (!num("reserve_mib", 256, 4096, p.reserve_mib) || !num("hysteresis_mib", 0, 1024, p.hysteresis_mib) ||
++        !num("grow_seconds", 0, 600, p.grow_seconds) || !num("pause_floor_mib", 0, 2048, p.pause_floor_mib) ||
++        !num("min_chunks", 0, 64, p.min_chunks) || !num("pause_after_seconds", 0, 600, p.pause_after_seconds) || !num("poll_ms", 50, 1000, p.poll_ms)) {
++        return false;
++    }
++    if (body.contains("max_chunks")) {
++        const auto & v = body["max_chunks"];
++        if (v.is_null()) {
++            p.max_chunks = -1;
++        } else if (v.is_number_integer() && v.get<int64_t>() >= 0 && v.get<int64_t>() <= 64) {
++            p.max_chunks = (int32_t) v.get<int64_t>();
++        } else {
++            err = "max_chunks must be null or an integer 0..64";
++            return false;
++        }
++    }
++    if (body.contains("prefill_yield")) {
++        if (!body["prefill_yield"].is_boolean()) { err = "prefill_yield must be a boolean"; return false; }
++        p.prefill_yield = body["prefill_yield"].get<bool>();
++    }
++    std::lock_guard<std::mutex> lk(mu_);
++    core_.policy = p;
++    return true;
++}
++
++server_vram::json server_vram::set_chunks_manual(int32_t chunks, std::string & err) {
++    std::lock_guard<std::mutex> lk(mu_);
++    refresh_geometry(geom_);
++    if (chunks < 0 || chunks > geom_.max_chunks) { err = "chunks out of range"; return json::object(); }
++    const bool ok = chunks == geom_.chunks || apply_chunks(chunks, "manual", mono_s());
++    if (!ok) { err = "resize failed"; }
++    return {{"chunks", geom_.chunks}, {"slots", geom_.chunks * chunk_slots_}, {"resize_ms", last_resize_ms_}};
++}
++
++void server_vram::simulate(int32_t free_delta_mib, double seconds) {
++    std::lock_guard<std::mutex> lk(mu_);
++    sim_delta_mib_ = free_delta_mib;
++    sim_until_s_ = mono_s() + seconds;
++}
++
++// host (system RAM) side of the server, for the RAM budget of the gateway
++server_vram::json server_vram::host_json() {
++    auto kib_of = [](const std::string & text, const char * key) -> int64_t {
++        const size_t p = text.find(key);
++        if (p == std::string::npos) { return 0; }
++        return atoll(text.c_str() + p + strlen(key));
++    };
++    const std::string st = read_text_file("/proc/self/status");
++    const std::string mi = read_text_file("/proc/meminfo");
++    auto psi = [](const char * line_key, const char * field) -> double {
++        const std::string t = read_text_file("/proc/pressure/memory");
++        const size_t l = t.find(line_key);
++        if (l == std::string::npos) { return -1.0; }
++        const size_t f = t.find(field, l);
++        if (f == std::string::npos) { return -1.0; }
++        return atof(t.c_str() + f + strlen(field));
++    };
++    uint64_t pinned = 0, denied = 0;
++    if (host_stats_) { host_stats_(&pinned, &denied); }
++    host_parts hp = host_cb_ ? host_cb_() : host_parts();
++    const int64_t anon = kib_of(st, "RssAnon:") / 1024, file = kib_of(st, "RssFile:") / 1024, shmem = kib_of(st, "RssShmem:") / 1024, lck = kib_of(st, "VmLck:") / 1024;
++    return {
++        {"process", {{"rss_anon_mib", anon}, {"rss_file_mib", file}, {"rss_shmem_mib", shmem}, {"locked_mib", lck},
++                     {"resident_fixed_mib", anon + shmem + lck}}},
++        {"pinned_mib", (int64_t) (pinned / (1024 * 1024))}, {"pinned_denied", denied}, {"pinned_max_mib", host_pinned_max_mib_},
++        {"checkpoints_mib", hp.checkpoints_mib}, {"prompt_cache_mib", hp.prompt_cache_mib},
++        {"system", {{"mem_available_mib", kib_of(mi, "MemAvailable:") / 1024}, {"cached_mib", kib_of(mi, "Cached:") / 1024},
++                    {"swap_used_mib", (kib_of(mi, "SwapTotal:") - kib_of(mi, "SwapFree:")) / 1024}, {"swap_total_mib", kib_of(mi, "SwapTotal:") / 1024},
++                    {"shmem_mib", kib_of(mi, "Shmem:") / 1024},
++                    {"psi_some_avg10", psi("some", "avg10=")}, {"psi_some_avg60", psi("some", "avg60=")}, {"psi_full_avg10", psi("full", "avg10=")}}},
++    };
++}
++
++server_vram::json server_vram::status() {
++    int32_t free_now = 0, total_now = 0, used_now = 0;
++    const bool have_card = read_card(free_now, total_now, used_now);
++    const int32_t proc = read_proc_vram_mib();
++    std::lock_guard<std::mutex> lk(mu_);
++    refresh_geometry(geom_);
++    if (have_card && sim_until_s_ > mono_s()) { free_now += sim_delta_mib_; }
++    const int32_t win_min = window_min_free_ == INT32_MAX ? free_now : std::min(window_min_free_, free_now);
++    window_min_free_ = INT32_MAX;
++    const int32_t cache_mib = geom_.chunks * geom_.chunk_mib;
++    fixed_parts fp = fixed_cb_ ? fixed_cb_() : fixed_parts();
++    fp.weights = std::max(0, fp.weights - cache_mib); // the cache buffers are counted with the model by ggml
++    const int32_t known = fp.weights + fp.kv + fp.sched + fp.draft;
++    uint64_t pool_overflows = 0, pool_bytes = 0;
++    if (pool_stats_) { pool_stats_(&pool_overflows, &pool_bytes); }
++    // "pool" is the measured remainder: the process's VRAM minus the cache and the sized parts
++    const int32_t pool = std::max(0, proc - cache_mib - known);
++    const int32_t fixed_total = std::max(0, proc - cache_mib);
++    return {
++        {"state", vram_state_name(core_.state)},
++        {"reason", core_.last_reason},
++        {"ready", ready_.load()},
++        {"pool_frozen", pool_frozen_.load()},
++        {"card", {{"total_mib", total_now}, {"free_mib", free_now}, {"min_free_mib_window", win_min}, {"source", have_card ? "sysfs" : "none"}}},
++        {"fixed_mib", {{"weights", fp.weights}, {"kv", fp.kv}, {"draft", fp.draft}, {"pool", pool},
++                       {"sched", fp.sched}, {"vision", 0}, {"total", fixed_total}, {"pool_backend_mib", (int64_t) (pool_bytes / (1024 * 1024))}}},
++        {"cache", {{"enabled", geom_.chunks > 0}, {"chunk_slots", geom_.chunk_slots}, {"chunk_mib", geom_.chunk_mib},
++                   {"chunks", geom_.chunks}, {"slots", geom_.chunks * geom_.chunk_slots}, {"mib", cache_mib},
++                   {"target_chunks", geom_.chunks}, {"max_chunks", core_.policy.max_chunks < 0 ? json(nullptr) : json(core_.policy.max_chunks)},
++                   {"last_resize_ms", last_resize_ms_}}},
++        {"policy", policy_locked()},
++        {"counters", {{"trims", core_.trims}, {"chunks_dropped", core_.chunks_dropped}, {"grows", core_.grows},
++                      {"chunks_grown", core_.chunks_grown}, {"pauses", core_.pauses},
++                      {"pool_overflow", pool_overflows},
++                      {"free_below_reserve_events", core_.below_reserve_events},
++                      {"free_below_reserve_max_s", std::round(core_.below_reserve_max_s * 100.0) / 100.0}}},
++        {"warmup", {{"done", ready_.load()}, {"seconds", std::round(warm_seconds_ * 10.0) / 10.0}, {"shapes", warm_shapes_}}},
++        {"host", host_json()},
++        {"uptime_s", std::round((mono_s() - uptime0_s_) * 10.0) / 10.0},
++    };
++}
+diff --git a/tools/server/server-vram.h b/tools/server/server-vram.h
+new file mode 100644
+index 0000000..0073285
+--- /dev/null
++++ b/tools/server/server-vram.h
+@@ -0,0 +1,116 @@
++#pragma once
++
++// VRAMLOGIC1: runtime of the VRAM governor inside llama-server (thread, sysfs, expert-cache actuator, /vram JSON).
++// The decision logic is in server-vram-governor.h.
++
++#include "server-vram-governor.h"
++
++#include "json.h"
++
++#include <atomic>
++#include <functional>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++
++struct common_params;
++struct llama_model;
++
++typedef void (*pfn_pool_freeze)(bool);
++typedef void (*pfn_pool_stats)(uint64_t *, uint64_t *);
++
++class server_vram {
++public:
++    using json = common_json;
++
++    struct host_parts { int32_t checkpoints_mib = 0, prompt_cache_mib = 0; };
++    void set_host_callback(std::function<host_parts()> cb) { host_cb_ = std::move(cb); }
++
++    struct fixed_parts { int32_t weights = 0, kv = 0, sched = 0, draft = 0; }; // GPU buffers, MiB, cache excluded by the caller
++
++    // busy: true while a request is being processed; model: the loaded target model; fixed: ggml buffer sizes
++    server_vram(const common_params & params, const llama_model * model, std::function<bool()> busy,
++            std::function<fixed_parts()> fixed);
++    ~server_vram();
++
++    bool available() const { return card_total_mib_ > 0 && geometry_ok_; }
++    void set_big_prefill_callback(std::function<bool()> cb) { big_prefill_ = std::move(cb); }
++    void start();
++    void stop();
++
++
++    json status();                                       // GET /vram
++    json policy_json();                                  // GET /vram/policy
++    bool set_policy(const json & body, std::string & err); // POST /vram/policy
++    json set_chunks_manual(int32_t chunks, std::string & err); // POST /moe-cache/chunks (test hooks)
++    void simulate(int32_t free_delta_mib, double seconds); // POST /vram/simulate (test hooks)
++
++    // pause with a checkpoint (by the governor or POST /vram/pause): the server saves the active slots, tells the
++    // clients and exits with code 75. The callback posts the task into the server queue.
++    void set_pause_callback(std::function<void(const std::string & reason, const std::string & checkpoint)> cb) { pause_cb_ = std::move(cb); }
++    bool request_pause(const std::string & reason, const std::string & checkpoint);
++    bool test_hooks() const { return test_hooks_; }
++    int32_t n_poll_ms() const { return core_.policy.poll_ms; }
++
++private:
++    void loop();
++    void warmup();
++    void warm_request(int n_prompt, int n_predict);
++    bool read_card(int32_t & free_mib, int32_t & total_mib, int32_t & used_mib);
++    int32_t read_proc_vram_mib();
++    void refresh_geometry(vram_cache_geometry & g);
++    bool apply_chunks(int32_t chunks, const std::string & why, double now_s);
++    json policy_locked() const;
++
++    const llama_model * model_;
++    std::function<bool()> busy_;
++    std::function<bool()> big_prefill_;
++    std::function<fixed_parts()> fixed_cb_;
++    std::function<host_parts()> host_cb_;
++    typedef void (*pfn_host_limit)(uint64_t);
++    typedef void (*pfn_host_stats)(uint64_t *, uint64_t *);
++    pfn_host_limit host_limit_ = nullptr;
++    pfn_host_stats host_stats_ = nullptr;
++    int32_t host_pinned_max_mib_ = 0;
++    json host_json();
++    std::string host_ = "127.0.0.1";
++    int port_ = 8080;
++    int n_ubatch_ = 512, n_ctx_ = 4096, n_vocab_hint_ = 100000;
++    bool warmup_enabled_ = true;
++    double warm_seconds_ = 0;
++    std::vector<std::string> warm_shapes_;
++    std::thread warm_thread_;
++    std::atomic<bool> core_ready_{false};
++    pfn_pool_freeze  pool_freeze_  = nullptr;
++    pfn_pool_stats   pool_stats_   = nullptr;
++
++    std::mutex mu_;                 // guards core_, geometry, counters, window
++    vram_governor_core core_;
++    vram_cache_geometry geom_;
++    bool geometry_ok_ = false;
++    size_t slot_bytes_ = 0;
++    int32_t max_slots_ = 0;
++    int32_t chunk_slots_ = 4;
++
++    std::string mem_used_path_, mem_total_path_;
++    int32_t card_total_mib_ = 0;
++    int32_t last_free_mib_ = 0;
++    int32_t window_min_free_ = INT32_MAX;
++    int32_t proc_vram_mib_ = 0;
++    uint64_t last_resize_ms_ = 0;
++    double   uptime0_s_ = 0;
++
++    std::atomic<bool> ready_{false}; // warm-up finished
++    std::atomic<bool> pool_frozen_{false};
++    std::atomic<uint64_t> pool_overflow_{0};
++    std::function<void(const std::string &, const std::string &)> pause_cb_;
++    std::atomic<bool> pause_requested_{false};
++    std::atomic<bool> stop_{false};
++    std::thread thread_;
++    bool test_hooks_ = false;
++    int32_t sim_delta_mib_ = 0;
++    double  sim_until_s_ = 0;
++    std::string sysfs_card_;
++    std::string marker_dir_;
++};
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 5d1afcd..50f071c 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -142,12 +142,16 @@ int llama_server(common_params & params, int argc, char ** argv) {
+             SRV_ERR("%s\n", "--moe-cache-live-resize requires a single-model server bound to loopback");
+             return 1;
+         }
+-        if (params.moe_cache_profile.empty() || params.moe_cache_slots <= 0) {
++        if (params.moe_cache_profile.empty() || (params.moe_cache_slots <= 0 && !params.vram_governor)) {
+             SRV_ERR("%s\n", "--moe-cache-live-resize requires --moe-cache-profile and a positive --moe-cache-slots value");
+             return 1;
+         }
+     }
+ 
++    if (params.drop_file_cache) {
++        setenv("LLAMA_DROP_FILE_CACHE", "1", 1); // read by the model loader
++    }
++
+     // skip device enumeration so the CUDA primary context stays uncreated
+     common_params_print_info(params, !is_router_server);
+ 
+@@ -271,6 +275,16 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     if (params.moe_cache_live_resize) {
+         ctx_http.post("/moe-cache/slots",     ex_wrapper(routes.post_moe_cache_resize));
+     }
++    if (params.vram_governor) {
++        ctx_http.get ("/vram",                ex_wrapper(routes.get_vram));
++        ctx_http.get ("/vram/policy",         ex_wrapper(routes.get_vram_policy));
++        ctx_http.post("/vram/policy",         ex_wrapper(routes.post_vram_policy));
++        ctx_http.post("/vram/pause",          ex_wrapper(routes.post_vram_pause));
++        if (params.vram_test_hooks) {
++            ctx_http.post("/moe-cache/chunks", ex_wrapper(routes.post_moe_cache_chunks));
++            ctx_http.post("/vram/simulate",    ex_wrapper(routes.post_vram_simulate));
++        }
++    }
+     ctx_http.post("/v1/responses",             ex_wrapper(routes.post_responses_oai));
+     ctx_http.post("/responses",                ex_wrapper(routes.post_responses_oai));
+     ctx_http.post("/v1/audio/transcriptions",  ex_wrapper(routes.post_transcriptions_oai));

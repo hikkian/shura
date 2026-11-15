@@ -13,6 +13,11 @@ import test_gateway as fixtures
 REPO = fixtures.REPO
 
 
+def resource_unlimited():
+    import resource
+    return resource.RLIM_INFINITY
+
+
 class GuardReliability(fixtures.GatewayGuard):
     # Avoid rerunning inherited acceptance cases in this supplementary class.
     def test_tool_pauses_never_count_as_ninety_second_idle(self):
@@ -84,10 +89,29 @@ class GuardReliability(fixtures.GatewayGuard):
         (self.ram / 'active.bin').write_bytes(b'bad checkpoint!')
         self.gw.st.model_id = self.gw.M['defaultModel']
         self.api.reset_mock()
-        self.assertEqual(self.gw.restore_slot_locked(), 'restart_empty')
+        self.assertEqual(self.gw.restore_slot_locked(), '')      # the server was never told: it is untouched
         self.api.assert_not_called()
         self.assertIsNone(self.gw.st.ram_checkpoint)
         self.assertEqual(list(self.ram.iterdir()), [])
+
+    def test_same_size_slot_corruption_never_reaches_restore_api(self):
+        self.yield_model()
+        slot = self.ram / 'active.bin'
+        original = slot.read_bytes()
+        slot.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+        self.gw.st.model_id = self.gw.M['defaultModel']
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), '')
+        self.api.assert_not_called()
+
+    def test_truncated_slot_never_reaches_restore_api(self):
+        self.yield_model()
+        slot = self.ram / 'active.bin'
+        slot.write_bytes(slot.read_bytes()[:-1])
+        self.gw.st.model_id = self.gw.M['defaultModel']
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), '')
+        self.api.assert_not_called()
 
     def test_wrong_restore_token_count_requires_clean_process(self):
         self.yield_model()
@@ -266,7 +290,7 @@ class GuardReliability(fixtures.GatewayGuard):
         self.gw.st.proc = None
         self.gw.st.ram_backend = False
         with (patch.object(self.gw, 'legacy_main') as legacy,
-              patch.object(self.gw, 'ThreadingHTTPServer') as server,
+              patch.object(self.gw, 'BoundedServer') as server,
               patch.object(self.gw.threading, 'Thread') as thread,
               patch.object(self.gw.signal, 'signal'),
               patch.object(self.gw, 'prepare_ram_slot_dir', side_effect=AssertionError('unexpected RAM directory'))):
@@ -319,6 +343,17 @@ class GuardReliability(fixtures.GatewayGuard):
             enabled = self.gw.build_args(self.gw.M['models'][self.gw.M['defaultModel']], False)
         self.assertEqual(enabled[enabled.index('--slot-save-checkpoints') + 1], '1')
 
+    def test_poll_is_omitted_by_default_and_validated_when_enabled(self):
+        mc = dict(self.gw.M['models'][self.gw.M['defaultModel']])
+        self.assertNotIn('--poll', self.gw.build_args(mc, False))
+        for value in (0, 10, 25, 50):
+            with self.subTest(poll=value):
+                argv = self.gw.build_args({**mc, 'poll': value}, False)
+                self.assertEqual(argv[argv.index('--poll') + 1], str(value))
+        for value in (-1, 101):
+            with self.subTest(poll=value), self.assertRaises(ValueError):
+                self.gw.build_args({**mc, 'poll': value}, False)
+
     def test_chat_template_kwargs_reach_the_server_only_when_configured(self):
         mc = dict(self.gw.M['models'][self.gw.M['defaultModel']])
         with patch.object(self.gw, 'server_slot_dir', return_value=self.disk):
@@ -364,12 +399,22 @@ class GuardReliability(fixtures.GatewayGuard):
         gw.st.proc = None
 
     def test_start_after_a_switch_does_not_trust_the_stale_vram_sample(self):
-        # start_llama stops the running server and then checks admission with the VRAM sample the monitor took while it was still running
+        # The monitor's VRAM sample still shows the running server, so admission credits what its stop will free, and it is decided
+        # before that stop: a refused switch must leave the running model loaded.
         src = Path(self.gw.__file__).read_text()
         i = src.index('def start_llama(')
-        body = src[i:i + 1800]
-        self.assertIn('freed = running_footprint()', body)
-        self.assertIn('preload_check(mc, reclaim=(0.0, freed[1]))', body)
+        body = src[i:i + 3000]
+        self.assertIn('preload_check(mc, reclaim=running_footprint()', body)   # the governor adds admit=(model, layout)
+        self.assertLess(body.index('preload_check('), body.index('stop_llama_locked('))
+
+    def test_core_dumps_are_disabled_for_the_servers_but_the_hard_limit_is_left_alone(self):
+        calls = []
+        with patch.object(self.gw.resource, 'getrlimit', return_value=(resource_unlimited(), resource_unlimited())), \
+                patch.object(self.gw.resource, 'setrlimit', side_effect=lambda which, lim: calls.append((which, lim))):
+            self.assertTrue(self.gw.disable_core_dumps())
+        self.assertEqual(calls, [(self.gw.resource.RLIMIT_CORE, (0, resource_unlimited()))])
+        with patch.object(self.gw.resource, 'getrlimit', side_effect=OSError('no')):
+            self.assertFalse(self.gw.disable_core_dumps())                   # a failure must never stop the gateway
 
     def test_image_cap_and_extra_args_reach_the_server_and_vision_overrides_apply(self):
         base = dict(self.gw.M['models'][self.gw.M['defaultModel']])
@@ -440,11 +485,11 @@ class GuardReliability(fixtures.GatewayGuard):
             flag.write_text('ON')
             self.assertIs(self.gw.read_terse_flag(), True)
 
-    def test_preserved_gateway_matches_repository_baseline(self):
-        # _gateway_legacy.py is the gateway as it was before the VRAM guard (commit d1f967e), kept for rollback.
-        # Pinned by digest: it must never change by accident (comparing with HEAD would only hold before the guard commit).
+    def test_legacy_gateway_is_pinned_after_monitor_integration(self):
+        # Keep the rollback gateway pinned: a change here must be deliberate and updates this digest.
+        # 2026-10-06 audit fixes: browser guard, relay, framing, status during a load, crash window, shutdown, key handling.
         self.assertEqual(hashlib.sha256((REPO / 'gateway' / '_gateway_legacy.py').read_bytes()).hexdigest(),
-                         '0b3a2b65bc884a46f0e147cec3233719f69c687ea98e9a6d83c1b193e0524b0b')
+                         '90c8e177d273db602ddc162e151151ec75e12be0477f744c9a871caf2624e609')
 
 
 def load_tests(loader, standard_tests, pattern):

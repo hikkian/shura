@@ -72,7 +72,12 @@ class BuildsForMachines(unittest.TestCase):
 
     def test_unavailable_backends_are_dropped(self):
         got = [b for b, _ in B.builds_for(HW["apple_m2max_64g"], ["metal", "cpu"], ASSETS)]
-        self.assertEqual(got, ["metal"])            # there is no separate CPU build listed for macOS arm64 here
+        self.assertEqual(got, ["metal", "cpu"])     # the Metal bundle also runs CPU-only with -ngl 0
+
+    def test_default_cpu_fallback_uses_the_macos_bundle_without_gpu_layers(self):
+        got = B.builds_for(HW["apple_m2max_64g"], ["vulkan", "cpu"], ASSETS)
+        self.assertEqual([b for b, _ in got], ["cpu"])
+        self.assertEqual(got[0][1]["name"], "llama-b11301-bin-macos-arm64.tar.gz")
 
 
 class Verify(unittest.TestCase):

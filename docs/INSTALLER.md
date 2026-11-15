@@ -26,10 +26,10 @@ proprietary driver already installed, at least 16 GB RAM, and 30–45 GB free di
 
 1. **Checks** the distro, the NVIDIA driver (and prints the install command if it is missing), and free
    disk space.
-2. **System packages**: build tools, Node, Python, a folder dialog. It asks before running `sudo`.
-3. **Docker**, optional, for the private SearXNG.
-4. **CUDA toolkit** from NVIDIA's repository (Arch: `pacman -S cuda`). Only `cuda-toolkit` is
-   installed; the driver is never touched. The script stops if the toolkit is newer than your driver
+2. **System packages**: build tools, Node, Python, a folder dialog. The installer never runs `sudo`: if something is missing it prints the exact command for your distribution and stops.
+3. **Docker**, optional, for the private SearXNG. Used only if `docker info` works without `sudo`; otherwise web search is skipped and the install commands are printed.
+4. **CUDA toolkit** from NVIDIA's repository (Arch: `pacman -S cuda`). If `nvcc` is missing, the repository and install commands are printed and setup stops (run them yourself, or use `./scripts/shura install` for Vulkan/CPU). Only `cuda-toolkit` is
+   needed; the driver is never touched. The script stops if the toolkit is newer than your driver
    supports.
 5. **Builds llama.cpp**: the pinned perf fork plus the TurboQuant fix, compiled for your GPU's compute
    capability. The log goes to `~/.cache/shura/build.log`.
@@ -101,7 +101,7 @@ The planner's layout is the starting point. On your GPU, auto-tune then:
 
 | Where | What |
 |---|---|
-| System packages (`sudo`, asks first) | build tools, Node, Python, zenity, libnotify; optionally Docker; NVIDIA's CUDA repository and `cuda-toolkit` |
+| System packages (printed for you to run; setup never calls `sudo`) | build tools, Node, Python, zenity, libnotify; optionally Docker; NVIDIA's CUDA repository and `cuda-toolkit` |
 | `~/.local/share/shura/` | models, llama.cpp build, the repository (curl mode) |
 | `~/.config/systemd/user/ai-gateway.service` | the gateway service (enabled) |
 | `~/.config/shuracode/`, `~/.local/share/shuracode/`, `~/.local/bin/shuracode` | ShuraCode: config, engine, memory, command |
@@ -151,8 +151,9 @@ llama.cpp, so nothing is compiled:
 ```bash
 ./scripts/shura install --dry-run   # the plan, the download sizes and the disk needed; changes nothing
 ./scripts/shura install             # asks, then: engine -> model -> test launch -> ready
+./scripts/shura install --native-backends  # opt in to CUDA/ROCm/SYCL/Metal instead of Vulkan -> CPU
 ./scripts/shura start | status | stop
-./scripts/shura uninstall           # deletes everything under the Shura home folder
+./scripts/shura uninstall           # deletes what `shura install` put in the Shura home (asks first)
 ```
 
 | Option | |
@@ -164,15 +165,18 @@ llama.cpp, so nothing is compiled:
 | `--dir DIR` | Shura home (default `$SHURA_HOME`, else `~/.local/share/shura`, `~/Library/Application Support/shura`, `%LOCALAPPDATA%\shura`) |
 | `--port N` | server port (default 8080; the server listens on 127.0.0.1 only) |
 | `--no-build` | never build anything from source (on AMD with the ROCm SDK the installer otherwise offers to build our fork with its expert cache: `sudo dnf install rocm-hip-devel rocblas-devel hipblas-devel cmake gcc-c++ ninja-build git`, tens of minutes) |
-| `--no-turbo` | never use the third-party TurboQuant+ llama.cpp build (by default it is tried first and compared with upstream on your machine) |
+| `--no-turbo` | skip the third-party TurboQuant+ llama.cpp build (it is available with `--native-backends`) |
+| `--native-backends` | opt in to CUDA, ROCm, SYCL and Metal builds; by default the universal installer tries Vulkan and then CPU |
 | `--ram-gbs N` | RAM read speed in GB/s when it cannot be measured (no C compiler, as on most Windows PCs): dual-channel DDR4-3200 is about 40, DDR5-6000 about 80 |
 
 What it does, in order, and what protects you at each step:
 
 1. **Plan.** The same planner as `shura check` ([how it decides](HARDWARE.md)). If nothing fits it says why and stops.
-2. **Engine.** Downloads the prebuilt llama.cpp for each backend that could run your GPU (AMD and Intel have more than one),
-   checks it against the release's SHA-256, runs a 10-second self-test on a 19 MB model and keeps the fastest that works.
-   If no GPU build works, it plans again for the CPU and tells you.
+2. **Engine.** Downloads the prebuilt Vulkan build, checks it against the release's SHA-256, and runs a self-test on a small
+   model before the large model is downloaded. The test must start the server and return readable text. If Vulkan is missing
+   or fails the test, the installer reports the reason and tries the CPU build. Vulkan uses q8_0 for both K and V, with MTP
+   and expert caching disabled while those Vulkan paths are being validated. `--native-backends` opts into the vendor-specific
+   CUDA, ROCm, SYCL and Metal paths.
 3. **Model.** Size and SHA-256 come from the Hugging Face file list. The free disk space is checked first, a partial file
    is resumed (`.part`), and a file that fails the hash is moved aside as `.corrupt` and never used.
 4. **Test launch.** Starts the real server with the planned settings and generates tokens. If it runs out of memory, the plan
@@ -183,4 +187,4 @@ What it does, in order, and what protects you at each step:
    GitHub link that you open yourself.
 
 Files: `engines/` (llama.cpp builds), `models/`, `logs/`, `state.json`, `server.pid`. All of it is under the Shura home and
-`shura uninstall` removes it. SSD wear: the only large write is the model download itself (once; it is reused by reruns).
+`shura uninstall` removes exactly these entries and nothing else: it refuses your home folder, a git checkout and a folder without `state.json` (`--force` allows the latter, still only these entries), and in a folder shared with the Linux+NVIDIA setup (`app/`, `llama.cpp-perf/`, the gateway model) it keeps all of that. What `scripts/install.sh` set up (service, `shura` command, launcher) is removed by `scripts/uninstall.sh` (`--dry-run` first). SSD wear: the only large write is the model download itself (once; it is reused by reruns).

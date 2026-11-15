@@ -5,13 +5,16 @@ Why it exists: every arm must be measured by the same instrument, independent of
   * does what our gateway does for the agent: `reasoningEffort` (the AI SDK's spelling) becomes `reasoning_effort`;
   * adds per-arm request fields, e.g. `chat_template_kwargs: {"terse": false}` for the Tiel arm without terseness;
   * streams (SSE) without buffering, so the agent behaves exactly as with a direct connection;
-  * writes one JSON line per request to the log file (no prompts or code, only numbers).
+  * writes one JSON line per request to the log file (no prompts or code, only numbers);
+  * with AGENTIC_EVAL_LOG_REQUESTS=1 (AGTOOLS1b) also appends every chat request body to <log>.bodies.jsonl, with image data URLs
+    cut to a prefix and their length, so that a run can show what the model received (the harness moves that file next to the agent log).
 
     python3 proxy.py --listen 8097 --upstream http://127.0.0.1:8099 --log run.jsonl --extra '{"chat_template_kwargs": {"terse": false}}'
 """
 import argparse
 import http.client
 import json
+import os
 import re
 import socketserver
 import sys
@@ -42,15 +45,39 @@ def rewrite_body(raw, extra):
     return json.dumps(body).encode()
 
 
+def trim_images(body):
+    """A copy of a chat request body with every data:image URL replaced by its first 40 characters and its length."""
+    def walk(x):
+        if isinstance(x, dict):
+            out = {}
+            for k, v in x.items():
+                if k == "url" and isinstance(v, str) and v.startswith("data:image"):
+                    out[k] = f"{v[:40]}...({len(v)} chars)"
+                else:
+                    out[k] = walk(v)
+            return out
+        if isinstance(x, list):
+            return [walk(v) for v in x]
+        return x
+    return walk(body)
+
+
+def log_bodies():
+    return os.environ.get("AGENTIC_EVAL_LOG_REQUESTS") == "1"
+
+
 def scan_usage(payload):
-    """Pull usage and timings out of a (JSON or SSE) response body; {} when absent."""
+    """Pull usage and timings out of a (JSON or SSE) response body; {} when absent. Also whether the answer finished: the last
+    finish_reason a choice carried, and `done` (a stream's [DONE], or a finish_reason in a whole JSON answer)."""
     found = {}
     chunks = payload.split(b"\n") if payload.lstrip().startswith(b"data:") or b"\ndata:" in payload else [payload]
     for line in chunks:
         line = line.strip()
         if line.startswith(b"data:"):
             line = line[5:].strip()
-        if not line or line == b"[DONE]" or not line.startswith(b"{"):
+        if line == b"[DONE]":
+            found["done"] = True
+        if not line or not line.startswith(b"{"):
             continue
         try:
             obj = json.loads(line)
@@ -60,6 +87,18 @@ def scan_usage(payload):
             found["usage"] = obj["usage"]
         if isinstance(obj.get("timings"), dict):
             found["timings"] = obj["timings"]
+            if "reasoning_tokens" in obj["timings"]:
+                found["reasoning_tokens"] = obj["timings"]["reasoning_tokens"]
+            if isinstance(obj["timings"].get("reasoning_budget"), dict):
+                found["reasoning_budget"] = obj["timings"]["reasoning_budget"]
+        details = (obj.get("usage") or {}).get("completion_tokens_details") or {}
+        if "reasoning_tokens" in details and "reasoning_tokens" not in found:
+            found["reasoning_tokens"] = details["reasoning_tokens"]
+        for choice in obj.get("choices") or []:
+            if isinstance(choice, dict) and choice.get("finish_reason"):
+                found["finish_reason"] = choice["finish_reason"]
+    if "finish_reason" in found and len(chunks) == 1:
+        found["done"] = True
     return found
 
 
@@ -78,6 +117,13 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         if self.command == "POST" and raw:
             raw = rewrite_body(raw, self.extra)
+            if log_bodies() and "/chat/completions" in self.path and self.log_path:
+                try:
+                    body = trim_images(json.loads(raw.decode()))
+                except (ValueError, UnicodeDecodeError):
+                    body = {"raw": raw[:2000].decode(errors="replace")}
+                with self.lock, open(f"{self.log_path}.bodies.jsonl", "a") as f:
+                    f.write(json.dumps({"t": time.time(), "path": self.path, "body": body}, ensure_ascii=False) + "\n")
         u = urllib.parse.urlparse(self.upstream)
         conn = http.client.HTTPConnection(u.hostname, u.port, timeout=3600)
         headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
@@ -95,8 +141,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header(k, v)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        tail = b""
+        response_body = bytearray()
+        capture_usage = self.command == "POST" and "/chat/completions" in self.path
         first = None
+        client_closed = False
         try:
             while True:
                 chunk = resp.read1(8192) if hasattr(resp, "read1") else resp.read(8192)
@@ -104,19 +152,20 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 if first is None:
                     first = time.monotonic() - t0
-                tail = (tail + chunk)[-65536:]
+                if capture_usage:
+                    response_body.extend(chunk)
                 self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                 self.wfile.flush()
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
-            pass                                            # the agent hung up (its own timeout or abort): still record the request
+            client_closed = True                            # the agent hung up (its own timeout or abort): still record the request
         finally:
             conn.close()
         if self.command == "POST" and "/chat/completions" in self.path:
-            info = scan_usage(tail)
+            info = scan_usage(bytes(response_body))
             rec = {"t": time.time(), "path": self.path, "status": resp.status, "seconds": round(time.monotonic() - t0, 3),
-                   "first_byte_s": round(first or 0.0, 3), **info}
+                   "first_byte_s": round(first or 0.0, 3), "client_closed": client_closed, **info}
             with self.lock, open(self.log_path, "a") as f:
                 f.write(json.dumps(rec) + "\n")
 
@@ -125,9 +174,11 @@ class Handler(BaseHTTPRequestHandler):
 
 def totals(log_path):
     """Sum a request log: {requests, prompt_tokens, completion_tokens, seconds, errors}."""
-    out = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "seconds": 0.0, "errors": 0}
+    out = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+           "seconds": 0.0, "errors": 0, "switches": {}}
     try:
-        lines = open(log_path).read().splitlines()
+        with open(log_path) as f:
+            lines = f.read().splitlines()
     except OSError:
         return out
     for line in lines:
@@ -138,6 +189,17 @@ def totals(log_path):
         u = r.get("usage") or {}
         out["prompt_tokens"] += u.get("prompt_tokens", 0)
         out["completion_tokens"] += u.get("completion_tokens", 0)
+        out["reasoning_tokens"] += int(r.get("reasoning_tokens", 0) or 0)
+        budget = r.get("reasoning_budget") or {}
+        if budget:
+            sid = os.environ.get("AGENTIC_EVAL_SWITCH_ID", "reasoning_budget")
+            state = out["switches"].setdefault(sid, {"fired": False, "first_fire_token": -1, "shadow": False})
+            fired = bool(budget.get("brake_fired") or budget.get("budget_hit"))
+            state["fired"] = state["fired"] or fired
+            if fired and state["first_fire_token"] == -1:
+                state["first_fire_token"] = int(budget.get("first_fire_token", -1))
+            state["shadow"] = state["shadow"] or bool(budget.get("shadow", False))
+            state["requests"] = state.get("requests", 0) + 1
     return out
 
 

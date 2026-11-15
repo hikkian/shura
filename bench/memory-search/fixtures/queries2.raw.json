@@ -1,0 +1,1567 @@
+{
+ "queries": [
+  {
+   "id": "plain_ru-01",
+   "group": "plain_ru",
+   "text": "Напомни, на каком языке мне надо отвечать в чате после того, как контекст сожмётся?",
+   "expected": [
+    "reply-in-russian"
+   ]
+  },
+  {
+   "id": "plain_ru-02",
+   "group": "plain_ru",
+   "text": "Можно я допишу в коммит строку Co-authored-by с ассистентом?",
+   "expected": [
+    "commit-author"
+   ]
+  },
+  {
+   "id": "plain_ru-03",
+   "group": "plain_ru",
+   "text": "Я закончил правки, можно уже отправлять ветку на гитхаб?",
+   "expected": [
+    "no-push-without-word"
+   ]
+  },
+  {
+   "id": "plain_ru-04",
+   "group": "plain_ru",
+   "text": "Какие у нас правила для первой строки коммита? Хочу написать нормально сразу.",
+   "expected": [
+    "commit-message-style",
+    "quote-blog-commits"
+   ]
+  },
+  {
+   "id": "plain_ru-05",
+   "group": "plain_ru",
+   "text": "Заведу-ка отдельную ветку под эту задачу, ок?",
+   "expected": [
+    "two-branches-only"
+   ]
+  },
+  {
+   "id": "plain_ru-06",
+   "group": "plain_ru",
+   "text": "Запускаю длинный замер. Как сделать, чтобы браузер при этом не лагал?",
+   "expected": [
+    "heavy-jobs-nice"
+   ]
+  },
+  {
+   "id": "plain_ru-07",
+   "group": "plain_ru",
+   "text": "Как оформлять отчёт? Что в нём должно идти в самом начале?",
+   "expected": [
+    "reports-short-table-first"
+   ]
+  },
+  {
+   "id": "plain_ru-08",
+   "group": "plain_ru",
+   "text": "Куда складывать сырые данные замеров по карточке?",
+   "expected": [
+    "reports-folder"
+   ]
+  },
+  {
+   "id": "plain_ru-09",
+   "group": "plain_ru",
+   "text": "Сколько видеопамяти надо оставлять свободной, чтобы рабочий стол не завис?",
+   "expected": [
+    "vram-reserve"
+   ]
+  },
+  {
+   "id": "plain_ru-10",
+   "group": "plain_ru",
+   "text": "Процесс завис. Можно просто прибить все питоновские по имени?",
+   "expected": [
+    "kill-by-pid"
+   ]
+  },
+  {
+   "id": "plain_ru-11",
+   "group": "plain_ru",
+   "text": "Если я пойду играть, что произойдёт с запущенными стендами?",
+   "expected": [
+    "gpu-games-reboot"
+   ]
+  },
+  {
+   "id": "plain_ru-12",
+   "group": "plain_ru",
+   "text": "После падения процесса видеопамять осталась занятой. Как её освободить?",
+   "expected": [
+    "amdkfd-orphan"
+   ]
+  },
+  {
+   "id": "plain_ru-13",
+   "group": "plain_ru",
+   "text": "Своп заполнен наполовину, это повод для беспокойства?",
+   "expected": [
+    "zram-swap"
+   ]
+  },
+  {
+   "id": "plain_ru-14",
+   "group": "plain_ru",
+   "text": "Почему Sage отвечает так долго, хотя вроде бы решает больше задач?",
+   "expected": [
+    "sage-slow-reasoning"
+   ]
+  },
+  {
+   "id": "plain_ru-15",
+   "group": "plain_ru",
+   "text": "Если не хватает памяти, можно отключить MTP, чтобы влезть?",
+   "expected": [
+    "mtp-always-on"
+   ]
+  },
+  {
+   "id": "plain_ru-16",
+   "group": "plain_ru",
+   "text": "Какая скорость декода нас устраивает для новой модели?",
+   "expected": [
+    "speed-bar-30"
+   ]
+  },
+  {
+   "id": "plain_ru-17",
+   "group": "plain_ru",
+   "text": "Как убедиться, что ускорение не испортило качество ответов?",
+   "expected": [
+    "quality-gates",
+    "mixed-kld"
+   ]
+  },
+  {
+   "id": "plain_ru-18",
+   "group": "plain_ru",
+   "text": "Браузер падал при загрузке модели. Чем её теперь грузить?",
+   "expected": [
+    "load-mode-dio"
+   ]
+  },
+  {
+   "id": "plain_ru-19",
+   "group": "plain_ru",
+   "text": "Для чего нам вообще Gemma, если есть Tiel?",
+   "expected": [
+    "gemma-general-role"
+   ]
+  },
+  {
+   "id": "plain_ru-20",
+   "group": "plain_ru",
+   "text": "Сколько задач в основном наборе для сравнения обвязок и сколько там повторов?",
+   "expected": [
+    "dev-code-56"
+   ]
+  },
+  {
+   "id": "plain_ru-21",
+   "group": "plain_ru",
+   "text": "Можно положить контрольный набор в репозиторий на гитхабе?",
+   "expected": [
+    "control-set-private"
+   ]
+  },
+  {
+   "id": "plain_ru-22",
+   "group": "plain_ru",
+   "text": "Прежде чем радоваться разнице в замере, что надо сделать?",
+   "expected": [
+    "noise-aa"
+   ]
+  },
+  {
+   "id": "plain_ru-23",
+   "group": "plain_ru",
+   "text": "Как правильно начать и закончить работу над карточкой на доске?",
+   "expected": [
+    "barid-claim-finish"
+   ]
+  },
+  {
+   "id": "plain_ru-24",
+   "group": "plain_ru",
+   "text": "Надо ли спрашивать подтверждение, прежде чем удалять файлы?",
+   "expected": [
+    "ask-before-outward"
+   ]
+  },
+  {
+   "id": "plain_ru-25",
+   "group": "plain_ru",
+   "text": "Какой у меня сейчас рабочий стол и сколько он ест видеопамяти в простое?",
+   "expected": [
+    "kde-session"
+   ]
+  },
+  {
+   "id": "plain_ru-26",
+   "group": "plain_ru",
+   "text": "Сколько у меня видеопамяти и оперативки на домашней машине?",
+   "expected": [
+    "hardware-desktop"
+   ]
+  },
+  {
+   "id": "plain_ru-27",
+   "group": "plain_ru",
+   "text": "Что там за железо у ноутбука руководителя?",
+   "expected": [
+    "laptop-boss"
+   ]
+  },
+  {
+   "id": "plain_ru-28",
+   "group": "plain_ru",
+   "text": "Можно самому скачать свежие веса, чтобы быстро проверить?",
+   "expected": [
+    "no-downloads-without-word"
+   ]
+  },
+  {
+   "id": "plain_ru-29",
+   "group": "plain_ru",
+   "text": "Может, я сам сделаю квантизацию под нашу карту?",
+   "expected": [
+    "no-self-quantizing"
+   ]
+  },
+  {
+   "id": "plain_ru-30",
+   "group": "plain_ru",
+   "text": "Тест прошёл, а что делать с образами и кешами, которые он оставил?",
+   "expected": [
+    "cleanup-test-files",
+    "dockerfile-note"
+   ]
+  },
+  {
+   "id": "plain_en-01",
+   "group": "plain_en",
+   "text": "What are my code style rules for Python and TypeScript naming again?",
+   "expected": [
+    "english-code-style"
+   ]
+  },
+  {
+   "id": "plain_en-02",
+   "group": "plain_en",
+   "text": "Should I put an emoji or a ticket number in the commit title?",
+   "expected": [
+    "english-commit-no-emoji"
+   ]
+  },
+  {
+   "id": "plain_en-03",
+   "group": "plain_en",
+   "text": "How do I test the gateway without starting the real model?",
+   "expected": [
+    "fake-llama-server"
+   ]
+  },
+  {
+   "id": "plain_en-04",
+   "group": "plain_en",
+   "text": "Can I paste a real customer email into this test fixture just for a quick try?",
+   "expected": [
+    "fixtures-no-real-data"
+   ]
+  },
+  {
+   "id": "plain_en-05",
+   "group": "plain_en",
+   "text": "Do I need property-based tests for the new parser, and where do the shrunk examples go?",
+   "expected": [
+    "hypothesis-for-parsers"
+   ]
+  },
+  {
+   "id": "plain_en-06",
+   "group": "plain_en",
+   "text": "Who reviews product code before I finish a card, and what do they get to see?",
+   "expected": [
+    "review-by-sonnet"
+   ]
+  },
+  {
+   "id": "plain_en-07",
+   "group": "plain_en",
+   "text": "Which models can a subagent use and who commits in the end?",
+   "expected": [
+    "subagent-ceiling"
+   ]
+  },
+  {
+   "id": "plain_en-08",
+   "group": "plain_en",
+   "text": "How fast should I burn through the weekly limit each day?",
+   "expected": [
+    "weekly-limit-pacing"
+   ]
+  },
+  {
+   "id": "plain_en-09",
+   "group": "plain_en",
+   "text": "Why did we park Swift Flash-Next?",
+   "expected": [
+    "swift-parked"
+   ]
+  },
+  {
+   "id": "plain_en-10",
+   "group": "plain_en",
+   "text": "What was wrong with Groot when answering in Russian?",
+   "expected": [
+    "groot-russian-broken"
+   ]
+  },
+  {
+   "id": "plain_en-11",
+   "group": "plain_en",
+   "text": "A bash command printed a huge output. Will it blow up the context?",
+   "expected": [
+    "tool-output-truncated"
+   ]
+  },
+  {
+   "id": "plain_en-12",
+   "group": "plain_en",
+   "text": "At what size do old tool outputs get replaced with a stub, and how many recent calls stay?",
+   "expected": [
+    "context-diet-threshold"
+   ]
+  },
+  {
+   "id": "plain_en-13",
+   "group": "plain_en",
+   "text": "The agent edited files but never ran anything. Does something remind it to test?",
+   "expected": [
+    "completion-gate"
+   ]
+  },
+  {
+   "id": "plain_en-14",
+   "group": "plain_en",
+   "text": "For a refactor task, how can the agent see which tests the project already has?",
+   "expected": [
+    "visible-tests-tool"
+   ]
+  },
+  {
+   "id": "plain_en-15",
+   "group": "plain_en",
+   "text": "What does the agent do when the gateway cuts the stream mid-answer?",
+   "expected": [
+    "interrupt-retry"
+   ]
+  },
+  {
+   "id": "plain_en-16",
+   "group": "plain_en",
+   "text": "Can I just run the browser check with whatever Chromium is installed, and what about the MCP servers afterwards?",
+   "expected": [
+    "playwright-headless"
+   ]
+  },
+  {
+   "id": "plain_en-17",
+   "group": "plain_en",
+   "text": "Can I show the Kazakh strings in the UI now?",
+   "expected": [
+    "kazakh-hidden"
+   ]
+  },
+  {
+   "id": "plain_en-18",
+   "group": "plain_en",
+   "text": "What information is shown in the passport of a memory record?",
+   "expected": [
+    "memory-passport"
+   ]
+  },
+  {
+   "id": "plain_en-19",
+   "group": "plain_en",
+   "text": "I downloaded the model file. What must I verify before using it?",
+   "expected": [
+    "sha-check-weights"
+   ]
+  },
+  {
+   "id": "plain_en-20",
+   "group": "plain_en",
+   "text": "Can the README say it is twice as fast if I have not measured it yet?",
+   "expected": [
+    "readme-no-promises"
+   ]
+  },
+  {
+   "id": "code-01",
+   "group": "code",
+   "text": "curl localhost:8080/health from a script is okay, right? Or does hitting a non-guardian path wake the model?",
+   "expected": [
+    "gateway-live-port"
+   ]
+  },
+  {
+   "id": "code-02",
+   "group": "code",
+   "text": "/guardian/memory/search returns 404 for me. Is memoryEnabled really required in the config?",
+   "expected": [
+    "gateway-memory-flag"
+   ]
+  },
+  {
+   "id": "code-03",
+   "group": "code",
+   "text": "Where is lifelong.sqlite stored and how do I point SHURA_LIFELONG_DB elsewhere?",
+   "expected": [
+    "lifelong-db-path"
+   ]
+  },
+  {
+   "id": "code-04",
+   "group": "code",
+   "text": "What tokenizer options does the FTS5 table use, unicode61 with remove_diacritics 2?",
+   "expected": [
+    "fts-tokenizer"
+   ]
+  },
+  {
+   "id": "code-05",
+   "group": "code",
+   "text": "What does SHURA_TEST_HANG_SECONDS do and what is its default?",
+   "expected": [
+    "test-hang-seconds"
+   ]
+  },
+  {
+   "id": "code-06",
+   "group": "code",
+   "text": "exePath in the candidate config: which llama-server.sh does it point at, and what is checked before start?",
+   "expected": [
+    "exe-path-candidate"
+   ]
+  },
+  {
+   "id": "code-07",
+   "group": "code",
+   "text": "-ncmoe 12 or -ncmoe 8: which one is faster and which needs more VRAM?",
+   "expected": [
+    "ncmoe-flag"
+   ]
+  },
+  {
+   "id": "code-08",
+   "group": "code",
+   "text": "Why do we pass --cache-ram 1024? What happens without it?",
+   "expected": [
+    "cache-ram-1024"
+   ]
+  },
+  {
+   "id": "code-09",
+   "group": "code",
+   "text": "what's the -ctk / -ctv combo, q8_0 plus turbo4? I forgot which cache gets which",
+   "expected": [
+    "turbo4-kv"
+   ]
+  },
+  {
+   "id": "code-10",
+   "group": "code",
+   "text": "Give me the --spec-type draft-mtp flags: n-max and p-min values.",
+   "expected": [
+    "mtp-draft-params"
+   ]
+  },
+  {
+   "id": "code-11",
+   "group": "code",
+   "text": "cmake -DGGML_HIP=ON -DGPU_TARGETS=... which gfx target and how many jobs do we use?",
+   "expected": [
+    "build-recipe-hip"
+   ]
+  },
+  {
+   "id": "code-12",
+   "group": "code",
+   "text": "Do I run heavy tests directly or via reports/tools/safe-run.sh?",
+   "expected": [
+    "safe-run-floor"
+   ]
+  },
+  {
+   "id": "code-13",
+   "group": "code",
+   "text": "Naming for a new route under /guardian/: memory-search or memory/search?",
+   "expected": [
+    "snake-case-routes"
+   ]
+  },
+  {
+   "id": "code-14",
+   "group": "code",
+   "text": "I edited commands.json by hand. Should I change docs/commands.src.json instead?",
+   "expected": [
+    "commands-source-json"
+   ]
+  },
+  {
+   "id": "code-15",
+   "group": "code",
+   "text": "journalctl -k | grep -i 'ring timeout' — is that the right check after a hang, or only free -h?",
+   "expected": [
+    "journal-ctl-kernel"
+   ]
+  },
+  {
+   "id": "code-16",
+   "group": "code",
+   "text": "curl https://huggingface.co/api/models/<repo>?blobs=true gives me what exactly?",
+   "expected": [
+    "mixed-hf-api"
+   ]
+  },
+  {
+   "id": "code-17",
+   "group": "code",
+   "text": "server flags -t 6 -tb 6: can I add taskset to pin cores?",
+   "expected": [
+    "mixed-threads"
+   ]
+  },
+  {
+   "id": "code-18",
+   "group": "code",
+   "text": "Can I edit config/model-launch.json in ~/Projects/shura directly?",
+   "expected": [
+    "mixed-config-path"
+   ]
+  },
+  {
+   "id": "code-19",
+   "group": "code",
+   "text": "--load-mode dio vs the default mmap: which one and why?",
+   "expected": [
+    "load-mode-dio"
+   ]
+  },
+  {
+   "id": "code-20",
+   "group": "code",
+   "text": "How big is a slot snapshot at 98k tokens, and how long does restore take?",
+   "expected": [
+    "slot-save-restore"
+   ]
+  },
+  {
+   "id": "mixed-01",
+   "group": "mixed",
+   "text": "Что лежит в guardian.json, и можно ли его трогать, пока идёт ночной run?",
+   "expected": [
+    "mixed-guardian-json"
+   ]
+  },
+  {
+   "id": "mixed-02",
+   "group": "mixed",
+   "text": "Где лежит shuracode.json и как в нём подключаются plugin с options?",
+   "expected": [
+    "mixed-shuracode-config"
+   ]
+  },
+  {
+   "id": "mixed-03",
+   "group": "mixed",
+   "text": "Как работает valve для слотов, когда VRAM заканчивается, и как быстро он возвращает всё обратно?",
+   "expected": [
+    "mixed-slots-valve"
+   ]
+  },
+  {
+   "id": "mixed-04",
+   "group": "mixed",
+   "text": "Какие -b и -ub мы берём для профиля A, а какие для B на 200k?",
+   "expected": [
+    "mixed-ub-batch"
+   ]
+  },
+  {
+   "id": "mixed-05",
+   "group": "mixed",
+   "text": "Надо ли выставлять HSA_XNACK в launch-скрипте или оставить пустым?",
+   "expected": [
+    "mixed-env-xnack"
+   ]
+  },
+  {
+   "id": "mixed-06",
+   "group": "mixed",
+   "text": "Почему серверные tok/s ниже, чем tg128 из llama-bench?",
+   "expected": [
+    "mixed-bench-tg128"
+   ]
+  },
+  {
+   "id": "mixed-07",
+   "group": "mixed",
+   "text": "Чем проверять точность патча, если глазами смотреть не хочется? KL divergence подойдёт?",
+   "expected": [
+    "mixed-kld"
+   ]
+  },
+  {
+   "id": "mixed-08",
+   "group": "mixed",
+   "text": "Где лежат models и куда класть mmproj для Tiel?",
+   "expected": [
+    "mixed-models-dir"
+   ]
+  },
+  {
+   "id": "mixed-09",
+   "group": "mixed",
+   "text": "Где хранится board.json и на каком порту открывается панель?",
+   "expected": [
+    "mixed-board-file"
+   ]
+  },
+  {
+   "id": "mixed-10",
+   "group": "mixed",
+   "text": "Как поставить ночной chain на паузу и потом resume, и что делает STOP-файл?",
+   "expected": [
+    "mixed-pause-night"
+   ]
+  },
+  {
+   "id": "mixed-11",
+   "group": "mixed",
+   "text": "Что пишет flipwatch в /dev/shm и что делать при новом mismatch?",
+   "expected": [
+    "mixed-flipwatch-lock"
+   ]
+  },
+  {
+   "id": "mixed-12",
+   "group": "mixed",
+   "text": "В каких каталогах лежат tasks для agentic-eval, а где long-horizon?",
+   "expected": [
+    "mixed-agentic-eval-tasks"
+   ]
+  },
+  {
+   "id": "mixed-13",
+   "group": "mixed",
+   "text": "Какой sampling у Tiel, а какой у Sage: temperature, top-k, presence_penalty?",
+   "expected": [
+    "mixed-sampling"
+   ]
+  },
+  {
+   "id": "mixed-14",
+   "group": "mixed",
+   "text": "Как посчитать длину reasoning, если поле reasoning_tokens всегда ноль?",
+   "expected": [
+    "mixed-reasoning-chars"
+   ]
+  },
+  {
+   "id": "mixed-15",
+   "group": "mixed",
+   "text": "Разные sha256 у бинаря из page cache и прямого чтения — это про bit flip?",
+   "expected": [
+    "mixed-hash-cached"
+   ]
+  },
+  {
+   "id": "mixed-16",
+   "group": "mixed",
+   "text": "Сборка на ROCm 7.2.4 из home: куда направлять HIP_PATH и ROCM_PATH, system ROCm трогать?",
+   "expected": [
+    "rocm-isolated"
+   ]
+  },
+  {
+   "id": "mixed-17",
+   "group": "mixed",
+   "text": "Какой ncmoe у профиля для short context и какой для 200k?",
+   "expected": [
+    "ncmoe-layouts"
+   ]
+  },
+  {
+   "id": "mixed-18",
+   "group": "mixed",
+   "text": "Для скриптов запускаю shura-qa py, а не system python, верно?",
+   "expected": [
+    "py-venv-qa"
+   ]
+  },
+  {
+   "id": "mixed-19",
+   "group": "mixed",
+   "text": "Build script ругается на uncommitted changes. Это нормально или баг?",
+   "expected": [
+    "build-dirty-tree"
+   ]
+  },
+  {
+   "id": "mixed-20",
+   "group": "mixed",
+   "text": "Какой у нас prompt cache на слотах: --slot-save-path нужен, чтобы пережить restart?",
+   "expected": [
+    "quote-llamacpp-readme",
+    "slot-save-restore"
+   ]
+  },
+  {
+   "id": "case-01",
+   "group": "case",
+   "text": "Когда в последний раз кто-то уточнял модель дискретной карты у начальственного ноутбука?",
+   "expected": [
+    "laptop-boss"
+   ]
+  },
+  {
+   "id": "case-02",
+   "group": "case",
+   "text": "Мы же договаривались не заводить веток под каждую мелкую задачу?",
+   "expected": [
+    "two-branches-only"
+   ]
+  },
+  {
+   "id": "case-03",
+   "group": "case",
+   "text": "Отправленные без моего слова пуши потом не откатить, поэтому я жду разрешения.",
+   "expected": [
+    "no-push-without-word"
+   ]
+  },
+  {
+   "id": "case-04",
+   "group": "case",
+   "text": "Ответов на английском в чате я не хочу, пиши по-русски.",
+   "expected": [
+    "reply-in-russian"
+   ]
+  },
+  {
+   "id": "case-05",
+   "group": "case",
+   "text": "Коммитами от имени ассистента репозиторий засорять нельзя.",
+   "expected": [
+    "commit-author"
+   ]
+  },
+  {
+   "id": "case-06",
+   "group": "case",
+   "text": "Сообщениям коммитов нужна короткая первая строка в повелительном наклонении.",
+   "expected": [
+    "commit-message-style"
+   ]
+  },
+  {
+   "id": "case-07",
+   "group": "case",
+   "text": "Мы запускали тесты шлюза через голый unittest, и висящие стеки не печатались.",
+   "expected": [
+    "run-gateway-suite"
+   ]
+  },
+  {
+   "id": "case-08",
+   "group": "case",
+   "text": "Без пустого notify-send в PATH уведомлениями завалило бы весь экран во время тестов.",
+   "expected": [
+    "quiet-notify-for-tests"
+   ]
+  },
+  {
+   "id": "case-09",
+   "group": "case",
+   "text": "Отчётам стоит начинаться с таблицы, а предположения помечать отдельно.",
+   "expected": [
+    "reports-short-table-first"
+   ]
+  },
+  {
+   "id": "case-10",
+   "group": "case",
+   "text": "Свободной видеопамяти меньше полутора гигабайт — значит, рабочий стол скоро повиснет.",
+   "expected": [
+    "vram-reserve"
+   ]
+  },
+  {
+   "id": "case-11",
+   "group": "case",
+   "text": "Сторож остановит процессы теста, если памяти на карте окажется мало.",
+   "expected": [
+    "vram-watchdog"
+   ]
+  },
+  {
+   "id": "case-12",
+   "group": "case",
+   "text": "Чужими процессами я не занимаюсь, убиваю только своих по точному PID.",
+   "expected": [
+    "kill-by-pid"
+   ]
+  },
+  {
+   "id": "case-13",
+   "group": "case",
+   "text": "Перезагрузившись в Windows ради игры, я потерял всё, что было в /dev/shm.",
+   "expected": [
+    "gpu-games-reboot"
+   ]
+  },
+  {
+   "id": "case-14",
+   "group": "case",
+   "text": "Оперативку разгонять или менять тайминги мы не будем, XMP остаётся.",
+   "expected": [
+    "xmp-stays-on"
+   ]
+  },
+  {
+   "id": "case-15",
+   "group": "case",
+   "text": "Андервольтом пока не занимаемся: после сбросов карты его выключили до восьмого числа.",
+   "expected": [
+    "undervolt-off-week"
+   ]
+  },
+  {
+   "id": "case-16",
+   "group": "case",
+   "text": "Умершим процессом ROCm оставлена занятую память, лечится только перезагрузкой.",
+   "expected": [
+    "amdkfd-orphan"
+   ]
+  },
+  {
+   "id": "case-17",
+   "group": "case",
+   "text": "Основной моделью у нас назначен Tiel, а трудные задачи отдаём второй.",
+   "expected": [
+    "main-model-tiel"
+   ]
+  },
+  {
+   "id": "case-18",
+   "group": "case",
+   "text": "Рассуждения Sage втрое длиннее, поэтому ждать ответа вдвое дольше.",
+   "expected": [
+    "sage-slow-reasoning"
+   ]
+  },
+  {
+   "id": "case-19",
+   "group": "case",
+   "text": "Чем-то другим пожертвуем, но спекулятивной генерацией — никогда.",
+   "expected": [
+    "mtp-always-on"
+   ]
+  },
+  {
+   "id": "case-20",
+   "group": "case",
+   "text": "Сравнивая скорости, глядели на время до ответа вместе с рассуждениями.",
+   "expected": [
+    "speed-bar-30"
+   ]
+  },
+  {
+   "id": "case-21",
+   "group": "case",
+   "text": "Нужно было проверять равенство KL-дивергенции перед каждым сжатием.",
+   "expected": [
+    "quality-gates"
+   ]
+  },
+  {
+   "id": "case-22",
+   "group": "case",
+   "text": "Загрузив модель через mmap, мы роняли браузер несколько раз подряд.",
+   "expected": [
+    "load-mode-dio"
+   ]
+  },
+  {
+   "id": "case-23",
+   "group": "case",
+   "text": "Проверкой чужих правок занимается Gemma, а агентный код пишет Tiel лучше.",
+   "expected": [
+    "gemma-general-role"
+   ]
+  },
+  {
+   "id": "case-24",
+   "group": "case",
+   "text": "Наборами больших проектов у нас зовётся Mizan, публикация планируется позже.",
+   "expected": [
+    "mizan-benchmark"
+   ]
+  },
+  {
+   "id": "case-25",
+   "group": "case",
+   "text": "Один случай ничего не доказывает, когда на наборе из пятидесяти шести задач шум большой.",
+   "expected": [
+    "dev-code-56"
+   ]
+  },
+  {
+   "id": "case-26",
+   "group": "case",
+   "text": "Рабочие репозитории заказчиков облачные агенты читать не должны.",
+   "expected": [
+    "control-set-private"
+   ]
+  },
+  {
+   "id": "case-27",
+   "group": "case",
+   "text": "Базу прогнали против самой себя и увидели разброс на том же наборе.",
+   "expected": [
+    "noise-aa"
+   ]
+  },
+  {
+   "id": "case-28",
+   "group": "case",
+   "text": "Работой над карточкой начинаю с claim, заканчиваю finish с путём отчёта.",
+   "expected": [
+    "barid-claim-finish"
+   ]
+  },
+  {
+   "id": "case-29",
+   "group": "case",
+   "text": "Карточки раздаёт оркестратор по дорожкам, у Codex их две.",
+   "expected": [
+    "board-lanes"
+   ]
+  },
+  {
+   "id": "case-30",
+   "group": "case",
+   "text": "Удалением и перезаписью чего-либо наружу занимаемся только после подтверждения.",
+   "expected": [
+    "ask-before-outward"
+   ]
+  },
+  {
+   "id": "case-31",
+   "group": "case",
+   "text": "Нашим токенам в секунду нельзя верить, если браузер и Telegram лагают.",
+   "expected": [
+    "desktop-comfort"
+   ]
+  },
+  {
+   "id": "case-32",
+   "group": "case",
+   "text": "Сменой экрана блокировки проблему с видеопамятью не лечим, решаем в программе.",
+   "expected": [
+    "no-desktop-settings"
+   ]
+  },
+  {
+   "id": "case-33",
+   "group": "case",
+   "text": "Простаивающий экран на Wayland под KDE занимает примерно семьсот мегабайт видеопамяти.",
+   "expected": [
+    "kde-session"
+   ]
+  },
+  {
+   "id": "case-34",
+   "group": "case",
+   "text": "Про картинки для профиля: сборка идёт в отдельную ветку.",
+   "expected": [
+    "profile-commits"
+   ]
+  },
+  {
+   "id": "case-35",
+   "group": "case",
+   "text": "Курсом арабского занимается форк академии, кодом — Codex, содержанием — Fable.",
+   "expected": [
+    "arabic-course"
+   ]
+  },
+  {
+   "id": "case-36",
+   "group": "case",
+   "text": "Карточки на Hugging Face читаем через curl, а не скачиваем весами.",
+   "expected": [
+    "hf-cards-curl"
+   ]
+  },
+  {
+   "id": "case-37",
+   "group": "case",
+   "text": "Беречь нужно SSD: повторяющихся записей на диск без замера объёма быть не должно.",
+   "expected": [
+    "ssd-wear"
+   ]
+  },
+  {
+   "id": "case-38",
+   "group": "case",
+   "text": "Отложенным ботом для Telegram займёмся, когда появится домашний сервер.",
+   "expected": [
+    "tgbot-parked"
+   ]
+  },
+  {
+   "id": "case-39",
+   "group": "case",
+   "text": "Приложением на Electron займёмся после терминала; справочник команд будет одним файлом.",
+   "expected": [
+    "electron-later"
+   ]
+  },
+  {
+   "id": "case-40",
+   "group": "case",
+   "text": "Оболочкой, которая тонкий клиент, измеряем бюджеты по памяти и процессору.",
+   "expected": [
+    "app-must-be-light"
+   ]
+  },
+  {
+   "id": "paraphrase-01",
+   "group": "paraphrase",
+   "text": "Вторая по силе модель думает вслух куда дольше первой — это ожидаемо?",
+   "expected": [
+    "sage-slow-reasoning"
+   ]
+  },
+  {
+   "id": "paraphrase-02",
+   "group": "paraphrase",
+   "text": "Мы ведь не хотим, чтобы, пока гоняю тесты, на экране выскакивали окошки с сообщениями?",
+   "expected": [
+    "quiet-notify-for-tests"
+   ]
+  },
+  {
+   "id": "paraphrase-03",
+   "group": "paraphrase",
+   "text": "Можно ли что-нибудь стирать или перезаписывать без моего согласия, и когда нужно переспросить?",
+   "expected": [
+    "ask-before-outward"
+   ]
+  },
+  {
+   "id": "paraphrase-04",
+   "group": "paraphrase",
+   "text": "Как я должен отчитываться о проделанной работе: что на первом месте?",
+   "expected": [
+    "reports-short-table-first"
+   ]
+  },
+  {
+   "id": "paraphrase-05",
+   "group": "paraphrase",
+   "text": "Не лазь в чужие запущенные программы, когда останавливаешь свои.",
+   "expected": [
+    "kill-by-pid"
+   ]
+  },
+  {
+   "id": "paraphrase-06",
+   "group": "paraphrase",
+   "text": "Что делать, чтобы случайный запуск не выжрал всю память на карте так, что картинка на мониторе замерзнет?",
+   "expected": [
+    "vram-reserve"
+   ]
+  },
+  {
+   "id": "paraphrase-07",
+   "group": "paraphrase",
+   "text": "Какую из наших моделей использовать, когда общий вопрос или нужно посмотреть чужой патч?",
+   "expected": [
+    "gemma-general-role"
+   ]
+  },
+  {
+   "id": "paraphrase-08",
+   "group": "paraphrase",
+   "text": "Откуда понять, что измеренное улучшение — не просто случайный разброс?",
+   "expected": [
+    "noise-aa"
+   ]
+  },
+  {
+   "id": "paraphrase-09",
+   "group": "paraphrase",
+   "text": "Ты ведь не станешь сам что-то тянуть из интернета для проверки без моей команды?",
+   "expected": [
+    "no-downloads-without-word"
+   ]
+  },
+  {
+   "id": "paraphrase-10",
+   "group": "paraphrase",
+   "text": "Мы же не собираем сжатые версии весов сами, а берём готовые?",
+   "expected": [
+    "no-self-quantizing"
+   ]
+  },
+  {
+   "id": "paraphrase-11",
+   "group": "paraphrase",
+   "text": "Почему перед обработкой файла после перезагрузки дольше ждать: что-то про постоянные чтения диска из-за малой оперативки?",
+   "expected": [
+    "swift-parked"
+   ]
+  },
+  {
+   "id": "paraphrase-12",
+   "group": "paraphrase",
+   "text": "Куда мы собирались пристроить чат-бота и что мешало?",
+   "expected": [
+    "tgbot-parked"
+   ]
+  },
+  {
+   "id": "paraphrase-13",
+   "group": "paraphrase",
+   "text": "Что лежит у меня дома под столом, какие цифры по памяти?",
+   "expected": [
+    "hardware-desktop"
+   ]
+  },
+  {
+   "id": "paraphrase-14",
+   "group": "paraphrase",
+   "text": "Какой язык стоит у меня в ответах, даже если контекст пришлось ужать?",
+   "expected": [
+    "reply-in-russian"
+   ]
+  },
+  {
+   "id": "paraphrase-15",
+   "group": "paraphrase",
+   "text": "Где лежат мои голосовые утилиты, и в какие папки сортируются видео?",
+   "expected": [
+    "voice-tools-local"
+   ]
+  },
+  {
+   "id": "paraphrase-16",
+   "group": "paraphrase",
+   "text": "Что будет с моей работой на машине, если я вдруг запущу другую операционную систему ради развлечения?",
+   "expected": [
+    "gpu-games-reboot"
+   ]
+  },
+  {
+   "id": "paraphrase-17",
+   "group": "paraphrase",
+   "text": "Нужно ли хоть иногда запускать программу, которая смотрит на весь вывод без прогнозов, когда сравниваю два ускорения?",
+   "expected": [
+    "quality-gates"
+   ]
+  },
+  {
+   "id": "paraphrase-18",
+   "group": "paraphrase",
+   "text": "Какой минимум в скорости генерации для длинного текста вообще допустим?",
+   "expected": [
+    "speed-bar-30"
+   ]
+  },
+  {
+   "id": "paraphrase-19",
+   "group": "paraphrase",
+   "text": "Есть ли у нас договорённость, что делать после того, как видеокарта сама перезапустилась посреди работы?",
+   "expected": [
+    "gpu-reset-handling"
+   ]
+  },
+  {
+   "id": "paraphrase-20",
+   "group": "paraphrase",
+   "text": "Как отказаться от лишних обещаний в описании проекта?",
+   "expected": [
+    "readme-no-promises"
+   ]
+  },
+  {
+   "id": "version-01",
+   "group": "version",
+   "text": "Какое сейчас окно у профиля A и при каком числе токенов переключаемся на B?",
+   "expected": [
+    "profile-a-window"
+   ]
+  },
+  {
+   "id": "version-02",
+   "group": "version",
+   "text": "Мы ещё переключаемся на профиль B при двенадцати тысячах или уже по-другому?",
+   "expected": [
+    "profile-a-window"
+   ]
+  },
+  {
+   "id": "version-03",
+   "group": "version",
+   "text": "Работает ли у видеокарты андервольт сейчас?",
+   "expected": [
+    "undervolt-state",
+    "undervolt-off-week"
+   ]
+  },
+  {
+   "id": "version-04",
+   "group": "version",
+   "text": "Карта сейчас на штатном напряжении или с минус 75?",
+   "expected": [
+    "undervolt-state"
+   ]
+  },
+  {
+   "id": "version-05",
+   "group": "version",
+   "text": "Какая модель стоит по умолчанию в конфиге шлюза?",
+   "expected": [
+    "default-model"
+   ]
+  },
+  {
+   "id": "version-06",
+   "group": "version",
+   "text": "Тесты запускаем командой python -m unittest discover или как-то иначе сейчас?",
+   "expected": [
+    "test-runner",
+    "run-gateway-suite"
+   ]
+  },
+  {
+   "id": "version-07",
+   "group": "version",
+   "text": "Сколько слотов кеша экспертов стоит в профиле A на данный момент?",
+   "expected": [
+    "cache-slots"
+   ]
+  },
+  {
+   "id": "version-08",
+   "group": "version",
+   "text": "In which language do I write notes and reports now?",
+   "expected": [
+    "notes-language"
+   ]
+  },
+  {
+   "id": "dispute-01",
+   "group": "dispute",
+   "text": "Сколько оперативной памяти реально держит сервер с длинным контекстом?",
+   "expected": [
+    "disp-ram-a",
+    "disp-ram-a-alt"
+   ]
+  },
+  {
+   "id": "dispute-02",
+   "group": "dispute",
+   "text": "Сервер ест 10 ГБ ОЗУ или 5? Что из этого настоящая цифра?",
+   "expected": [
+    "disp-ram-a",
+    "disp-ram-a-alt"
+   ]
+  },
+  {
+   "id": "dispute-03",
+   "group": "dispute",
+   "text": "How fast does profile A decode on a short context?",
+   "expected": [
+    "disp-decode-a",
+    "disp-decode-a-alt"
+   ]
+  },
+  {
+   "id": "dispute-04",
+   "group": "dispute",
+   "text": "Is it 78 or 93 tok/s for profile A decode at short context?",
+   "expected": [
+    "disp-decode-a",
+    "disp-decode-a-alt"
+   ]
+  },
+  {
+   "id": "crosslang-01",
+   "group": "crosslang",
+   "text": "Which language should you reply to me in, even right after the context is compacted?",
+   "expected": [
+    "reply-in-russian"
+   ]
+  },
+  {
+   "id": "crosslang-02",
+   "group": "crosslang",
+   "text": "How much free VRAM must stay available so the desktop does not freeze?",
+   "expected": [
+    "vram-reserve"
+   ]
+  },
+  {
+   "id": "crosslang-03",
+   "group": "crosslang",
+   "text": "What should I do when a ROCm process died and its memory is still held?",
+   "expected": [
+    "amdkfd-orphan"
+   ]
+  },
+  {
+   "id": "crosslang-04",
+   "group": "crosslang",
+   "text": "Is it fine to push to the remote as soon as the commit is ready?",
+   "expected": [
+    "no-push-without-word"
+   ]
+  },
+  {
+   "id": "crosslang-05",
+   "group": "crosslang",
+   "text": "What is Sage's problem compared to Tiel in terms of response time?",
+   "expected": [
+    "sage-slow-reasoning"
+   ]
+  },
+  {
+   "id": "crosslang-06",
+   "group": "crosslang",
+   "text": "Что такое фейковый llama-server из QA-набора и когда им пользоваться вместо настоящей модели?",
+   "expected": [
+    "fake-llama-server"
+   ]
+  },
+  {
+   "id": "crosslang-07",
+   "group": "crosslang",
+   "text": "Сколько токенов в секунду на коротком контексте даёт профиль A по замерам?",
+   "expected": [
+    "disp-decode-a",
+    "disp-decode-a-alt"
+   ]
+  },
+  {
+   "id": "crosslang-08",
+   "group": "crosslang",
+   "text": "Как у нас устроено хранилище знаний: это один SQLite-файл? Скажи, где он лежит.",
+   "expected": [
+    "lifelong-db-path"
+   ]
+  },
+  {
+   "id": "negative-01",
+   "group": "negative",
+   "text": "How do I write an Alembic migration that adds a non-null column to a table with existing rows?",
+   "expected": []
+  },
+  {
+   "id": "negative-02",
+   "group": "negative",
+   "text": "Моя flex-колонка в Safari не сжимается ниже содержимого, min-width: 0 не помогает. Что не так?",
+   "expected": []
+  },
+  {
+   "id": "negative-03",
+   "group": "negative",
+   "text": "Дай однострочник на bash, который найдёт все файлы больше 100 МБ в текущей папке и отсортирует по размеру.",
+   "expected": []
+  },
+  {
+   "id": "negative-04",
+   "group": "negative",
+   "text": "Как лучше спроектировать пагинацию в REST API: offset или cursor?",
+   "expected": []
+  },
+  {
+   "id": "negative-05",
+   "group": "negative",
+   "text": "How do I package a Python library with pyproject.toml so that it ships a CLI entry point?",
+   "expected": []
+  },
+  {
+   "id": "negative-06",
+   "group": "negative",
+   "text": "Напиши multi-stage Dockerfile для Go-сервиса с минимальным финальным образом.",
+   "expected": []
+  },
+  {
+   "id": "negative-07",
+   "group": "negative",
+   "text": "Нужна регулярка, которая вытаскивает домен из URL, включая поддомены, но без порта.",
+   "expected": []
+  },
+  {
+   "id": "negative-08",
+   "group": "negative",
+   "text": "How should I structure logging in a FastAPI app so request ids appear in every log line?",
+   "expected": []
+  },
+  {
+   "id": "negative-09",
+   "group": "negative",
+   "text": "Почему мой useEffect в React срабатывает дважды в dev-режиме?",
+   "expected": []
+  },
+  {
+   "id": "negative-10",
+   "group": "negative",
+   "text": "What is the difference between a mutex and a semaphore, in short?",
+   "expected": []
+  },
+  {
+   "id": "negative-11",
+   "group": "negative",
+   "text": "Как в PostgreSQL построить индекс под запрос с ILIKE по двум колонкам?",
+   "expected": []
+  },
+  {
+   "id": "negative-12",
+   "group": "negative",
+   "text": "Подскажи, как настроить nginx как reverse proxy с websocket для приложения на порту 3000.",
+   "expected": []
+  },
+  {
+   "id": "negative-13",
+   "group": "negative",
+   "text": "My git rebase keeps hitting the same conflict over and over. How do I stop that?",
+   "expected": []
+  },
+  {
+   "id": "negative-14",
+   "group": "negative",
+   "text": "Как в Python разобрать дату в формате ISO с часовым поясом без сторонних библиотек?",
+   "expected": []
+  },
+  {
+   "id": "negative-15",
+   "group": "negative",
+   "text": "Write a jq command that turns an array of objects into a CSV with id and name columns.",
+   "expected": []
+  },
+  {
+   "id": "negative-16",
+   "group": "negative",
+   "text": "Какая лучшая практика хранения паролей пользователей в базе: bcrypt или argon2?",
+   "expected": []
+  },
+  {
+   "id": "negative-17",
+   "group": "negative",
+   "text": "How do I make a CSS grid with an auto-fill layout where the last row stays left-aligned?",
+   "expected": []
+  },
+  {
+   "id": "negative-18",
+   "group": "negative",
+   "text": "Объясни, чем отличается JWT от сессионной куки, когда что лучше брать.",
+   "expected": []
+  },
+  {
+   "id": "negative-19",
+   "group": "negative",
+   "text": "В Kubernetes под уходит в CrashLoopBackOff, как быстро понять причину?",
+   "expected": []
+  },
+  {
+   "id": "negative-20",
+   "group": "negative",
+   "text": "How do I debounce a search input in vanilla JavaScript?",
+   "expected": []
+  },
+  {
+   "id": "negative-21",
+   "group": "negative",
+   "text": "Как сделать так, чтобы cron-задача не запускалась второй раз, пока предыдущая не закончилась?",
+   "expected": []
+  },
+  {
+   "id": "negative-22",
+   "group": "negative",
+   "text": "What is the cleanest way to retry an HTTP call with exponential backoff in Go?",
+   "expected": []
+  },
+  {
+   "id": "negative-23",
+   "group": "negative",
+   "text": "Сделай мне SQL-запрос, который выберет по два последних заказа для каждого клиента.",
+   "expected": []
+  },
+  {
+   "id": "negative-24",
+   "group": "negative",
+   "text": "Why does my TypeScript generic lose its type when I pass it through Promise.all?",
+   "expected": []
+  },
+  {
+   "id": "negative-25",
+   "group": "negative",
+   "text": "Как организовать OpenAPI-схему с общими компонентами для ошибок?",
+   "expected": []
+  },
+  {
+   "id": "negative-26",
+   "group": "negative",
+   "text": "Покажи, как через ffmpeg вырезать кусок видео с 1:20 до 2:05 без перекодирования.",
+   "expected": []
+  },
+  {
+   "id": "negative-27",
+   "group": "negative",
+   "text": "How can I speed up a pandas groupby on a few million rows?",
+   "expected": []
+  },
+  {
+   "id": "negative-28",
+   "group": "negative",
+   "text": "Как настроить systemd-юнит, чтобы сервис перезапускался при падении, но не чаще раза в десять секунд?",
+   "expected": []
+  },
+  {
+   "id": "negative-29",
+   "group": "negative",
+   "text": "What is a good naming scheme for Terraform modules and variables?",
+   "expected": []
+  },
+  {
+   "id": "negative-30",
+   "group": "negative",
+   "text": "Как в Rust вернуть из функции итератор по ссылкам, не упираясь в lifetime?",
+   "expected": []
+  },
+  {
+   "id": "negative_deleted-01",
+   "group": "negative_deleted",
+   "text": "Can I keep the API key in a file right next to the config for convenience?",
+   "expected": []
+  },
+  {
+   "id": "negative_deleted-04",
+   "group": "negative_deleted",
+   "text": "How do I recreate that shell alias for the remote host? I want it back.",
+   "expected": []
+  }
+ ]
+}

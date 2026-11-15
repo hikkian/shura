@@ -56,7 +56,7 @@ class AttentionBuildTests(unittest.TestCase):
         result = self.run_build()
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertFalse(any('attention-decode.patch' in ' '.join(c) for c in calls))
+        self.assertFalse(any('attention-decode.patch' in ' '.join(c) and '--check' not in c for c in calls))   # only a --check probe
         configure = [c for c in calls if c[0] == 'cmake' and '-S' in c]
         self.assertEqual(len(configure), 1)
         self.assertIn('-DGGML_CUDA_TURBO3_DECODE_GROUP8=OFF', configure[0])

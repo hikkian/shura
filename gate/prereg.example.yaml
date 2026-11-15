@@ -1,0 +1,26 @@
+candidate: prompt-v2
+control: stack
+metric: score
+n: 4
+k: 2
+seed: 20261112
+looks: 3
+look: 1
+alpha: 0.05
+bootstrap_reps: 2000
+# Optional; omit or set to "always" when the change has no conditional layer.
+switch:
+  id: reasoning-brake
+  condition: {source: reasoning_budget, fired_when: brake_fired_or_budget_hit}
+  slices: [{kind: code}]
+  unit: family
+  budgets: {agent-general: 0.03}
+rows:
+  - name: agent-general
+    kind: agent
+    target: true
+    delta: 0.12
+    metric: score
+    n: 4
+    k: 2
+    seed: 20261112

@@ -1,0 +1,43 @@
+--- a/common/common.h	2026-10-21 17:23:29.711234971 +0500
++++ b/common/common.h	2026-10-24 11:29:43.762675140 +0500
+@@ -338,6 +338,8 @@
+ 
+     int32_t n_gpu_layers = -1; // number of layers to store in VRAM for the draft model (-1 - use default)
+ 
++    int32_t n_ubatch = 0; // physical batch size of the draft context (0 - same as the main context); SPEEDBACK1: shrinks the draft's logits buffer
++
+     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
+     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
+ 
+--- a/common/arg.cpp	2026-10-21 17:23:29.710717697 +0500
++++ b/common/arg.cpp	2026-10-24 11:29:43.764144465 +0500
+@@ -4223,6 +4223,16 @@
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"));
+ 
+     add_opt(common_arg(
++        {"--spec-draft-n-ubatch"}, "N",
++        "physical batch size (n_ubatch) of the draft/MTP context; 0 = same as the main context. A smaller value shrinks the draft's logits and compute buffers (default: 0)",
++        [](common_params & params, int value) {
++            if (value < 0) {
++                throw std::invalid_argument("invalid value");
++            }
++            params.speculative.draft.n_ubatch = value;
++        }
++    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_UBATCH"));
++    add_opt(common_arg(
+         {"--spec-draft-n-max"}, "N",
+         string_format("number of tokens to draft for speculative decoding (default: %d)", params.speculative.draft.n_max),
+         [](common_params & params, int value) {
+--- a/common/speculative.cpp	2026-10-21 17:23:28.905902196 +0500
++++ b/common/speculative.cpp	2026-10-24 11:29:43.764750872 +0500
+@@ -2480,6 +2480,10 @@
+ 
+     result.cache_type_k  = params_spec.cache_type_k;
+     result.cache_type_v  = params_spec.cache_type_v;
++    if (params_spec.n_ubatch > 0) {
++        // SPEEDBACK1: the draft context decodes the target's tokens in chunks of this size (llama_decode splits a batch by n_ubatch)
++        result.n_ubatch = std::min<int32_t>(params_spec.n_ubatch, result.n_batch);
++    }
+     result.n_outputs_max = params.n_parallel;
+     result.n_outputs_max_per_seq = 1;
+ 

@@ -14,7 +14,7 @@ import tempfile
 import threading
 import unittest
 from contextlib import redirect_stdout
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -22,11 +22,28 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "installer"))
 from universal import cli, install, launch, modelstore, planner, report  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from tests._installer_env import fake_usage, FAKE_FREE  # noqa: E402
 
 FAKE = ROOT / "tests/fixtures/fake_llama_server.py"
 HW = {p.stem: json.loads(p.read_text()) for p in (ROOT / "tests/fixtures/hardware").glob("*.json")}
 REAL = json.loads((ROOT / "catalog/models.json").read_text())
 POSIX = sys.platform != "win32"
+
+
+_DISK = None
+
+
+def setUpModule():
+    global _DISK
+    if os.environ.get("SHURA_TEST_REAL_DISK") != "1":      # deterministic free space: the tests check logic, not this machine
+        _DISK = mock.patch.object(shutil, "disk_usage", fake_usage(FAKE_FREE))
+        _DISK.start()
+
+
+def tearDownModule():
+    if _DISK is not None:
+        _DISK.stop()
 
 
 def free_port():
@@ -35,7 +52,11 @@ def free_port():
         return s.getsockname()[1]
 
 
-class QuickServer(HTTPServer):
+class QuickServer(ThreadingHTTPServer):
+    # VRAMFIX5: requests in their own threads, so shutdown() is never stuck behind a handler a client keeps open (the suite
+    # hung once in Hub.__exit__ with the single-threaded server); daemon threads do not keep the process alive.
+    daemon_threads = True
+
     def server_bind(self):                      # skip the reverse lookup that stalls HTTPServer on some runners (macOS CI)
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
@@ -107,7 +128,7 @@ class ServerArgs(unittest.TestCase):
         self.assertEqual(a[a.index("--host") + 1], "127.0.0.1")          # never exposed to the network by default
 
     def test_mtp_flags_follow_the_plan(self):
-        p = self.plan("rx9070xt_16g_32g")
+        p = self.plan("rx9070xt_16g_32g", config={"native_backends": True})
         self.assertTrue(p["settings"]["mtp"])
         self.assertIn("draft-mtp", launch.server_args(p, "s", "m"))
         off = planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"mtp_standard": False})
@@ -116,8 +137,9 @@ class ServerArgs(unittest.TestCase):
         self.assertNotIn("--spec-type", launch.server_args(cpu, "s", "m"))
 
     def test_the_mtp_draft_is_paid_for_in_vram(self):
-        with_mtp = self.plan("rx9070xt_16g_32g")
-        without = planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"mtp_standard": False})
+        with_mtp = self.plan("rx9070xt_16g_32g", config={"native_backends": True})
+        without = planner.plan(HW["rx9070xt_16g_32g"], REAL,
+                               config={"native_backends": True, "mtp_standard": False})
         self.assertLessEqual(with_mtp["settings"]["context"], without["settings"]["context"])
         self.assertLessEqual(with_mtp["memory"]["vram_need"], with_mtp["memory"]["vram_budget"])
 
@@ -130,7 +152,7 @@ class ServerArgs(unittest.TestCase):
 
     def test_the_fork_tier_is_not_launched_here(self):
         with self.assertRaises(launch.LaunchError):
-            launch.server_args(self.plan("ref_rtx4070s_12g_32g"), "s", "m")
+            launch.server_args(self.plan("ref_rtx4070s_12g_32g", config={"native_backends": True}), "s", "m")
 
     def test_no_plan_is_refused(self):
         with self.assertRaises(launch.LaunchError):
@@ -303,6 +325,10 @@ class EndToEnd(unittest.TestCase):
             self.assertIn("Ready", out.text)
             state = launch.load_state(d)
             self.assertTrue(state["measured"]["verified"])
+            self.assertEqual(state["backend"], "vulkan")
+            self.assertEqual(state["argv"][state["argv"].index("-ctk") + 1], "q8_0")
+            self.assertNotIn("--spec-type", state["argv"])
+            self.assertNotIn("--moe-cache", state["argv"])
             self.assertTrue(Path(state["model_path"]).exists())
             self.assertTrue((Path(d) / "shura-hardware-report.md").exists())
             report_text = (Path(d) / "shura-hardware-report.md").read_text()
@@ -340,41 +366,49 @@ class EndToEnd(unittest.TestCase):
             self.assertLess(cal["ratio"], 0.7)
             self.assertEqual(len(list((Path(d) / "models").glob("*.gguf"))), 1)         # the same file, no second download
 
-    def test_every_build_is_measured_on_the_real_model_and_the_vendors_own_stack_is_favoured(self):
+    def test_an_explicit_backend_is_used_and_marked_experimental(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
-            code, out = self.run_install(d, hub, fake_server(bin_dir))              # all builds "measure" the same speed
+            code, out = self.run_install(d, hub, fake_server(bin_dir), backend="rocm")
             self.assertEqual(code, 0, out.text)
-            m = launch.load_state(d)["measured"]
-            self.assertEqual(set(m["engine_comparison"]), {"TurboQuant+", "llama.cpp (rocm)", "llama.cpp (vulkan)"})
-            self.assertEqual(m["chosen"], "llama.cpp (rocm)")                       # AMD: ROCm wins a tie, Vulkan needs +10%
-            self.assertIn("rocm is this GPU's own stack", out.text)
-
-    def test_a_faster_non_native_build_wins_only_by_enough(self):
-        speeds = {"turbo3": "70", "rocm": "50"}                                      # +40%: clearly worth leaving ROCm
-
-        def run(tq_speed):
-            with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
-                server = Path(bin_dir) / "llama-server"
-                server.write_text(f"""#!/bin/sh
-case "$*" in *--list-devices*) exit 0;; esac
-case "$*" in *turbo3*) export FAKE_TOK_S={tq_speed};; *) export FAKE_TOK_S=50;; esac
-exec "{sys.executable}" "{FAKE}" "$@"
-""")
-                server.chmod(server.stat().st_mode | stat.S_IEXEC)
-                self.run_install(d, hub, server)
-                return launch.load_state(d)["measured"]["chosen"]
-        self.assertEqual(run(54), "llama.cpp (rocm)")                                # +8%: not enough to replace ROCm
-        self.assertEqual(run(70), "TurboQuant+")                                     # +40%: enough
-        self.assertEqual(speeds["turbo3"], "70")
-
-    def test_a_turboquant_build_that_does_not_start_falls_back_to_standard_llama_cpp(self):
-        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
-            code, out = self.run_install(d, hub, fake_server(bin_dir, no_turbo=True))
-            self.assertEqual(code, 0, out.text)
-            self.assertIn("did not work here", out.text)
             state = launch.load_state(d)
-            self.assertEqual(state["measured"]["engine"], "llama.cpp")
-            self.assertIn(state["argv"][state["argv"].index("-ctk") + 1], ("q8_0", "q4_0"))
+            self.assertEqual(state["backend"], "rocm")
+            self.assertTrue(state["backend_info"]["experimental"])
+            self.assertFalse(state["backend_info"]["fallback"])
+            self.assertIn("EXPERIMENTAL backend rocm", out.text)
+            self.assertNotIn("Trying llama.cpp (vulkan)", out.text)
+
+    def test_failed_experimental_selftest_falls_back_to_vulkan_before_model_download(self):
+        events = []
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            server = fake_server(bin_dir)
+            def choose(hw, plan, root, tag, out_, release=None, only_backend=None):
+                events.append(("selftest", only_backend))
+                if only_backend == "rocm":
+                    raise install.engine.EngineError("fake unreadable ROCm selftest")
+                return "vulkan", server, []
+            ensure = install._ensure_model
+            def ensure_after_selftest(*a):
+                events.append(("main-model",))
+                return ensure(*a)
+            with mock.patch.object(install, "choose_engine", side_effect=choose), \
+                    mock.patch.object(install, "_ensure_model", side_effect=ensure_after_selftest):
+                code = install.run(args(d, hub, backend="rocm"), HW[self.HW], tiny_catalog(0), Out())
+            state = launch.load_state(d)
+        self.assertEqual(code, 0)
+        self.assertEqual(state["backend"], "vulkan")
+        self.assertTrue(state["backend_info"]["fallback"])
+        self.assertLess(next(i for i, e in enumerate(events) if e == ("selftest", "vulkan")),
+                        next(i for i, e in enumerate(events) if e[0] == "main-model"))
+
+    def test_default_does_not_attempt_native_or_expert_cache_builds(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
+            code, out = self.run_install(d, hub, fake_server(bin_dir))
+            self.assertEqual(code, 0, out.text)
+            state = launch.load_state(d)
+            self.assertEqual(state["backend"], "vulkan")
+            self.assertEqual(state["argv"][state["argv"].index("-ctk") + 1], "q8_0")
+            self.assertNotIn("--moe-cache", state["argv"])
+            self.assertNotIn("--spec-type", state["argv"])
 
     def test_a_build_that_cannot_run_the_q5_0_kv_cache_falls_back_to_q8_0_or_q4_0(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
@@ -404,7 +438,7 @@ exec "{sys.executable}" "{FAKE}" "$@"
 
     def test_a_build_without_mtp_is_retried_without_it(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
-            code, out = self.run_install(d, hub, fake_server(bin_dir, no_mtp=True))
+            code, out = self.run_install(d, hub, fake_server(bin_dir, no_mtp=True), backend="rocm")
             self.assertEqual(code, 0, out.text)
             self.assertIn("Trying without the MTP draft", out.text)
             state = launch.load_state(d)
@@ -413,7 +447,7 @@ exec "{sys.executable}" "{FAKE}" "$@"
 
     def test_mtp_is_used_when_the_build_runs_it(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as bin_dir, Hub(self.model_files()) as hub:
-            code, out = self.run_install(d, hub, fake_server(bin_dir))
+            code, out = self.run_install(d, hub, fake_server(bin_dir), backend="rocm")
             self.assertEqual(code, 0, out.text)
             argv = launch.load_state(d)["argv"]
             self.assertEqual(argv[argv.index("--spec-type") + 1], "draft-mtp")
@@ -441,12 +475,14 @@ exec "{sys.executable}" "{FAKE}" "$@"
             self.assertIn("not in the", out.text)
             self.assertIn("run the same command again", out.text)
 
-    def test_the_fork_tier_points_to_setup_sh(self):
+    def test_cuda_backend_requires_the_explicit_backend_option(self):
         with tempfile.TemporaryDirectory() as d:
             out = Out()
-            code = install.run(args(d, dry_run=True), HW["ref_rtx4070s_12g_32g"], REAL, out)
+            code = install.run(args(d, dry_run=True, backend="cuda"), HW["ref_rtx4070s_12g_32g"], REAL, out)
             self.assertEqual(code, 0)
-            self.assertIn("setup.sh", out.text)
+            self.assertIn("EXPERIMENTAL backend requested: cuda", out.text)
+            self.assertIn("cuda, vulkan, cpu", out.text)
+            self.assertNotIn("setup.sh", out.text)
             self.assertIn("IQ4_XS", out.text)
 
 
@@ -478,6 +514,193 @@ class ChooseEngine(unittest.TestCase):
     def test_nothing_working_is_an_error_with_a_reason(self):
         with self.assertRaises(install.engine.EngineError):
             self.run_choose({"vulkan": {"backend": "vulkan", "ok": False}, "cpu": {"backend": "cpu", "ok": False}})
+
+    def test_small_model_selftest_finishes_before_the_main_model_is_requested(self):
+        events, out = [], Out()
+        with tempfile.TemporaryDirectory() as d, Hub({"Tiel-Coder-35B-A3B-MTP-UD-IQ4_XS.gguf": b"model"}) as hub:
+            cat = tiny_catalog(0)
+            def selftest(server, model, *, backend):
+                events.append(("selftest", backend, str(model)))
+                return {"backend": backend, "ok": backend == "cpu", "tok_s": 5, "error": "Vulkan generated unreadable text"}
+            def ensure_model(*args):
+                events.append(("main-model",))
+                return Path("main.gguf")
+            with mock.patch.object(install.engine, "smoke_model", side_effect=lambda root: (events.append(("smoke",)), Path("small.gguf"))[1]), \
+                    mock.patch.object(install.engine, "install_build", return_value=Path("fake-server")), \
+                    mock.patch.object(install.engine, "selftest", side_effect=selftest), \
+                    mock.patch.object(install, "_ensure_model", side_effect=ensure_model), \
+                    mock.patch.object(install, "verify", return_value={"ok": True, "tok_s": 5, "load_s": 1}):
+                code = install.run(args(d, hub), HW["rx9070xt_16g_32g"], cat, out, release=self.RELEASE)
+        self.assertEqual(code, 0, out.text)
+        self.assertEqual([e[1] for e in events if e[0] == "selftest"], ["vulkan", "cpu"])
+        self.assertLess(max(i for i, e in enumerate(events) if e[0] == "selftest"),
+                        next(i for i, e in enumerate(events) if e[0] == "main-model"))
+        self.assertIn("No GPU build works here: planning for the CPU instead.", out.text)
+
+
+class DefaultBackends(unittest.TestCase):
+    def test_vulkan_is_the_only_gpu_default_and_native_stacks_need_opt_in(self):
+        hw = HW["rx9070xt_16g_32g"]
+        default = planner.plan(hw, REAL, menu=False)
+        native = planner.plan(hw, REAL, config={"native_backends": True}, menu=False)
+        self.assertEqual(default["backend_candidates"], ["vulkan", "cpu"])
+        self.assertFalse(default["needs_probe"])
+        self.assertEqual(default["settings"]["kv_type"], "q8_0")
+        self.assertFalse(default["settings"].get("mtp"))
+        self.assertEqual(native["backend_candidates"][0], "rocm")
+
+    def test_an_explicit_backend_puts_vulkan_and_cpu_after_it(self):
+        selected = planner.plan(HW["rx9070xt_16g_32g"], REAL,
+                                config={"native_backends": True, "backend": "rocm"}, menu=False)
+        self.assertEqual(selected["backend_candidates"], ["rocm", "vulkan", "cpu"])
+
+    @unittest.skipUnless(POSIX, "uses the fake llama-server process")
+    def test_unreadable_generation_fails_the_selftest(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"FAKE_MODE": "garbage"}):
+            result = install.engine.selftest(fake_server(d), "small.gguf", backend="vulkan", timeout=10)
+        self.assertFalse(result["ok"])
+        self.assertIn("unreadable", result["error"])
+
+    def test_status_keeps_the_experimental_fallback_marker(self):
+        with tempfile.TemporaryDirectory() as d:
+            launch.save_state(d, {"schema": 1, "plan": {"settings": {"context": 200000}, "quant": "IQ4_XS"},
+                                  "backend": "vulkan", "backend_info": {"requested": "rocm", "experimental": True,
+                                                                            "fallback": True},
+                                  "argv": [], "port": 1, "measured": {}})
+            with redirect_stdout(io.StringIO()) as buf:
+                cli.main(["status", "--dir", d])
+        self.assertIn("experimental rocm failed; fallback vulkan", buf.getvalue())
+
+
+class Doctor(unittest.TestCase):
+    def test_doctor_uses_only_a_get_to_guardian_status_and_reports_local_checks(self):
+        class Response:
+            status = 200
+            def read(self, size):
+                return b'{"status":"READY"}'
+        class Connection:
+            calls = []
+            def __init__(self, host, port, timeout):
+                self.host, self.port = host, port
+            def request(self, method, path, headers=None):
+                self.calls.append((method, path))
+            def getresponse(self):
+                return Response()
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "SHURA_GATEWAY": "http://127.0.0.1:8080"}):
+            home = Path(d) / "shura"
+            model = home / "models/model.gguf"
+            model.parent.mkdir(parents=True)
+            model.write_bytes(b"model")
+            server = home / "engines/llama-server"
+            server.parent.mkdir(parents=True)
+            server.write_text("fake")
+            unit = Path(d) / ".config/systemd/user/ai-gateway.service"
+            unit.parent.mkdir(parents=True)
+            unit.write_text("service")
+            launch.save_state(home, {"schema": 1, "plan": {"settings": {"context": 200000}, "quant": "IQ4_XS"},
+                                     "model_path": str(model), "server": str(server), "backend": "vulkan", "port": 8080,
+                                     "argv": [], "measured": {}})
+            def run(command, **kwargs):
+                if command[:2] == ["systemctl", "--user"]:
+                    return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+                return SimpleNamespace(returncode=0, stdout="llama.cpp test-version\n", stderr="")
+            with mock.patch.object(cli.detect, "detect", return_value=HW["rx9070xt_16g_32g"]), \
+                    mock.patch.object(cli.shutil, "disk_usage", return_value=SimpleNamespace(free=40 * 1024 ** 3)), \
+                    mock.patch.object(cli.subprocess, "run", side_effect=run), \
+                    mock.patch.object(cli.http.client, "HTTPConnection", Connection), \
+                    redirect_stdout(io.StringIO()) as out:
+                code = cli.main(["doctor", "--dir", str(home)])
+        self.assertEqual(code, 0, out.getvalue())
+        self.assertEqual(Connection.calls, [("GET", "/guardian/status")])
+        self.assertIn("llama.cpp test-version", out.getvalue())
+        self.assertIn("Gateway: GET /guardian/status answered (READY)", out.getvalue())
+
+
+class UninstallAll(unittest.TestCase):
+    def layout(self, temp):
+        home = Path(temp) / "home"
+        home.mkdir()
+        data = home / ".local/share/shura"
+        (data / "models").mkdir(parents=True)
+        (data / "models/model.gguf").write_bytes(b"model")
+        (data / "llama.cpp-perf/.git").mkdir(parents=True)
+        (data / "llama.cpp-perf/build/bin/llama-server").parent.mkdir(parents=True)
+        (data / "llama.cpp-perf/build/bin/llama-server").write_bytes(b"binary")
+        (data / "app/.git").mkdir(parents=True)           # source checkout is deliberately preserved
+        (data / "notes.txt").write_text("unrelated")     # unknown files are deliberately preserved
+        config = home / ".config"
+        unit = config / "systemd/user/ai-gateway.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text(f"ExecStart=python3 {ROOT}/gateway/ai_gateway.py\n")
+        (config / "shuracode/shuracode.json").parent.mkdir(parents=True)
+        (config / "shuracode/shuracode.json").write_text("config")
+        share = home / ".local/share"
+        (share / "shuracode/memory").mkdir(parents=True)
+        (share / "shuracode/memory/session.json").write_text("session")
+        cache = home / ".cache/shura"
+        cache.mkdir(parents=True)
+        (cache / "install.log").write_text("log")
+        link = home / ".local/bin/shura"
+        link.parent.mkdir(parents=True)
+        link.symlink_to(ROOT / "scripts/shura")
+        app = share / "applications/io.github.hikkian.Shura.desktop"
+        app.parent.mkdir(parents=True)
+        app.write_text(f"Name=Shura\nExec={link} status\n")
+        icon = share / "icons/hicolor/48x48/apps/shura.png"
+        icon.parent.mkdir(parents=True)
+        icon.write_bytes(b"icon")
+        auto = config / "autostart/shura-monitor.desktop"
+        auto.parent.mkdir(parents=True)
+        auto.write_text("X-Shura-Managed=true\n")
+        return home, data, unit, link, app, icon, auto
+
+    def test_dry_run_lists_full_removal_and_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            home, data, unit, link, app, icon, auto = self.layout(d)
+            with mock.patch.dict(os.environ, {"HOME": str(home), "SHURA_HOME": str(data)}), \
+                    redirect_stdout(io.StringIO()) as out:
+                code = cli.main(["uninstall", "--all", "--dir", str(data), "--dry-run"])
+            self.assertEqual(code, 0)
+            self.assertIn("Full Shura removal will delete", out.getvalue())
+            self.assertIn("session memory", out.getvalue())
+            self.assertTrue(unit.exists() and link.is_symlink() and app.exists() and icon.exists() and auto.exists())
+
+    def test_full_removal_refuses_without_confirmation_on_noninteractive_input(self):
+        with tempfile.TemporaryDirectory() as d:
+            home, data, unit, link, app, icon, auto = self.layout(d)
+            with mock.patch.dict(os.environ, {"HOME": str(home), "SHURA_HOME": str(data)}), \
+                    mock.patch.object(cli.sys.stdin, "isatty", return_value=False), redirect_stdout(io.StringIO()):
+                code = cli.main(["uninstall", "--all", "--dir", str(data)])
+            self.assertEqual(code, 1)
+            self.assertTrue(unit.exists() and link.is_symlink() and app.exists() and icon.exists() and auto.exists())
+
+    def test_confirmed_full_removal_deletes_owned_data_but_keeps_checkout_and_foreign_files(self):
+        from universal import monitor_window
+        with tempfile.TemporaryDirectory() as d:
+            home, data, unit, link, app, icon, auto = self.layout(d)
+            calls = []
+            def run(command, **kwargs):
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            with mock.patch.dict(os.environ, {"HOME": str(home), "SHURA_HOME": str(data),
+                                              "XDG_CONFIG_HOME": str(home / ".config")}), \
+                    mock.patch.object(cli.subprocess, "run", side_effect=run), \
+                    mock.patch.object(monitor_window, "_owned_rule", side_effect=[True, False]), \
+                    mock.patch.object(monitor_window, "remove_rule", return_value=0) as remove_rule:
+                code = cli.main(["uninstall", "--all", "--dir", str(data), "--yes"])
+            self.assertEqual(code, 0)
+            self.assertIn(["systemctl", "--user", "disable", "--now", "ai-gateway.service"], calls)
+            remove_rule.assert_called_once()
+            self.assertFalse(unit.exists() or link.exists() or app.exists() or icon.exists() or auto.exists())
+            self.assertFalse((home / ".config/shuracode").exists())
+            self.assertFalse((home / ".local/share/shuracode").exists())
+            self.assertFalse((home / ".cache/shura").exists())
+            self.assertFalse((data / "models").exists())
+            self.assertTrue((data / "app/.git").exists())
+            self.assertTrue((data / "notes.txt").exists())
 
 
 class Reconcile(unittest.TestCase):
@@ -514,7 +737,8 @@ class TurboBuild(unittest.TestCase):
         {"name": "turboquant-plus-tqp-v0.4.0-linux-x64-cpu.tar.gz", "url": "https://x/c", "digest": None}]}
 
     def plan(self):
-        return planner.plan(HW["rx9070xt_16g_32g"], REAL, config={"kv_unavailable": ("q8_0", "q5_0", "q4_0")}, menu=False)
+        return planner.plan(HW["rx9070xt_16g_32g"], REAL,
+                            config={"native_backends": True, "kv_unavailable": ("q8_0", "q5_0", "q4_0")}, menu=False)
 
     def test_the_plan_names_the_engine_and_the_only_backend_it_has(self):
         p = self.plan()
@@ -573,20 +797,23 @@ class RocmFork(unittest.TestCase):
     """Our fork (with its expert cache) built for ROCm on an AMD machine that has the SDK. Unverified on real AMD hardware."""
 
     def plan(self, **cfg):
-        return planner.plan(amd_with_rocm_sdk(), REAL, config={"only_tier": "hipfork", **cfg}, menu=False)
+        return planner.plan(amd_with_rocm_sdk(), REAL,
+                            config={"native_backends": True, "only_tier": "hipfork", **cfg}, menu=False)
 
     def test_it_is_offered_only_with_the_rocm_sdk_and_a_build_chain(self):
         p = self.plan()
         self.assertEqual((p["tier"], p["engine"], p["backend_candidates"]), ("hipfork", "shura-fork-rocm", ["rocm"]))
         self.assertGreater(p["settings"]["moe_cache_slots"], 0)
         self.assertIn(p["settings"]["kv_type"], ("q8_0", "q4_0"))                # the turbo kernels are CUDA-only
-        none = planner.plan(HW["rx9070_16g_48g_fedora"], REAL, config={"only_tier": "hipfork"}, menu=False)
+        none = planner.plan(HW["rx9070_16g_48g_fedora"], REAL,
+                            config={"native_backends": True, "only_tier": "hipfork"}, menu=False)
         self.assertNotEqual(none.get("tier"), "hipfork")                          # no SDK recorded: not offered
         self.assertNotEqual(self.plan(hipfork_enabled=False).get("tier"), "hipfork")
 
     def test_the_cache_is_predicted_to_help_on_amd_too(self):
         hip = self.plan()["speed_by_fill"]["typical"]
-        plain = planner.plan(amd_with_rocm_sdk(), REAL, config={"hipfork_enabled": False, "tqp_enabled": False},
+        plain = planner.plan(amd_with_rocm_sdk(), REAL,
+                             config={"native_backends": True, "hipfork_enabled": False, "tqp_enabled": False},
                              menu=False)["speed_by_fill"]["typical"]
         self.assertGreater(hip, plain)
 
@@ -631,12 +858,13 @@ class RocmFork(unittest.TestCase):
                     mock.patch.object(install, "build_rocm_fork", return_value=server), \
                     mock.patch.object(install.engine, "smoke_model", return_value=Path("m.gguf")), \
                     mock.patch.object(install.engine, "selftest", return_value={"ok": True, "tok_s": 5}):
-                code = install.run(args(d, hub), amd_with_rocm_sdk(), cat, out)
+                code = install.run(args(d, hub, backend="hip"), amd_with_rocm_sdk(), cat, out)
             self.assertEqual(code, 0, out.text)
-            self.assertIn("our fork built for ROCm", out.text)
+            self.assertIn("EXPERIMENTAL backend requested: hip", out.text)
             m = launch.load_state(d)
-            self.assertIn("Shura fork (ROCm build)", m["measured"]["engine_comparison"])
-            self.assertEqual(m["measured"]["chosen"], "Shura fork (ROCm build)")       # rocm is native, a tie goes to the first
+            self.assertEqual(m["backend"], "rocm")
+            self.assertTrue(m["backend_info"]["experimental"])
+            self.assertFalse(m["backend_info"]["fallback"])
             self.assertIn("--moe-cache-slots", m["argv"])
 
     @unittest.skipUnless(POSIX, "uses shell scripts")
@@ -650,10 +878,12 @@ class RocmFork(unittest.TestCase):
                     raise install.engine.EngineError("the ROCm build of our fork failed (log)")
                 return only_backend or plan["backend_candidates"][0], server, []
             with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
-                code = install.run(args(d, hub), amd_with_rocm_sdk(), cat, out)
+                code = install.run(args(d, hub, backend="hip"), amd_with_rocm_sdk(), cat, out)
             self.assertEqual(code, 0, out.text)
-            self.assertIn("Our ROCm build did not work here", out.text)
-            self.assertNotEqual(launch.load_state(d)["measured"]["chosen"], "Shura fork (ROCm build)")
+            state = launch.load_state(d)
+            self.assertIn("trying the Vulkan fallback", out.text)
+            self.assertEqual(state["backend"], "vulkan")
+            self.assertTrue(state["backend_info"]["fallback"])
 
     @unittest.skipUnless(POSIX, "uses shell scripts")
     def test_no_build_never_builds(self):
@@ -666,7 +896,7 @@ class RocmFork(unittest.TestCase):
                 seen.append(plan.get("engine"))
                 return only_backend or plan["backend_candidates"][0], server, []
             with mock.patch.object(install, "choose_engine", side_effect=fake_choose):
-                code = install.run(args(d, hub, no_build=True), amd_with_rocm_sdk(), cat, out)
+                code = install.run(args(d, hub, no_build=True, backend="hip"), amd_with_rocm_sdk(), cat, out)
             self.assertEqual(code, 0, out.text)
             self.assertNotIn("shura-fork-rocm", seen)
 

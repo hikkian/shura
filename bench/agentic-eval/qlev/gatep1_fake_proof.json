@@ -1,0 +1,86 @@
+[
+  {
+    "arm": "G",
+    "engine_exit": 0,
+    "timed_out": false,
+    "seconds": 8.92,
+    "main_requests": 4,
+    "tool_names": [
+      "bash",
+      "edit",
+      "glob",
+      "grep",
+      "question",
+      "read",
+      "skill",
+      "task",
+      "todowrite",
+      "write"
+    ],
+    "sampling": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "presence_penalty": 0.0
+    },
+    "reasoning_effort": null,
+    "chat_template_kwargs": null,
+    "contract_first": false,
+    "visible_tests": false,
+    "completion_gate_message": true,
+    "user_messages": 3,
+    "reasoning_tokens": 0,
+    "bash_commands": [],
+    "edited_file": "after",
+    "masked_tool_messages": 0,
+    "mask_probe_threshold": null,
+    "plugin_paths_inside_scratch": true,
+    "runtime_zod_copied": true,
+    "fable3_gate_product_source": true,
+    "fable3_gate_copied_from_product": true,
+    "raw_requests": "/dev/shm/GATEP1/G/raw-requests.jsonl"
+  },
+  {
+    "arm": "G-green",
+    "engine_exit": 0,
+    "timed_out": false,
+    "seconds": 7.02,
+    "main_requests": 3,
+    "tool_names": [
+      "bash",
+      "edit",
+      "glob",
+      "grep",
+      "question",
+      "read",
+      "skill",
+      "task",
+      "todowrite",
+      "write"
+    ],
+    "sampling": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "presence_penalty": 0.0
+    },
+    "reasoning_effort": null,
+    "chat_template_kwargs": null,
+    "contract_first": false,
+    "visible_tests": false,
+    "completion_gate_message": false,
+    "user_messages": 1,
+    "reasoning_tokens": 0,
+    "bash_commands": [
+      "python3 -m unittest test_probe -v"
+    ],
+    "edited_file": "after",
+    "masked_tool_messages": 0,
+    "mask_probe_threshold": null,
+    "plugin_paths_inside_scratch": true,
+    "runtime_zod_copied": true,
+    "fable3_gate_product_source": true,
+    "fable3_gate_copied_from_product": true,
+    "raw_requests": "/dev/shm/GATEP1/G-green/raw-requests.jsonl"
+  }
+]

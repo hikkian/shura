@@ -4,15 +4,21 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 @REPO_DIR@/gateway/ai_gateway.py
-Environment=AI_GATEWAY_CONFIG=@REPO_DIR@/config
-Environment=PATH=/usr/local/cuda/bin:/usr/bin:/bin
-Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64
+ExecStart=/usr/bin/python3 "@REPO_DIR@/gateway/ai_gateway.py"
+Environment="AI_GATEWAY_CONFIG=@REPO_DIR@/config"
+# CUDA lives in /usr/local/cuda (Fedora, Ubuntu, NVIDIA packages) or /opt/cuda (Arch); a missing folder is harmless.
+Environment=PATH=/usr/local/cuda/bin:/opt/cuda/bin:/usr/bin:/bin
+Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64:/opt/cuda/lib64
 Restart=on-failure
 RestartSec=5
 # SIGTERM goes to the gateway first so it can save the active KV slot and stop llama-server cleanly.
 KillMode=mixed
 TimeoutStopSec=60
+# Hardening that cannot get in the way of CUDA or the model: no privilege escalation through setuid files, no odd personalities.
+# (ProtectSystem/ProtectHome/PrivateDevices are left out on purpose: llama-server needs the GPU devices and the user's model files.)
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
 
 [Install]
 WantedBy=default.target

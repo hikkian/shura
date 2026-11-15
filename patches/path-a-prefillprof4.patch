@@ -1,0 +1,124 @@
+# path-A: общий путь MUL_MAT_ID без хостового цикла (+4-5% префилла), выход побайтно тот же.
+# Источник: собственная правка проекта, reports/REPORT-PREFILLPROF4.md.
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu	2026-10-17 23:53:25.834242120 +0500
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu	2026-10-18 00:02:33.946666886 +0500
+@@ -1983,16 +1983,54 @@
+     CUDA_CHECK(cudaMemcpyAsync(ids_host.data(), ids->data, ggml_nbytes(ids), cudaMemcpyDeviceToHost, stream));
+     CUDA_CHECK(cudaStreamSynchronize(stream));
+ 
+-    for (int64_t i02 = 0; i02 < ne02; ++i02) { // expert matrices
+-        for (int64_t i12 = 0; i12 < ne12; ++i12) { // tokens
++    // PREFILLPROF4: one pass over ids instead of expert x token x slot. For each (token, expert) the first
++    // matching slot is used; compact rows are grouped by expert with tokens ascending (same layout as before).
++    {
++        auto id_at = [&](int64_t i12, int64_t iex) {
++            return *(const int32_t *)(ids_host.data() + i12*ids->nb[1] + iex*ids->nb[0]);
++        };
++        for (int64_t i12 = 0; i12 < ne12; ++i12) {
+             for (int64_t iex = 0; iex < n_expert_used; ++iex) {
+-                const int32_t expert_to_use = *(const int32_t *)(ids_host.data() + i12*ids->nb[1] + iex*ids->nb[0]);
+-                assert(expert_to_use >= -1 && expert_to_use < ne02); // -1 = skip (hot/cold expert split)
+-                if (expert_to_use == i02) {
+-                    ids_from_sorted_host[i12*n_expert_used + iex] = ids_to_sorted_host.size();
+-                    ids_to_sorted_host.push_back(i12*ne11 + iex % ne11);
+-                    tokens_per_expert[i02]++;
+-                    break;
++                const int32_t e = id_at(i12, iex);
++                assert(e >= -1 && e < ne02); // -1 = skip (hot/cold expert split)
++                if (e < 0) {
++                    continue;
++                }
++                bool first = true;
++                for (int64_t k = 0; k < iex; ++k) {
++                    if (id_at(i12, k) == e) {
++                        first = false;
++                        break;
++                    }
++                }
++                if (first) {
++                    tokens_per_expert[e]++;
++                }
++            }
++        }
++        std::vector<int32_t> expert_offset(ne02 + 1, 0);
++        for (int64_t e = 0; e < ne02; ++e) {
++            expert_offset[e + 1] = expert_offset[e] + tokens_per_expert[e];
++        }
++        ids_to_sorted_host.resize(expert_offset[ne02]);
++        std::vector<int32_t> cursor(expert_offset.begin(), expert_offset.end() - 1);
++        for (int64_t i12 = 0; i12 < ne12; ++i12) {
++            for (int64_t iex = 0; iex < n_expert_used; ++iex) {
++                const int32_t e = id_at(i12, iex);
++                if (e < 0) {
++                    continue;
++                }
++                bool first = true;
++                for (int64_t k = 0; k < iex; ++k) {
++                    if (id_at(i12, k) == e) {
++                        first = false;
++                        break;
++                    }
++                }
++                if (first) {
++                    const int32_t pos = cursor[e]++;
++                    ids_from_sorted_host[i12*n_expert_used + iex] = pos;
++                    ids_to_sorted_host[pos] = i12*ne11 + iex % ne11;
+                 }
+             }
+         }
+--- a/tests/test-backend-ops.cpp	2026-10-17 23:53:25.836547668 +0500
++++ b/tests/test-backend-ops.cpp	2026-10-18 00:27:04.375289153 +0500
+@@ -4761,6 +4761,20 @@
+                     data[i] = i % n_mats;
+                 }
+                 std::shuffle(data.begin(), data.end(), rng);
++                // PREFILLPROF4: TBO_IDS_ACTIVE=K routes every row to K distinct experts only (the rest stay empty, no -1)
++                const char * env_k = getenv("TBO_IDS_ACTIVE");
++                const int K = env_k ? atoi(env_k) : 0;
++                if (K > 0 && K <= n_mats && K <= t->ne[0]) {
++                    std::vector<int32_t> act(K);
++                    for (int i = 0; i < K; i++) { act[i] = i; }
++                    std::shuffle(act.begin(), act.end(), rng);
++                    for (int i = 0; i < K; i++) { data[i] = act[i]; }
++                    // TBO_DUP=1: repeat the active experts cyclically over the first 16 slots (duplicate ids within a row)
++                    const char * env_dup = getenv("TBO_DUP");
++                    if (env_dup && atoi(env_dup) != 0) {
++                        for (int i = 0; i < 16 && i < t->ne[0]; i++) { data[i] = act[i % K]; }
++                    }
++                }
+                 if (skip_ids) {
+                     // id == -1 marks "expert not owned by this pack" (hot/cold expert
+                     // split); keep slot 0 valid so every row computes something
+@@ -9497,6 +9511,17 @@
+         test_cases.emplace_back(new test_mul_mat_id(ta, GGML_TYPE_F32, 16, 8, false, 256, 64, 256, /*skip_ids=*/true));
+     }
+ 
++    // PREFILLPROF4: MMQ minimal cases without -1 (control for the concentrated-routing hang check)
++    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_0, GGML_TYPE_F32, 16, 8, false, 256, 4, 256, false));
++    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_0, GGML_TYPE_F32, 16, 8, false, 256, 64, 256, false));
++    // PREFILLPROF4: production shapes of the cold expert pack (prefill, 512 tokens, 256 experts, 8 used)
++    for (ggml_type ta : {GGML_TYPE_Q3_K, GGML_TYPE_IQ3_XXS}) {
++        for (bool skip : {false, true}) {
++            test_cases.emplace_back(new test_mul_mat_id(ta, GGML_TYPE_F32, 256, 8, true,  512,  512, 2048, skip)); // gate/up
++            test_cases.emplace_back(new test_mul_mat_id(ta, GGML_TYPE_F32, 256, 8, false, 2048, 512,  512, skip)); // down
++        }
++    }
++
+     for (ggml_type type_a : all_types) {
+         for (int i = 1; i < 10; ++i) {
+             test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  i, 1*256, { 1,  1}, {1, 1}));
+@@ -10627,6 +10652,14 @@
+ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
+     std::vector<std::unique_ptr<test_case>> test_cases;
+ 
++    // PREFILLPROF4: production shapes of the cold expert pack (prefill, 512 tokens, 256 experts, 8 used)
++    for (ggml_type ta : {GGML_TYPE_Q3_K, GGML_TYPE_IQ3_XXS}) {
++        for (bool skip : {false, true}) {
++            test_cases.emplace_back(new test_mul_mat_id(ta, GGML_TYPE_F32, 256, 8, true,  512,  512, 2048, skip)); // gate/up
++            test_cases.emplace_back(new test_mul_mat_id(ta, GGML_TYPE_F32, 256, 8, false, 2048, 512,  512, skip)); // down
++        }
++    }
++
+     // SWIGLU at a 27B-class FFN width, fused [gate|up] vs split operands
+     // note: same bytes either way, so a backend that indexes them differently shows it here
+     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {

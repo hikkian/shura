@@ -61,6 +61,28 @@ def pick_tqp_asset(assets, os_family, arch, backend):
     return None
 
 
+# The shura.cpp release archive name (RELEASE-CONTRACT.md): the ONE name shape used by release-manifest.json and by the installer.
+RELEASE_FAMILIES = {"hip": ("HIP", "rocm"), "cuda": ("CUDA", "cuda"), "vulkan": ("Vulkan", "vulkan"),
+                    "sycl": ("SYCL", "sycl"), "cpu": ("CPU", "cpu")}
+_RELEASE = re.compile(r"^shura-cpp-(?P<version>\d[0-9A-Za-z.+~]*)-(?P<family>hip|cuda|vulkan|sycl|cpu)-"
+                      r"(?P<os>linux)-(?P<arch>x86_64|arm64)\.tar\.gz\Z")
+
+
+def release_asset_name(version, family, os_family="linux", arch="x86_64"):
+    """`("1.0.0", "HIP")` -> `shura-cpp-1.0.0-hip-linux-x86_64.tar.gz` (the inverse of parse_release_asset)."""
+    return f"shura-cpp-{version}-{str(family).lower()}-{os_family}-{arch}.tar.gz"
+
+
+def parse_release_asset(name):
+    """`shura-cpp-1.0.0-hip-linux-x86_64.tar.gz` -> {version, family (HIP|CUDA|Vulkan|SYCL|CPU), backend (rocm|cuda|vulkan|sycl|cpu),
+    os, arch, name} or None for any other name (upstream llama.cpp names have their own parser, parse_asset)."""
+    m = _RELEASE.match(name) if isinstance(name, str) else None
+    if not m:
+        return None
+    fam, backend = RELEASE_FAMILIES[m["family"]]
+    return {"version": m["version"], "family": fam, "backend": backend, "os": m["os"], "arch": m["arch"], "name": name}
+
+
 def _vkey(version):
     return tuple(int(x) for x in version.split(".")) if version else ()
 
@@ -85,6 +107,10 @@ def pick_asset(assets, os_family, arch, backend, driver=None, prefer_variant="fp
         p = parse_asset(a["name"])
         if p and (p["os"], p["arch"], p["backend"]) == (os_family, arch, want):
             found.append((p, a))
+    if not found and backend == "cpu" and (os_family, arch) == ("macos", "arm64"):
+        # The macOS arm64 release is one Metal-enabled bundle; llama-server can still run CPU-only with -ngl 0.
+        found = [(p, a) for a in assets if (p := parse_asset(a["name"]))
+                 and (p["os"], p["arch"], p["backend"]) == ("macos", "arm64", "metal")]
     if backend == "cuda":
         allowed = cuda_versions_allowed(driver)
         if allowed is not None:

@@ -29,8 +29,7 @@ A 35B Mixture-of-Experts coding model runs on an ordinary home PC with one gamin
 server, no cloud. And while the model works, the computer stays yours: the browser, video, a call and
 the IDE keep running on the same GPU without stutter.
 
-How that is done, in one breath (the working build; the [Status](#status-preparing-10) section says what is in
-`main` today): the model's **hot experts live in VRAM** and the rest are computed from
+How that is done, in one breath: the model's **hot experts live in VRAM** and the rest are computed from
 system RAM; a **governor inside the inference server** watches free VRAM every 200 ms and gives memory
 back to the desktop the moment the desktop needs it; when it has to stop, it **checkpoints and continues
 the same answer** after a restart; the **KV cache is compressed** so a 200k-token window fits; the
@@ -40,10 +39,10 @@ llama.cpp, [hikkian/llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura)
 
 | At a glance (working build, measured 2026-10-24/25) | |
 |---|---|
-| Models | [Tiel-Coder-35B-A3B](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) (APEX-I-MiniPlus quant, ~14 GB, with its MTP head); Sage-A1.5 (same architecture) as the second model for harder tasks |
+| Models | [Tiel-Coder-35B-A3B](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) (APEX-I-MiniPlus quant, ~14 GB, with its MTP head); Occamy-1.0 as the second model |
 | Hardware | AMD RX 7800 XT 16 GB · Ryzen 5 5600 · 32 GB DDR4-3200 · Fedora 44, KDE on Wayland · ROCm 7.2.4 |
 | Context | 200k window; decode **75 tok/s** on a short prompt, **71** at 28k, **49** at 100k filled (Tiel) |
-| The desktop comes first | the model keeps 1.5 GiB of VRAM free for the desktop; when the desktop grabs +400 MiB mid-answer, the model gives it back in **0.24 s** and keeps streaming |
+| The desktop comes first | 1.5 GiB of VRAM is always left to the desktop; when the desktop grabs +400 MiB mid-answer, the model gives it back in **0.24 s** and keeps streaming |
 | Coming back to a session | a 100k-token session is restored in **0.5 s** instead of 156 s of re-reading |
 | Stability | memory flat (0.01 GiB/h) and 0 GPU page faults over 170 long requests up to 180k tokens |
 | Everything offline | inference, web search, browser automation |
@@ -53,31 +52,6 @@ llama.cpp, [hikkian/llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura)
 > (see [Status](#status-preparing-10)). Other GPUs, CPUs and memory speeds will differ, and the setup
 > needs re-tuning there. Raw measurements and the method are published with the 1.0 benchmark set.
 
-## Where it's going: a model that grows with you
-
-Today every local model starts from zero. A new one comes out, you switch, and everything the old one
-learned from working with you is gone. Shura is meant to work the other way: **one model, on your own
-PC, for years, and it keeps getting better at your work**, mostly at how it reasons and solves your tasks,
-not just at remembering facts.
-
-It grows in four layers, from cheap to hard:
-
-| Layer | What changes | Status |
-|---|---|---|
-| Memory | facts, decisions and context you confirmed, each with a source you can inspect, fix, export or delete | built, off by default, lands in 1.0 |
-| Rules | when you correct the same thing twice, Shura suggests a rule; you say yes or no; it is switched on only if it does better on your own tasks | in progress, lands in 1.0 |
-| More thinking on hard tasks | several attempts, your tests pick the one that works | planned |
-| Weights | a small LoRA adapter trained on what you confirmed, on top of the same quantized model you run every day | research; a first pilot on a small model is next |
-
-The rules we hold to: nothing gets worse (every change is measured on your tasks before and after, and
-rolled back if anything regresses); it learns only from what you confirmed, from the conversation, never
-from watching you; everything stays local; it is gentle with the SSD and the desktop; and when a better
-base model fits your card, your memory, rules and examples move with you. We publish the numbers either
-way, including when an idea does not work.
-
-The longer story and the progress live on the blog:
-[I'm building a local LLM that actually gets better the longer I use it](https://hikkian.github.io/blog/local-llm-that-gets-better.html).
-
 ## Status: preparing 1.0
 
 This README describes the project as it is measured today. Not all of it is in the published `main`
@@ -86,9 +60,9 @@ branch yet. To be exact:
 | | In the published `main` today | Measured on the working build, lands in 1.0 |
 |---|---|---|
 | Engine | thecodacus `perf` fork of llama.cpp with the MoE expert cache and TurboQuant KV, plus our patches (TurboQuant fix, persistent slot checkpoints); **NVIDIA/CUDA** | our fork [llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura) built with **ROCm/HIP for AMD**; the VRAM governor, elastic expert cache, pause-and-continue, page-fault fix in the MoE matmul path (these patches are in the working branch, not yet in the public fork) |
-| Memory | VRAM guard that parks the session in RAM under pressure (opt-in); prompt cache in RAM; the session is written to disk only when the model unloads | governor keeps ≥ 1.5 GiB free by construction; RAM budget that counts honest free memory and loads the model without evicting your browser from the page cache; lighter fallback layouts instead of refusing to load |
+| Memory | VRAM guard that parks the session in RAM under pressure (opt-in); sessions and the prompt cache in RAM | governor keeps ≥ 1.5 GiB free by construction; RAM budget that counts honest free memory and loads the model without evicting your browser from the page cache; lighter fallback layouts instead of refusing to load |
 | Sessions | slot save/restore with persistent context checkpoints (opt-in) | checkpoint on pause, restart, and the **same answer continues**; automatic switch between a short-context and a 200k layout keeping the slot |
-| Gateway, installer, ShuraCode | on-demand loading, idle unload, SSD-wear-aware saving, hardware planner, `shura` CLI | the same, plus desk-need signals (full-screen app, game) that raise the VRAM reserve before the desktop asks |
+| Gateway, installer, ShuraCode | on-demand loading, idle unload, SSD-wear-aware saving, hardware planner, `shura` CLI, monitor | the same, plus desk-need signals (full-screen app, game) that raise the VRAM reserve before the desktop asks |
 | Numbers | 2026-09 on an RTX 4070 SUPER 12 GB: 38–39 tok/s at 187k filled context ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)) | 2026-10 on an RX 7800 XT 16 GB: the table above and [Results](#results) |
 
 What this README does **not** claim: a side-by-side number against upstream llama.cpp of the same day
@@ -146,17 +120,7 @@ the card every 200 ms and resizes the cache between compute steps.
 
 ShuraCode on Tiel, run the way the product runs (serve mode through the gateway, short layout), on the
 dev split of our agentic task set: **73 of 111 runs solved (66 %)**: bug fixes 86 %, tests-only tasks
-100 %, implement 41 %, refactor 36 %. The harness is in [`bench/agentic-eval`](bench/agentic-eval); the task set used
-here (224 verifiable tasks in 56 families) is published with 1.0.
-
-**Choosing the models** (2026-10-28)
-
-The same agent and the same 56 tasks × 2 runs for four local models on the same card. Tiel stays the default: the
-fastest, and the best at fixes and tests. Sage-A1.5 becomes the second model, picked with `/model` for bigger
-implement and refactor work, where it solves clearly more at about twice the time. Occamy matched Tiel without
-adding anything and is no longer shipped; Gemma 4 is kept for a later general-purpose role, not for code.
-
-<p align="center"><img src="docs/img/models-agentic.png" alt="Four local models on 112 agentic coding runs: Sage 72 %, Tiel 68 %, Occamy 67 %, Gemma 56 %, with the split by task type" width="100%"></p>
+100 %, implement 41 %, refactor 36 %. The task set and the harness are in [`bench/agentic-eval`](bench/agentic-eval).
 
 **Quality gate.** Every change to kernels or layouts is accepted only if the KL divergence of the output
 distribution to the reference layout stays within the gate (0.0385 on a fixed corpus) and the top-1 token
@@ -170,13 +134,12 @@ published with the 1.0 benchmark set; the September measurements on the 12 GB ca
 
 The experts of the first layers stay in system RAM and the CPU computes the cold ones on 6 threads; the
 most-routed experts of every layer sit in VRAM, chosen by a routing profile traced from generated tokens,
-and the two halves are merged exactly, so the output is the same as without the cache. The KV cache is
-compressed (TurboQuant) so that a 200k window fits next to the weights. The model's own MTP head drafts
-tokens for speculative decoding. The gateway starts the model on demand, survives crashes, switches
-text/vision automatically, keeps the prompt cache in RAM and parks the session in RAM when the desktop
-needs the VRAM. In the working build the size of the expert cache is no longer fixed: the governor in
-`llama-server` sizes it to whatever VRAM the desktop is not using, down to zero (see
-[Status](#status-preparing-10)). Design and endpoints: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+and the two halves are merged exactly, so the output is the same as without the cache. The governor in
+`llama-server` sizes that cache to whatever VRAM the desktop is not using, down to zero when the desktop
+needs it all. The KV cache is compressed (TurboQuant) so that a 200k window fits next to the weights. The
+model's own MTP head drafts tokens for speculative decoding. The gateway starts the model on demand,
+survives crashes and GPU resets, switches text/vision and short/long layouts automatically, and keeps
+session state in RAM. Design and endpoints: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## What we learned
 
@@ -236,16 +199,30 @@ Everything starts with the desktop session; nothing needs to be launched by hand
 shura status    # model state, free RAM/VRAM, idle timer
 shura warm      # load the model now          shura unload   # free RAM/VRAM now
 shura off / on  # disable / enable the AI     shura logs     # follow logs
+shura monitor   # open the compact, read-only monitor window
 shura window    # new Shura window for the current folder
 ```
 
 The model unloads itself after 30 idle minutes; the last long session is saved and restored on the next
 start.
 
+When a game or a video call needs the card, the governor pauses a running answer: the session is saved and
+the model stops. The answer is continued on the restored session once the memory is back. While it waits,
+the gateway keeps the client's stream open (SSE keep-alive comments) and waits up to `pauseResumeWaitSeconds`
+(600 by default, `guardian.json`), checking every `pauseResumePollSeconds`; `/guardian/status` shows the
+wait under `pause_resume`. Set `pauseResumeWaitSeconds` to `0` to cut the answer at once, as before.
+
 **ShuraCode** is the coding agent: permanent memory shared by all sessions, the commands `/remember`
 `/forget` `/memory` `/test` `/commit`, a read-only **Plan** mode next to **Build** (Tab), and a live model
 status in the footer. It is our customization layer on top of the OpenCode engine, in its own repository:
 **[hikkian/shuracode](https://github.com/hikkian/shuracode)**; the installer sets it up.
+
+## Monitor
+
+The gateway's read-only live dashboard is served at `/monitor`. `shura monitor` opens its compact desktop
+window; `shura monitor --full` opens the regular page. It shows model, context, RAM/VRAM, temperature,
+request, and reliability telemetry without exposing prompt or response text. See
+[monitor operations](docs/OPERATIONS.md).
 
 ## Will it run on my computer?
 
@@ -255,11 +232,12 @@ status in the footer. It is our customization layer on top of the OpenCode engin
   graphics card will not fit, and the installer says why. A graphics card with 6 GB of memory and 8 GB of RAM will not fit
   either. A graphics card with 8 GB of memory and 32 GB of RAM fits: some layers stay in RAM (a hybrid layout).
 - **Speed.** Before the first run the installer does not promise a number. The prediction is an estimate and can differ a
-  lot from reality; for MoE models on Vulkan it is not calibrated yet. Trust the measurement on your machine, which the
-  installer runs itself.
-- **If it did not work**, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
-- **Other machines.** What has been verified is in the table below; how to join the pilot programme:
-  [CONTRIBUTING-hardware.md](CONTRIBUTING-hardware.md).
+  lot from reality. For MoE models on Vulkan the prediction is not calibrated yet: on one card (RX 7900 XTX) the measured speed
+  was about 1.8 times lower than the installer's prediction. Trust the measurement on your machine, which the installer runs
+  itself. Data and sources: [SPEED-ESTIMATES.md](docs/SPEED-ESTIMATES.md).
+- **If it did not work**, see [First install](docs/TROUBLESHOOTING.md#first-install).
+- **Other machines.** The table of tested configurations, and how to join the pilot programme:
+  [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 ## Run it on your hardware
 
@@ -402,6 +380,7 @@ docs/        benchmarks, architecture, harness comparison, TurboQuant fix, insta
 |---|---|
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | The September measurements on the 12 GB card: build tuning, MTP, threads, routing profiles, prefill, dead ends |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Gateway state machine, endpoints, KV cache and SSD-wear design |
+| [OPERATIONS.md](docs/OPERATIONS.md) | Public benchmark guide, `/monitor` dashboard and guardian recovery prerequisites |
 | [TURBOQUANT-FIX.md](docs/TURBOQUANT-FIX.md) | Why TurboQuant crashes or corrupts output on this model family, and the fix |
 | [HARNESS-COMPARISON.md](docs/HARNESS-COMPARISON.md) | OpenCode vs Pi vs Pithagoras vs DeepSeek Harness, tested hands-on |
 | [INSTALLER.md](docs/INSTALLER.md) | What `setup.sh` does, how it picks the quant and tunes, what it changes, uninstall |
@@ -426,3 +405,7 @@ docs/        benchmarks, architecture, harness comparison, TurboQuant fix, insta
 
 [MIT](LICENSE) for everything in this repository. The patches in `patches/` are derived from llama.cpp (MIT).
 Model weights are not included and are covered by their own license.
+
+## Optional lifelong memory
+
+The candidate memory integration is off by default (`memoryEnabled`, `memoryInject`, `lifelongCapture`). When enabled, ShuraCode shows memory and rule passports, a record/rule/version status line, and commands for corrections, soft deletion, export, import, statistics and restore. Captured conversation signals always remain proposed. See the [configuration and command reference](docs/LIFELONG.md#english).

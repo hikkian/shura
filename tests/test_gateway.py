@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+os.environ["AI_GATEWAY_KERNEL_LOG"] = "off"   # GPURESET1: a unit test with a mocked server must not read this machine's real kernel log
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -54,6 +55,7 @@ class GatewayGuard(unittest.TestCase):
         self.patch_attr("process_vram_mib", Mock(return_value=10970))
         self.patch_attr("write_server_lease", Mock())
         self.patch_attr("backend_port_in_use", Mock(return_value=False))
+        self.patch_attr("settle_dead_backend", Mock())           # the unit tests' server is a Mock: nothing listens on a port
         self.proc = Mock(pid=1234)
         self.proc.poll.return_value = None
         self.proc.terminate.side_effect = lambda: setattr(self.proc.poll, "return_value", 0)
@@ -89,6 +91,17 @@ class GatewayGuard(unittest.TestCase):
     def yield_model(self):
         self.tick(10)
         self.tick(15)
+
+    def make_disk_checkpoint(self, payload=b"disk snapshot"):
+        model = self.gw.M["defaultModel"]
+        self.gw.st.model_id = model
+        path = self.disk / self.gw.slot_filename(model, False)
+        path.write_bytes(payload)
+        saved = {"model": model, "vision": False, "tokens": 187000, "bytes": len(payload),
+                 "sha256": self.gw.file_hash(path), "reload_min_gb": 0.0,
+                 "signature": self.gw.checkpoint_signature(model, False), "saved_at": time.time()}
+        self.gw.write_saved_slot_metadata(path, saved)
+        return path
 
     def test_idle_pressure_saves_only_in_ram_then_unloads(self):
         self.tick(10)
@@ -176,6 +189,28 @@ class GatewayGuard(unittest.TestCase):
         self.assertEqual(disk.read_bytes(), b"test checkpoint")
         self.assertEqual(list(self.ram.iterdir()), [])
 
+    def test_new_disk_slot_clears_older_matching_ram_checkpoint(self):
+        active = self.ram / "active.bin"
+        active.write_bytes(b"older RAM checkpoint")
+        (self.ram / "checkpoint.json").write_text("{}")
+        self.gw.st.ram_checkpoint = {"model": self.gw.M["defaultModel"], "vision": False,
+                                     "tokens": 50, "path": active}
+        self.gw.st.skip_disk_restore = True
+
+        self.gw.stop_llama_locked("idle")
+
+        disk = self.disk / self.gw.slot_filename(self.gw.M["defaultModel"], False)
+        self.assertEqual(disk.read_bytes(), b"test checkpoint")
+        self.assertIsNone(self.gw.st.ram_checkpoint)
+        self.assertFalse(self.gw.st.skip_disk_restore)
+        self.assertFalse(active.exists())
+        self.assertFalse((self.ram / "checkpoint.json").exists())
+        self.gw.st.model_id = self.gw.M["defaultModel"]
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "")
+        self.assertIn(("POST", "/slots/0?action=restore"),
+                      [(call.args[0], call.args[1]) for call in self.api.call_args_list])
+
     def test_short_ordinary_slot_still_skips_disk(self):
         self.api.side_effect = lambda *a, **k: (200, [{"n_prompt_tokens": 50}])
         self.gw.stop_llama_locked("idle")
@@ -211,12 +246,54 @@ class GatewayGuard(unittest.TestCase):
         self.api.assert_not_called()
 
     def test_old_disk_checkpoint_is_staged_in_ram_and_not_deleted(self):
-        name = self.gw.slot_filename(self.gw.st.model_id, False)
-        (self.disk / name).write_bytes(b"disk snapshot")
+        path = self.make_disk_checkpoint()
         self.assertEqual(self.gw.restore_slot_locked(), "")
         self.assertEqual(self.api.call_args.args[2], {"filename": "restore.bin"})
         self.assertEqual(list(self.ram.iterdir()), [])
-        self.assertTrue((self.disk / name).exists())
+        self.assertTrue(path.exists())
+
+    def test_truncated_disk_slot_is_rejected_before_native_restore(self):
+        path = self.make_disk_checkpoint()
+        path.write_bytes(path.read_bytes()[:-1])
+        self.api.reset_mock()
+        # Rejected before the server saw it: no restart is needed, and the unusable file is removed so it cannot loop.
+        self.assertEqual(self.gw.restore_slot_locked(), "")
+        self.api.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_same_size_disk_slot_corruption_is_rejected_before_native_restore(self):
+        path = self.make_disk_checkpoint()
+        raw = path.read_bytes()
+        path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "")
+        self.api.assert_not_called()
+        self.assertFalse(path.exists())
+
+    def test_unverified_legacy_disk_slot_is_not_passed_to_native_restore(self):
+        path = self.disk / self.gw.slot_filename(self.gw.M["defaultModel"], False)
+        path.write_bytes(b"old slot without a SHA-256 sidecar")
+        self.api.reset_mock()
+        self.assertEqual(self.gw.restore_slot_locked(), "")
+        self.api.assert_not_called()
+        self.assertFalse(path.exists())     # discarded: it would be rejected on every cold start otherwise
+
+    def test_a2_signature_allows_cpu_poll_and_thread_tuning_only(self):
+        model = self.gw.M["defaultModel"]
+        mc = self.gw.M["models"][model]
+        original = {key: mc.get(key) for key in ("threads", "threadsBatch", "poll", "nGpuLayers")}
+        try:
+            baseline = self.gw.checkpoint_signature(model, False)
+            mc.update(threads=5, threadsBatch=4, poll=0)
+            self.assertEqual(self.gw.checkpoint_signature(model, False), baseline)
+            mc["nGpuLayers"] = int(mc.get("nGpuLayers", 99)) - 1
+            self.assertNotEqual(self.gw.checkpoint_signature(model, False), baseline)
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    mc.pop(key, None)
+                else:
+                    mc[key] = value
 
     def test_ready_request_reserves_busy_before_monitor_can_unload(self):
         self.assertEqual(self.gw.acquire_model(self.gw.st.model_id, False), "")
@@ -259,10 +336,10 @@ class GatewayGuard(unittest.TestCase):
         with patch.object(self.gw.time, "sleep", side_effect=sleep), patch.object(self.gw, "start_llama", return_value=""):
             self.assertEqual(self.gw.acquire_model(self.gw.M["defaultModel"], False), "")
 
-    def test_reader_failure_uses_original_load_policy(self):
+    def test_reader_failure_waits_for_fresh_admission_sample(self):
         self.gw.st.vram_free_mib = None
         self.gw.st.vram_sample_at = None
-        self.assertEqual(self.gw.preload_check(self.gw.model_config(self.gw.st.model_id, False)), "")
+        self.assertIn("Fresh NVML", self.gw.preload_check(self.gw.model_config(self.gw.st.model_id, False)))
         self.assertIn("NVML", self.gw.st.guard_fallback)
 
     def test_stale_nvml_fallback_clears_when_monitor_recovers(self):
@@ -305,13 +382,15 @@ class GatewayGuard(unittest.TestCase):
 
     def test_restore_failure_starts_one_fresh_backend_before_request(self):
         self.yield_model()
+        # The pressure has cleared and the monitor supplied a fresh admission sample.
+        self.gw.monitor_tick(16, 12 * 1024, 24)
         first, second = Mock(pid=4321), Mock(pid=4322)
         for proc in (first, second):
             proc.poll.return_value = None
             proc.terminate.side_effect = lambda p=proc: setattr(p.poll, "return_value", 0)
         def api(method, path, body=None, timeout=10):
             return (200, {}) if path == "/health" else (500, {})
-        with patch.object(self.gw.subprocess, "Popen", side_effect=[first, second]) as spawn, patch.object(self.gw.time, "sleep"), patch.object(self.gw, "llama_call", side_effect=api):
+        with patch.object(self.gw.subprocess, "Popen", side_effect=[first, second]) as spawn, patch.object(self.gw.time, "sleep"), patch.object(self.gw, "llama_call", side_effect=api), patch.object(self.gw, "server_supports", return_value=False), patch.object(self.gw.common, "server_supports", return_value=False):
             self.assertEqual(self.gw.acquire_model(self.gw.M["defaultModel"], False), "")
         self.assertEqual(spawn.call_count, 2)
         first.terminate.assert_called_once()

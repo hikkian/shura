@@ -53,13 +53,13 @@ class Card(unittest.TestCase):
     def test_check_prints_the_plan_for_a_profile(self):
         code, out, _ = run("check", "--profile", str(HWDIR / "ref_rtx4070s_12g_32g.json"))
         self.assertEqual(code, 0)
-        for text in ("Tiel-Coder 35B-A3B (MTP)", "IQ4_XS", "hybrid", "cuda, vulkan, cpu", "confidence"):
+        for text in ("Tiel-Coder 35B-A3B (MTP)", "IQ4_XS", "hybrid", "vulkan, cpu", "confidence"):
             self.assertIn(text, out)
 
     def test_check_json_is_the_plan(self):
         code, out, _ = run("check", "--json", "--profile", str(HWDIR / "rx7900xtx_24g_64g.json"))
         plan = json.loads(out)
-        self.assertEqual((code, plan["ok"], plan["backend_candidates"][:2]), (0, True, ["rocm", "vulkan"]))
+        self.assertEqual((code, plan["ok"], plan["backend_candidates"]), (0, True, ["vulkan", "cpu"]))
 
     def test_nothing_fits_exits_with_1_and_says_why(self):
         code, out, _ = run("check", "--profile", str(HWDIR / "laptop_cpu_16g.json"))

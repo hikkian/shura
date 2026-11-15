@@ -1,0 +1,6 @@
+{
+ "/proc/swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n",
+ "/sys/class/power_supply/AC/online": "1\n",
+ "/sys/class/power_supply/AC/type": "Mains\n",
+ "/sys/fs/cgroup/cgroup.controllers": "cpuset cpu io memory pids\n"
+}

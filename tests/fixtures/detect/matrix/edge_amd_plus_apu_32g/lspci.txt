@@ -1,0 +1,3 @@
+08:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Cezanne [Radeon Vega Series / Radeon Vega Mobile Series]" -rc8 -p00 "Gigabyte Technology Co., Ltd" "Device 2413"
+2d:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Navi 32 [Radeon RX 7700 XT / 7800 XT]" -rc8 -p00 "Gigabyte Technology Co., Ltd" "Device 2413"
+00:14.0 "Ethernet controller" "Intel Corporation" "Ethernet Connection (17) I219-V" -r11 -p00 "ASRock" "Device 0100"

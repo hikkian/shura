@@ -1,0 +1,2 @@
+c4:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Phoenix1 [Radeon 780M Graphics]" -rc8 -p00 "Gigabyte Technology Co., Ltd" "Device 2413"
+00:14.0 "Ethernet controller" "Intel Corporation" "Ethernet Connection (17) I219-V" -r11 -p00 "ASRock" "Device 0100"

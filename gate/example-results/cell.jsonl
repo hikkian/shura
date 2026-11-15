@@ -1,0 +1,16 @@
+{"row":"agent-general","arm":"stack","task":"a","family":"f1","rep":0,"seed":10,"score":0.50}
+{"row":"agent-general","arm":"stack","task":"a","family":"f1","rep":1,"seed":11,"score":0.50}
+{"row":"agent-general","arm":"prompt-v2","task":"a","family":"f1","rep":0,"seed":10,"score":0.60}
+{"row":"agent-general","arm":"prompt-v2","task":"a","family":"f1","rep":1,"seed":11,"score":0.60}
+{"row":"agent-general","arm":"stack","task":"b","family":"f1","rep":0,"seed":10,"score":0.40}
+{"row":"agent-general","arm":"stack","task":"b","family":"f1","rep":1,"seed":11,"score":0.40}
+{"row":"agent-general","arm":"prompt-v2","task":"b","family":"f1","rep":0,"seed":10,"score":0.50}
+{"row":"agent-general","arm":"prompt-v2","task":"b","family":"f1","rep":1,"seed":11,"score":0.50}
+{"row":"agent-general","arm":"stack","task":"c","family":"f2","rep":0,"seed":10,"score":0.60}
+{"row":"agent-general","arm":"stack","task":"c","family":"f2","rep":1,"seed":11,"score":0.60}
+{"row":"agent-general","arm":"prompt-v2","task":"c","family":"f2","rep":0,"seed":10,"score":0.70}
+{"row":"agent-general","arm":"prompt-v2","task":"c","family":"f2","rep":1,"seed":11,"score":0.70}
+{"row":"agent-general","arm":"stack","task":"d","family":"f2","rep":0,"seed":10,"score":0.50}
+{"row":"agent-general","arm":"stack","task":"d","family":"f2","rep":1,"seed":11,"score":0.50}
+{"row":"agent-general","arm":"prompt-v2","task":"d","family":"f2","rep":0,"seed":10,"score":0.60}
+{"row":"agent-general","arm":"prompt-v2","task":"d","family":"f2","rep":1,"seed":11,"score":0.60}

@@ -11,18 +11,77 @@ every `*norm.weight` gets +1 (HF stores w-1) and is kept as F32, and the fused `
 the row axis (first half = gate, second half = up). MTP is lossless (the target model verifies every drafted token), so a
 wrong head can only lower the acceptance rate, never change the answer; check the acceptance rate after grafting.
 
-Needs numpy and llama.cpp's gguf-py (GGUF_PY or ../llama.cpp-perf/gguf-py). Reads the body through a memory map; writes the output once.
+Needs numpy and llama.cpp's gguf-py: $GGUF_PY, an installed `gguf` package, or the first of ../llama.cpp-perf/gguf-py (next to
+this repository), ~/ai/llama.cpp-perf/gguf-py, $SHURA_HOME/llama.cpp-perf/gguf-py (setup.sh's build) that exists. Reads the
+body through a memory map and writes the output once, into OUT.tmp that replaces OUT only when complete; OUT may not be one
+of the input files, and there must be room for it.
 """
+import contextlib
 import json
 import os
+import shutil
 import struct
 import sys
 from pathlib import Path
 
-import numpy as np
+REPO = Path(__file__).resolve().parent.parent
+np = gguf = None            # imported by load_libraries(), so the path checks below work (and are testable) without them
 
-sys.path.insert(0, os.environ.get("GGUF_PY", str(Path.home() / "Desktop/AI/llama.cpp-perf/gguf-py")))
-import gguf  # noqa: E402
+
+def gguf_py_candidates(env=None):
+    env = os.environ if env is None else env
+    home = Path.home()
+    shura_home = Path(env.get("SHURA_HOME") or home / ".local" / "share" / "shura")
+    return ([Path(env["GGUF_PY"])] if env.get("GGUF_PY") else []) + [
+        REPO.parent / "llama.cpp-perf" / "gguf-py", home / "ai" / "llama.cpp-perf" / "gguf-py",
+        shura_home / "llama.cpp-perf" / "gguf-py", home / "Desktop" / "AI" / "llama.cpp-perf" / "gguf-py"]
+
+
+def load_libraries():
+    global np, gguf
+    if gguf is not None:
+        return
+    try:
+        import numpy
+    except ImportError:
+        raise SystemExit("numpy is required: pip install numpy")
+    np = numpy
+    found = next((c for c in gguf_py_candidates() if (c / "gguf").is_dir()), None)
+    if found is not None:
+        sys.path.insert(0, str(found))
+    try:
+        import gguf as g
+    except ImportError:
+        raise SystemExit("llama.cpp's gguf-py was not found. Set GGUF_PY=<llama.cpp>/gguf-py. Looked in: "
+                         + ", ".join(str(c) for c in gguf_py_candidates()))
+    gguf = g
+
+
+def check_output(out, inputs, extra_bytes=0):
+    """Refuse an OUT that would destroy an input or that does not fit on the disk. Returns the resolved output path."""
+    out = Path(out).resolve()
+    for src in inputs:
+        src = Path(src)
+        if out == src.resolve() or (out.exists() and src.exists() and os.path.samefile(out, src)):
+            raise SystemExit(f"OUT ({out}) is the same file as the input {src}: the input would be destroyed. Give a new file name.")
+    if not out.parent.is_dir():
+        raise SystemExit(f"the folder of OUT does not exist: {out.parent}")
+    need = sum(Path(src).stat().st_size for src in inputs) + extra_bytes
+    free = shutil.disk_usage(out.parent).free
+    if free < need * 1.02 + (64 << 20):
+        raise SystemExit(f"not enough free space for OUT in {out.parent}: need about {need / 2 ** 30:.1f} GiB, have {free / 2 ** 30:.1f} GiB")
+    return out
+
+
+@contextlib.contextmanager
+def atomic_output(out):
+    """Yields OUT.tmp; moves it onto OUT only if the block finished, so a killed run never leaves a truncated .gguf."""
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        yield tmp
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 PER_LAYER = {
     "input_layernorm.weight": ("attn_norm.weight", True),
@@ -131,45 +190,59 @@ def new_counts(reader, arch):
     return blocks, over
 
 
+def expected_head_names(layer):
+    return ({f"blk.{layer}.{g}" for g, _ in TOP.values()} | {f"blk.{layer}.{g}" for g, _ in PER_LAYER.values()}
+            | {f"blk.{layer}.ffn_gate_exps.weight", f"blk.{layer}.ffn_up_exps.weight"})
+
+
 def cmd_head(body, safetensors, out):
+    load_libraries()
+    out = check_output(out, [body, safetensors])
     reader = gguf.GGUFReader(body)
     arch, fields = body_metadata(reader)
     blocks, over = new_counts(reader, arch)
     if any(t.name.startswith(f"blk.{blocks}.nextn") for t in reader.tensors):
         raise SystemExit("the body already has an MTP head")
     tensors = list(head_tensors(read_safetensors(safetensors), blocks))
-    w = gguf.GGUFWriter(out, arch)
-    copy_kv(w, fields, over)
-    if "nextn_predict_layers" not in "".join(f.name for f in fields):
-        w.add_key_value(f"{arch}.nextn_predict_layers", 1, gguf.GGUFValueType.UINT32)
-    for name, arr, kind in tensors:
-        w.add_tensor_info(name, arr.shape, arr.dtype, arr.nbytes, kind)
-    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_ti_data_to_file()
-    for _, arr, _ in tensors:
-        w.write_tensor_data(arr)
-    w.close()
+    with atomic_output(out) as tmp:
+        w = gguf.GGUFWriter(tmp, arch)
+        copy_kv(w, fields, over)
+        if "nextn_predict_layers" not in "".join(f.name for f in fields):
+            w.add_key_value(f"{arch}.nextn_predict_layers", 1, gguf.GGUFValueType.UINT32)
+        for name, arr, kind in tensors:
+            w.add_tensor_info(name, arr.shape, arr.dtype, arr.nbytes, kind)
+        w.write_header_to_file(); w.write_kv_data_to_file(); w.write_ti_data_to_file()
+        for _, arr, _ in tensors:
+            w.write_tensor_data(arr)
+        w.close()
     print(f"{len(tensors)} head tensors for block {blocks} -> {out}")
 
 
 def cmd_merge(body, head, out):
+    load_libraries()
+    out = check_output(out, [body, head])
     rb, rh = gguf.GGUFReader(body), gguf.GGUFReader(head)
     arch, fields = body_metadata(rb)
     blocks, over = new_counts(rb, arch)
     head_t = [t for t in rh.tensors if t.name.startswith(f"blk.{blocks}.")]
     if not head_t:
         raise SystemExit(f"{head} has no blk.{blocks}.* tensors")
-    w = gguf.GGUFWriter(out, arch)
+    missing = sorted(expected_head_names(blocks) - {t.name for t in head_t})
+    if missing:                      # a partial head would load and then draft nonsense, or crash the server at the first token
+        raise SystemExit(f"{head} is an incomplete MTP head: {len(missing)} tensors are missing, e.g. {', '.join(missing[:3])}")
     names = {f.name for f in fields}
-    copy_kv(w, fields, over)
-    if f"{arch}.nextn_predict_layers" not in names:
-        w.add_key_value(f"{arch}.nextn_predict_layers", 1, gguf.GGUFValueType.UINT32)
-    tensors = list(rb.tensors) + head_t
-    for t in tensors:
-        w.add_tensor_info(t.name, t.data.shape, t.data.dtype, t.data.nbytes, t.tensor_type)
-    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_ti_data_to_file()
-    for t in tensors:
-        w.write_tensor_data(t.data)
-    w.close()
+    with atomic_output(out) as tmp:
+        w = gguf.GGUFWriter(tmp, arch)
+        copy_kv(w, fields, over)
+        if f"{arch}.nextn_predict_layers" not in names:
+            w.add_key_value(f"{arch}.nextn_predict_layers", 1, gguf.GGUFValueType.UINT32)
+        tensors = list(rb.tensors) + head_t
+        for t in tensors:
+            w.add_tensor_info(t.name, t.data.shape, t.data.dtype, t.data.nbytes, t.tensor_type)
+        w.write_header_to_file(); w.write_kv_data_to_file(); w.write_ti_data_to_file()
+        for t in tensors:
+            w.write_tensor_data(t.data)
+        w.close()
     print(f"{len(rb.tensors)} body + {len(head_t)} head tensors -> {out}")
 
 

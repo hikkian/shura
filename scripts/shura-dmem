@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""shura-dmem: the desktop's VRAM protected with the dmem cgroup controller (MEMV2). docs/DMEM.md explains it.
+
+  shura-dmem status        what is in place (read only)
+  shura-dmem root-part     print the one root step and its undo (it does nothing itself)
+  shura-dmem apply         the user part: dmem in the user manager, dmem.low = max on the desktop's slices (no root)
+  shura-dmem undo          the user part back: the desktop's protection to 0
+"""
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gateway"))
+import dmem_guard as dg  # noqa: E402
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    uid = os.getuid()
+    if cmd == "status":
+        info = dg.status(uid)
+        gateway = [p for p in Path("/proc").iterdir() if p.name.isdigit() and b"ai_gateway.py" in (p / "cmdline").read_bytes()
+                   ] if Path("/proc").is_dir() else []
+        info["shura_cgroups"] = sorted({dg.where_is(p.name) or "?" for p in gateway})
+        info["shura_outside_desk"] = all(dg.shura_outside_desk(c) for c in info["shura_cgroups"]) if gateway else None
+        print(json.dumps(info, indent=1))
+        return 0
+    if cmd == "root-part":
+        print(f"# as root, once (sudo): the file {dg.ROOT_DROPIN_PATH}")
+        print(f"sudo mkdir -p {Path(dg.ROOT_DROPIN_PATH).parent}")
+        print(f"sudo tee {dg.ROOT_DROPIN_PATH} <<'EOF'\n{dg.ROOT_DROPIN}EOF")
+        print("sudo systemctl daemon-reload   # then log out and back in (the user manager starts again)")
+        print("\n# undo:")
+        print(f"sudo rm {dg.ROOT_DROPIN_PATH} && sudo systemctl daemon-reload")
+        print("echo -dmem | sudo tee /sys/fs/cgroup/user.slice/user-$(id -u).slice/cgroup.subtree_control   # or log out and in")
+        return 0
+    if cmd == "apply":
+        writes, blockers = dg.plan(uid)
+        if blockers:
+            print("not yet:\n  " + "\n  ".join(blockers), file=sys.stderr)
+            return 2
+        errors = dg.apply(writes)
+        for path, text in writes:
+            print(f"{path} <- {text}")
+        if errors:
+            print("failed:\n  " + "\n  ".join(errors), file=sys.stderr)
+            return 1
+        return 0
+    if cmd == "undo":
+        errors = dg.apply(dg.undo_writes(uid))
+        if errors:
+            print("failed:\n  " + "\n  ".join(errors), file=sys.stderr)
+            return 1
+        print("the desktop's dmem protection is 0 again")
+        return 0
+    print(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

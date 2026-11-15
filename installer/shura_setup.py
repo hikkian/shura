@@ -53,11 +53,18 @@ def detect():
         out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.used,compute_cap,driver_version",
                               "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=15).stdout
         for line in out.strip().splitlines():
-            name, total, used, cap, driver = [x.strip() for x in line.split(",")]
-            hw["gpus"].append({"name": name, "vram_total": int(total) * MB, "vram_used": int(used) * MB,
-                               "cuda_arch": cap.replace(".", ""), "driver": driver})
+            parts = [x.strip() for x in line.rsplit(",", 4)]      # the name is first and may itself contain commas
+            try:
+                name, total, used, cap, driver = parts
+                hw["gpus"].append({"name": name, "vram_total": int(total) * MB, "vram_used": int(used) * MB,
+                                   "cuda_arch": cap.replace(".", ""), "driver": driver})
+            except ValueError:
+                print(f"  note: could not read this nvidia-smi line, skipped: {line!r}", file=sys.stderr)
     except (OSError, subprocess.SubprocessError):
         pass
+    if len(hw["gpus"]) > 1:
+        print(f"  note: {len(hw['gpus'])} NVIDIA GPUs found; Shura plans and tunes for the first one ({hw['gpus'][0]['name']}) only",
+              file=sys.stderr)
     with open("/proc/meminfo") as f:
         mem = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in f}
     hw["ram_total"], hw["ram_available"] = mem["MemTotal"], mem["MemAvailable"]
@@ -160,7 +167,10 @@ def remote_layout(quant, files):
     name = QUANT_FILE.format(quant)
     size = files[name][0]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cached = CACHE_DIR / f"{name}.header"
+    cached = CACHE_DIR / f"{name}.{size}.header"      # keyed by size too: a re-uploaded quant must not reuse an old layout
+    for old in CACHE_DIR.glob(f"{name}.*header"):
+        if old != cached:
+            old.unlink(missing_ok=True)
     want = 16 * MB
     while True:
         if cached.exists() and cached.stat().st_size >= want:
@@ -168,7 +178,7 @@ def remote_layout(quant, files):
         else:
             req = urllib.request.Request(f"{HF_BASE}/{name}", headers={"Range": f"bytes=0-{want - 1}"})
             with urllib.request.urlopen(req, timeout=60) as r:
-                data = r.read()
+                data = r.read(want)              # a server that ignores Range sends the whole 20 GB file: read only what we asked for
             cached.write_bytes(data)
         try:
             return parse_gguf_header(data, size)
@@ -369,7 +379,20 @@ def decode_speed(srv, turn, runs):
     return sorted(speeds)[len(speeds) // 2]
 
 
+def cleanup_autotune(work):
+    """The tuning saves a long-context KV slot (hundreds of MB) per run: delete it, keep the small logs."""
+    for f in Path(work).glob("*.bin"):
+        f.unlink(missing_ok=True)
+
+
 def autotune(args):
+    try:
+        _autotune(args)
+    finally:
+        cleanup_autotune(CACHE_DIR / "autotune")
+
+
+def _autotune(args):
     hw = detect()
     gpu = hw["gpus"][0]
     layout = read_local_layout(args.model)
@@ -469,6 +492,37 @@ def autotune(args):
                       "decode_full": round(best.get("full_ctx_speed", 0), 1)}))
 
 
+# What the tuning measures and therefore owns; everything else in an existing config is the user's and survives a rerun.
+TUNED_MODEL_KEYS = ("modelPath", "mmprojPath", "threads", "threadsBatch", "nCpuMoe", "cacheTypeK", "cacheTypeV", "moeCacheSlots",
+                    "vramFreeMinGBToLoad", "visionOverrides")
+
+
+def _read_json(path):
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def merge_model_config(old, new):
+    """`new` is what the tuning produced for tiel-coder. The user's other models, their default model and their own settings of
+    tiel-coder (context, sampling, reasoning, ...) are kept."""
+    out = {**old, "exePath": new["exePath"], "cacheRamMB": new["cacheRamMB"]}
+    out.setdefault("defaultModel", new["defaultModel"])
+    models = dict(old.get("models") or {})
+    mine = models.get("tiel-coder") if isinstance(models.get("tiel-coder"), dict) else {}
+    models["tiel-coder"] = {**new["models"]["tiel-coder"], **{k: v for k, v in mine.items() if k not in TUNED_MODEL_KEYS}}
+    out["models"] = models
+    return out
+
+
+def merge_guardian(old, new):
+    """Every setting the user made (vramGuard, gameMode, polite CPU, idle unload, ...) stays; new keys of the example are added
+    and the RAM threshold measured by the tuning is updated."""
+    return {**new, **old, "ramFreeMinGBToLoad": new["ramFreeMinGBToLoad"]}
+
+
 def write_config(args, layout, hw, best, cache_type, threads, desktop_ram):
     gpu = hw["gpus"][0]
     p = place(layout, gpu, hw["ram_total"], desktop_ram, ncmoe=best["ncmoe"])
@@ -489,10 +543,14 @@ def write_config(args, layout, hw, best, cache_type, threads, desktop_ram):
     }
     guardian = json.loads((cfg_dir / "guardian.example.json").read_text())
     guardian["ramFreeMinGBToLoad"] = round(p["ram_llama"] / GB + 1.0, 1)
-    for name, data in (("model-launch.json", model), ("guardian.json", guardian)):
+    for name, data, merge in (("model-launch.json", model, merge_model_config), ("guardian.json", guardian, merge_guardian)):
         target = cfg_dir / name
         if target.exists():
-            shutil.copy(target, target.with_suffix(f".json.bak-{time.strftime('%Y%m%d-%H%M%S')}"))
+            old = _read_json(target)
+            backup = target.with_suffix(f".json.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+            shutil.copy(target, backup)
+            data = merge(old, data) if old is not None else data
+            log(f"{name}: your settings are kept, only what the tuning measured is updated (previous file: {backup.name})")
         tmp = target.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n")
         tmp.replace(target)

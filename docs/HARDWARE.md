@@ -25,9 +25,9 @@ backend probe (which build works) ───────────────�
   root, and the number is what decides the speed). The helper reads one big buffer from all cores, the way an inference
   engine reads weights; giving each thread its own allocation measured about a third lower on the reference machine.
 - **Plan** (this page): pure function, no I/O, deterministic.
-- **Probe**: for every backend that could run your GPU, a 10-second self-test on a tiny model; the best working one wins.
-  AMD and Intel usually have two candidates (ROCm or Vulkan; SYCL, Vulkan or OpenVINO), and community benchmarks show that
-  neither always wins, so it is measured rather than guessed.
+- **Probe**: by default, a 10-second self-test tries Vulkan and then CPU on a tiny model. `shura install --backend X`
+  explicitly opts into one experimental backend (`cuda`, `rocm`, `hip`, `sycl` or `metal`); if it fails the self-test,
+  the installer tries Vulkan and then CPU. The large model is requested only after a backend passes its self-test.
 - **Calibrate**: a short real benchmark on the chosen model corrects the prediction and picks threads and NUMA mode.
 
 ## Hardware profile (JSON, `schema: 1`)
@@ -182,8 +182,9 @@ score = quality(quant)^1.0  x  quality(KV type)  x  (window / model maximum)^0.4
 - **Model**: among the models whose best candidate reaches the comfortable speed (20 tok/s) the most capable wins; if none
   does, among those that reach the minimum; if none does, the fastest that fits, with a warning. If nothing fits, the plan is
   a refusal with the reason.
-- **Backends.** NVIDIA: CUDA, then Vulkan. AMD: ROCm and Vulkan. Intel: SYCL, Vulkan and OpenVINO. Apple: Metal. No GPU:
-  CPU. With more than one candidate the installer measures them.
+- **Backends.** The installer default is Vulkan, then CPU. CUDA, ROCm/HIP, SYCL and Metal are experimental choices available
+  only through `--backend X`; the installer tries the requested backend first and falls back to Vulkan, then CPU. It does not
+  benchmark several GPU backends and silently choose one.
 
 **Profiles.** The weights are exponents, so a different priority is a different weight, not different code:
 `--optimize balanced` (default), `fast` (short window, speed counts more), `long` (the biggest window), `quality` (the quant
@@ -222,6 +223,34 @@ value with data.
 - Several GPUs: the largest one is planned for; a multi-GPU split is not planned yet.
 - The efficiency constants come from one machine. Expect the prediction to be wrong by a factor on other hardware,
   more on dual-socket servers. That is why calibration exists and why reports matter.
+
+## Experimental backends and hardware reports
+
+`--backend X` marks an explicit experiment. The installer prints the requested backend and records whether it passed or
+fell back. `shura status` repeats that marker, so a running Vulkan fallback is not mistaken for a successful ROCm, HIP, SYCL,
+Metal or CUDA run. Reports are local until you choose to share them.
+
+| Backend | Current evidence | Notes |
+|---|---|---|
+| Vulkan | Fixture-tested default and self-test fallback; no real universal-installer run yet | Uses q8_0 K/V; MTP and expert caches are off in the default path |
+| HIP fork (ROCm) | Verified example: AMD Radeon RX 7800 XT (`gfx1101`), build and benchmark comparison in `REPORT-AMD1e.md` (2026-10-16) | HIP was faster than Vulkan in the measured Tiel setup; the universal installer path remains experimental |
+| ROCm upstream | Fixture-tested; not verified as the universal-installer path on a real machine | Select with `shura install --backend rocm` |
+| SYCL, Metal, CUDA | Fixture/planner coverage only; no real universal-installer hardware report | Select one backend explicitly; an unavailable build falls back to Vulkan |
+
+When reporting a result, include the fields below. Remove usernames, home paths, hostnames, model paths and tokens from
+logs before sharing. `shura report` writes a local report; `shura report --issue` only opens a pre-filled link for you.
+
+```text
+Hardware / GPU model / VRAM:
+OS and driver or runtime versions:
+Command: shura install --backend <cuda|rocm|hip|sycl|metal>
+Requested backend / backend shown by shura status:
+Self-test result and whether Vulkan fallback was used:
+Model, quant, KV type, context:
+Install result and measured speed:
+Errors or short log excerpt (scrubbed):
+llama.cpp release or build commit:
+```
 
 ## Status of each platform
 

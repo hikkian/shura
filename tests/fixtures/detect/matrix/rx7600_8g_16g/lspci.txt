@@ -1,0 +1,2 @@
+03:00.0 "VGA compatible controller" "Advanced Micro Devices, Inc. [AMD/ATI]" "Navi 33 [Radeon RX 7600/7600 XT/7650 GRE/7700S / PRO W7600]" -rc8 -p00 "Gigabyte Technology Co., Ltd" "Device 2413"
+00:14.0 "Ethernet controller" "Intel Corporation" "Ethernet Connection (17) I219-V" -r11 -p00 "ASRock" "Device 0100"

@@ -1,0 +1,680 @@
+# CACHEX1d: Gemma merged-gate architecture layered over stage2+stage3; enables pinned source and two-channel routing.
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -341,7 +341,7 @@
+     // MoE expert cache (hot/cold split): GPU-resident packs of the S most
+     // frequently routed experts of a CPU-offloaded layer + id remap tables.
+     // Cold side reuses the original ffn_*_exps tensors with hot ids masked to -1.
+-    struct ggml_tensor * ffn_gate_exps_hot = nullptr;
++    struct ggml_tensor * ffn_gate_exps_hot = nullptr; // gate_up pack when the source is merged
+     struct ggml_tensor * ffn_down_exps_hot = nullptr;
+     struct ggml_tensor * ffn_up_exps_hot   = nullptr;
+     struct ggml_tensor * moe_map_hot       = nullptr; // i32[n_expert]: pack slot or -1
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1463,8 +1463,8 @@
+         __func__, load_mode_name);
+ 
+     if (params.moe_cache_pinned_source) {
+-        if (arch != LLM_ARCH_QWEN35MOE || devices.size() != 1 || devices.front().is_meta || params.no_host) {
+-            throw std::runtime_error("pinned expert sources require qwen35moe, one GPU, and host buffers");
++        if ((arch != LLM_ARCH_QWEN35MOE && arch != LLM_ARCH_GEMMA4) || devices.size() != 1 || devices.front().is_meta || params.no_host) {
++            throw std::runtime_error("pinned expert sources require qwen35moe or gemma4, one GPU, and host buffers");
+         }
+         ml.moe_cache_pinned_buft = ggml_backend_dev_host_buffer_type(devices.front().dev);
+         if (!ml.moe_cache_pinned_buft) {
+@@ -1891,6 +1891,10 @@
+     return true;
+ }
+ 
++static ggml_tensor * moe_cache_gate(const llama_layer & layer) {
++    return layer.ffn_gate_up_exps ? layer.ffn_gate_up_exps : layer.ffn_gate_exps;
++}
++
+ void llama_model_base::init_moe_expert_cache() {
+     // flags take precedence; env vars kept as a fallback
+     const char * profile_path = params.moe_cache_profile;
+@@ -1898,9 +1902,9 @@
+     const char * cache_policy = params.moe_cache_policy ? params.moe_cache_policy : "static";
+     const bool hybrid = strcmp(cache_policy, "hybrid") == 0;
+     const bool two_channel = strcmp(cache_policy, "two-channel") == 0;
+-    if (two_channel && (arch != LLM_ARCH_QWEN35MOE || devices.size() != 1 || devices.front().is_meta ||
++    if (two_channel && ((arch != LLM_ARCH_QWEN35MOE && arch != LLM_ARCH_GEMMA4) || devices.size() != 1 || devices.front().is_meta ||
+             hparams.n_expert_used() > 8)) {
+-        throw std::runtime_error("two-channel expert cache requires qwen35moe and one GPU");
++        throw std::runtime_error("two-channel expert cache requires qwen35moe or gemma4 and one GPU");
+     }
+     if (strcmp(cache_policy, "static") != 0 && !hybrid && !two_channel) {
+         LLAMA_LOG_WARN("%s: unknown expert cache policy '%s'; cache disabled\n", __func__, cache_policy);
+@@ -1997,8 +2001,8 @@
+     std::vector<int> pack_layers;
+     for (int il = 0; il < (int) layers.size(); il++) {
+         const auto & l = layers[il];
+-        if (l.ffn_gate_exps && l.ffn_up_exps && l.ffn_down_exps && freq.count(il) &&
+-            l.ffn_gate_exps->buffer && ggml_backend_buft_is_host(ggml_backend_buffer_get_type(l.ffn_gate_exps->buffer))) {
++        if (moe_cache_gate(l) && (l.ffn_gate_up_exps || l.ffn_up_exps) && l.ffn_down_exps && freq.count(il) &&
++            moe_cache_gate(l)->buffer && ggml_backend_buft_is_host(ggml_backend_buffer_get_type(moe_cache_gate(l)->buffer))) {
+             pack_layers.push_back(il);
+         }
+     }
+@@ -2013,7 +2017,7 @@
+             for (int il : pack_layers) {
+                 std::vector<std::pair<int64_t, int32_t>> ranked;
+                 for (const auto & [expert, count] : freq[il]) {
+-                    if (expert < layers[il].ffn_gate_exps->ne[2]) {
++                    if (expert < moe_cache_gate(layers[il])->ne[2]) {
+                         ranked.push_back({-count, expert});
+                     }
+                 }
+@@ -2049,19 +2053,19 @@
+ 
+     for (int il : pack_layers) {
+         auto & l = layers[il];
+-        const ggml_tensor * g = l.ffn_gate_exps;
++        const ggml_tensor * g = moe_cache_gate(l);
+         const ggml_tensor * u = l.ffn_up_exps;
+         const ggml_tensor * d = l.ffn_down_exps;
+         const int64_t n_expert = g->ne[2];
+         const int64_t S = std::min<int64_t>(n_slots, n_expert);
+         const int64_t capacity = S + (two_channel ? llama_moe_channel_policy::transient_slots : 0);
+         l.ffn_gate_exps_hot = ggml_new_tensor_3d(ctx, g->type, g->ne[0], g->ne[1], capacity);
+-        l.ffn_up_exps_hot   = ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], capacity);
++        l.ffn_up_exps_hot   = u ? ggml_new_tensor_3d(ctx, u->type, u->ne[0], u->ne[1], capacity) : nullptr;
+         l.ffn_down_exps_hot = ggml_new_tensor_3d(ctx, d->type, d->ne[0], d->ne[1], capacity);
+         l.moe_map_hot       = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, n_expert);
+         l.moe_map_cold      = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, n_expert);
+-        ggml_format_name(l.ffn_gate_exps_hot, "blk.%d.ffn_gate_exps_hot", il);
+-        ggml_format_name(l.ffn_up_exps_hot,   "blk.%d.ffn_up_exps_hot",   il);
++        ggml_format_name(l.ffn_gate_exps_hot, l.ffn_gate_up_exps ? "blk.%d.ffn_gate_up_exps_hot" : "blk.%d.ffn_gate_exps_hot", il);
++        if (l.ffn_up_exps_hot) ggml_format_name(l.ffn_up_exps_hot, "blk.%d.ffn_up_exps_hot", il);
+         ggml_format_name(l.ffn_down_exps_hot, "blk.%d.ffn_down_exps_hot", il);
+         ggml_format_name(l.moe_map_hot,  "blk.%d.moe_map_hot",  il);
+         ggml_format_name(l.moe_map_cold, "blk.%d.moe_map_cold", il);
+@@ -2094,7 +2098,7 @@
+     size_t total_bytes = 0;
+     for (int il : pack_layers) {
+         auto & l = layers[il];
+-        const int64_t n_expert = l.ffn_gate_exps->ne[2];
++        const int64_t n_expert = moe_cache_gate(l)->ne[2];
+         const int64_t S = std::min<int64_t>(n_slots, n_expert);
+ 
+         std::vector<std::pair<int64_t, int32_t>> ranked; // (-count, expert)
+@@ -2129,9 +2133,10 @@
+                     const int32_t e = ranked[s].second;
+                     map_hot[e]  = (int32_t) s;
+                     map_cold[e] = -1;
+-                    const ggml_tensor * srcs[3] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
++                    const ggml_tensor * srcs[3] = { moe_cache_gate(l), l.ffn_up_exps, l.ffn_down_exps };
+                     ggml_tensor * dsts[3] = { l.ffn_gate_exps_hot, l.ffn_up_exps_hot, l.ffn_down_exps_hot };
+                     for (int t = 0; t < 3; t++) {
++                        if (!srcs[t]) continue;
+                         const size_t nb = srcs[t]->nb[2];
+                         slab.resize(nb);
+                         ggml_backend_tensor_get(srcs[t], slab.data(), e*nb, nb);
+@@ -2147,9 +2152,10 @@
+                     if (e < 0) continue;
+                     map_hot[e] = (int32_t) s;
+                     map_cold[e] = -1;
+-                    const ggml_tensor * srcs[3] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
++                    const ggml_tensor * srcs[3] = { moe_cache_gate(l), l.ffn_up_exps, l.ffn_down_exps };
+                     ggml_tensor * dsts[3] = { l.ffn_gate_exps_hot, l.ffn_up_exps_hot, l.ffn_down_exps_hot };
+                     for (int t = 0; t < 3; t++) {
++                        if (!srcs[t]) continue;
+                         const size_t nb = srcs[t]->nb[2];
+                         slab.resize(nb);
+                         ggml_backend_tensor_get(srcs[t], slab.data(), e*nb, nb);
+@@ -2164,9 +2170,10 @@
+                 const int32_t e = ranked[s].second;
+                 map_hot[e]  = (int32_t) s;
+                 map_cold[e] = -1;
+-                const ggml_tensor * srcs[3] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
++                const ggml_tensor * srcs[3] = { moe_cache_gate(l), l.ffn_up_exps, l.ffn_down_exps };
+                 ggml_tensor * dsts[3] = { l.ffn_gate_exps_hot, l.ffn_up_exps_hot, l.ffn_down_exps_hot };
+                 for (int t = 0; t < 3; t++) {
++                    if (!srcs[t]) continue;
+                     const size_t nb = srcs[t]->nb[2];
+                     slab.resize(nb);
+                     ggml_backend_tensor_get(srcs[t], slab.data(), e*nb, nb);
+@@ -2192,13 +2199,14 @@
+         }
+         if (probe_backend && !ranked.empty() && !hybrid) {
+             const int32_t expert = ranked.front().second;
+-            const ggml_tensor * sources[] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
++            const ggml_tensor * sources[] = { moe_cache_gate(l), l.ffn_up_exps, l.ffn_down_exps };
+             ggml_tensor * targets[] = { l.ffn_gate_exps_hot, l.ffn_up_exps_hot, l.ffn_down_exps_hot };
+             size_t bytes = 0;
+             ggml_backend_synchronize(probe_backend.get());
+             const int64_t start_us = ggml_time_us();
+             for (int copy = 0; copy < probe_copies; ++copy) {
+                 for (int projection = 0; projection < 3; ++projection) {
++                    if (!sources[projection] || !targets[projection]) continue;
+                     const size_t size = sources[projection]->nb[2];
+                     const char * source = (const char *) sources[projection]->data + size_t(expert)*size;
+                     ggml_backend_tensor_set_async(probe_backend.get(), targets[projection], source, 0, size);
+@@ -2208,7 +2216,7 @@
+             ggml_backend_synchronize(probe_backend.get());
+             const int64_t elapsed_us = std::max<int64_t>(1, ggml_time_us() - start_us);
+             LLAMA_LOG_INFO("moe_cache_copy_probe: layer=%d source=%s copies=%d bytes=%zu us=%lld GBps=%.3f\n",
+-                    il, ggml_backend_buffer_name(l.ffn_gate_exps->buffer), probe_copies, bytes,
++                    il, ggml_backend_buffer_name(moe_cache_gate(l)->buffer), probe_copies, bytes,
+                     (long long) elapsed_us, double(bytes)/double(elapsed_us)/1000.0);
+         }
+     }
+@@ -2252,8 +2260,8 @@
+         const auto & layer = layers[route.layer];
+         if (state == pimpl->moe_cache_hybrid_layers.end() || layer.moe_map_hot == nullptr ||
+                 layer.moe_map_cold == nullptr || layer.ffn_gate_exps_hot == nullptr ||
+-                layer.ffn_up_exps_hot == nullptr || layer.ffn_down_exps_hot == nullptr ||
+-                layer.ffn_gate_exps == nullptr || layer.ffn_up_exps == nullptr || layer.ffn_down_exps == nullptr) {
++                (!layer.ffn_gate_up_exps && layer.ffn_up_exps_hot == nullptr) || layer.ffn_down_exps_hot == nullptr ||
++                moe_cache_gate(layer) == nullptr || (!layer.ffn_gate_up_exps && layer.ffn_up_exps == nullptr) || layer.ffn_down_exps == nullptr) {
+             return false;
+         }
+         ggml_backend_t backend = ggml_backend_sched_get_tensor_backend(sched, layer.moe_map_hot);
+@@ -2290,7 +2298,7 @@
+         }
+         route_batch batch{route.layer, route.n_expert_used, route.n_tokens, std::vector<int32_t>(n_ids)};
+         ggml_backend_tensor_get(route.ids_flat, batch.ids.data(), 0, n_ids * sizeof(int32_t));
+-        const int32_t n_expert = int32_t(layers[route.layer].ffn_gate_exps->ne[2]);
++        const int32_t n_expert = int32_t(moe_cache_gate(layers[route.layer])->ne[2]);
+         if (std::any_of(batch.ids.begin(), batch.ids.end(), [n_expert](int32_t id) {
+                     return id < 0 || id >= n_expert;
+                 })) {
+@@ -2363,7 +2371,7 @@
+     for (const auto & [il, changes] : changed) {
+         auto & layer = layers[il];
+         if (layer.moe_map_hot == nullptr || layer.moe_map_cold == nullptr ||
+-                layer.ffn_gate_exps_hot == nullptr || layer.ffn_up_exps_hot == nullptr ||
++                layer.ffn_gate_exps_hot == nullptr || (!layer.ffn_gate_up_exps && layer.ffn_up_exps_hot == nullptr) ||
+                 layer.ffn_down_exps_hot == nullptr) {
+             return false;
+         }
+@@ -2372,13 +2380,14 @@
+             copy_backends.push_back(backend);
+         }
+ 
+-        const ggml_tensor * sources[3] = {layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_down_exps};
++        const ggml_tensor * sources[3] = {moe_cache_gate(layer), layer.ffn_up_exps, layer.ffn_down_exps};
+         ggml_tensor * targets[3] = {layer.ffn_gate_exps_hot, layer.ffn_up_exps_hot, layer.ffn_down_exps_hot};
+         for (const auto & change : changes.slots) {
+             if (change.new_expert < 0) {
+                 continue;
+             }
+             for (int projection = 0; projection < 3; ++projection) {
++                if (!sources[projection]) continue;
+                 const size_t src_bytes = sources[projection]->nb[2];
+                 const size_t dst_bytes = targets[projection]->nb[2];
+                 if (src_bytes != dst_bytes ||
+@@ -2397,7 +2406,7 @@
+             ++copies;
+         }
+ 
+-        const int64_t n_expert = layer.ffn_gate_exps->ne[2];
++        const int64_t n_expert = moe_cache_gate(layer)->ne[2];
+         staged_map map{il, backend, std::vector<int32_t>(n_expert, -1), std::vector<int32_t>(n_expert)};
+         for (int32_t expert = 0; expert < n_expert; ++expert) {
+             map.cold[expert] = expert;
+@@ -2489,10 +2498,11 @@
+             ids->type != GGML_TYPE_I32 || ids->ne[0] < 1 || ids->ne[0] > 8 ||
+             ids->ne[1] < 1 || ids->ne[1] > 8) return false;
+     auto & layer = layers[il];
+-    ggml_tensor * sources[] = {layer.ffn_gate_exps, layer.ffn_up_exps, layer.ffn_down_exps};
++    ggml_tensor * sources[] = {moe_cache_gate(layer), layer.ffn_up_exps, layer.ffn_down_exps};
+     ggml_tensor * targets[] = {layer.ffn_gate_exps_hot, layer.ffn_up_exps_hot, layer.ffn_down_exps_hot};
+     for (int projection = 0; projection < 3; ++projection) {
+-        if (!sources[projection] || !targets[projection] || !sources[projection]->data ||
++        if (!sources[projection] || !targets[projection]) continue;
++        if (!sources[projection]->data ||
+                 !sources[projection]->buffer || !ggml_backend_buffer_is_host(sources[projection]->buffer) ||
+                 sources[projection]->nb[2] != targets[projection]->nb[2] ||
+                 targets[projection]->ne[2] != runtime.policy.capacity()) return false;
+@@ -2516,6 +2526,7 @@
+     uint64_t bytes = 0, insertions = 0;
+     for (const auto & entry : plan.uploads) {
+         for (int projection = 0; projection < 3; ++projection) {
++            if (!sources[projection] || !targets[projection]) continue;
+             const size_t size = sources[projection]->nb[2];
+             const char * source = (const char *) sources[projection]->data + size_t(entry.expert)*size;
+             ggml_backend_tensor_set_async(gpu, targets[projection], source, size_t(entry.slot)*size, size);
+@@ -2698,24 +2709,24 @@
+     int64_t max_experts = 0;
+     for (const auto & [il, _] : pimpl->moe_cache_rankings) {
+         auto & l = layers[il];
+-        const int64_t n_expert = l.ffn_gate_exps->ne[2];
++        const int64_t n_expert = moe_cache_gate(l)->ne[2];
+         if (n_slots > n_expert) {
+             return false;
+         }
+         const int64_t slots = std::min<int64_t>(n_slots, n_expert);
+         resized_layer next = {
+             il,
+-            ggml_new_tensor_3d(ctx.get(), l.ffn_gate_exps->type, l.ffn_gate_exps->ne[0], l.ffn_gate_exps->ne[1], slots),
+-            ggml_new_tensor_3d(ctx.get(), l.ffn_up_exps->type, l.ffn_up_exps->ne[0], l.ffn_up_exps->ne[1], slots),
++            ggml_new_tensor_3d(ctx.get(), moe_cache_gate(l)->type, moe_cache_gate(l)->ne[0], moe_cache_gate(l)->ne[1], slots),
++            l.ffn_up_exps ? ggml_new_tensor_3d(ctx.get(), l.ffn_up_exps->type, l.ffn_up_exps->ne[0], l.ffn_up_exps->ne[1], slots) : nullptr,
+             ggml_new_tensor_3d(ctx.get(), l.ffn_down_exps->type, l.ffn_down_exps->ne[0], l.ffn_down_exps->ne[1], slots),
+             ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, 1, n_expert),
+             ggml_new_tensor_2d(ctx.get(), GGML_TYPE_I32, 1, n_expert),
+         };
+-        if (!next.gate || !next.up || !next.down || !next.map_hot || !next.map_cold) {
++        if (!next.gate || (!l.ffn_gate_up_exps && !next.up) || !next.down || !next.map_hot || !next.map_cold) {
+             return false;
+         }
+-        ggml_format_name(next.gate, "blk.%d.ffn_gate_exps_hot", il);
+-        ggml_format_name(next.up, "blk.%d.ffn_up_exps_hot", il);
++        ggml_format_name(next.gate, l.ffn_gate_up_exps ? "blk.%d.ffn_gate_up_exps_hot" : "blk.%d.ffn_gate_exps_hot", il);
++        if (next.up) ggml_format_name(next.up, "blk.%d.ffn_up_exps_hot", il);
+         ggml_format_name(next.down, "blk.%d.ffn_down_exps_hot", il);
+         ggml_format_name(next.map_hot, "blk.%d.moe_map_hot", il);
+         ggml_format_name(next.map_cold, "blk.%d.moe_map_cold", il);
+@@ -2734,7 +2745,7 @@
+             old_resized.push_back({il, l.ffn_gate_exps_hot, l.ffn_up_exps_hot, l.ffn_down_exps_hot, l.moe_map_hot, l.moe_map_cold});
+         }
+         max_experts = std::max(max_experts, n_expert);
+-        max_slab = std::max(max_slab, std::max(l.ffn_gate_exps->nb[2], std::max(l.ffn_up_exps->nb[2], l.ffn_down_exps->nb[2])));
++        max_slab = std::max(max_slab, std::max(moe_cache_gate(l)->nb[2], std::max(l.ffn_up_exps ? l.ffn_up_exps->nb[2] : 0, l.ffn_down_exps->nb[2])));
+     }
+ 
+     pimpl->ctxs_bufs.reserve(pimpl->ctxs_bufs.size() + 1);
+@@ -2751,14 +2762,14 @@
+         for (const auto & item : target) {
+             auto & l = layers[item.il];
+             const auto & order = pimpl->moe_cache_rankings.at(item.il);
+-            const int64_t n_expert = l.ffn_gate_exps->ne[2];
++            const int64_t n_expert = moe_cache_gate(l)->ne[2];
+             const int64_t slots = item.gate->ne[2];
+             map_hot.assign(n_expert, -1);
+             map_cold.resize(n_expert);
+             for (int64_t e = 0; e < n_expert; e++) {
+                 map_cold[e] = (int32_t) e;
+             }
+-            const ggml_tensor * srcs[3] = { l.ffn_gate_exps, l.ffn_up_exps, l.ffn_down_exps };
++            const ggml_tensor * srcs[3] = { moe_cache_gate(l), l.ffn_up_exps, l.ffn_down_exps };
+             ggml_tensor * dsts[3] = { item.gate, item.up, item.down };
+             const auto order_it = slot_orders.find(item.il);
+             const bool use_hybrid_order = order_it != slot_orders.end();
+@@ -2772,6 +2783,7 @@
+                 map_hot[e] = (int32_t) s;
+                 map_cold[e] = -1;
+                 for (int t = 0; t < 3; t++) {
++                    if (!srcs[t]) continue;
+                     const size_t nb = srcs[t]->nb[2];
+                     slab.resize(nb);
+                     ggml_backend_tensor_get(srcs[t], slab.data(), (size_t)e*nb, nb);
+@@ -2810,6 +2822,7 @@
+         for (const auto & item : old_resized) {
+             ggml_tensor * tensors[5] = {item.gate, item.up, item.down, item.map_hot, item.map_cold};
+             for (ggml_tensor * tensor : tensors) {
++                if (!tensor) continue;
+                 tensor->buffer = nullptr;
+                 tensor->data = nullptr;
+             }
+@@ -2817,6 +2830,7 @@
+         for (const auto & item : resized) {
+             ggml_tensor * tensors[5] = {item.gate, item.up, item.down, item.map_hot, item.map_cold};
+             for (ggml_tensor * tensor : tensors) {
++                if (!tensor) continue;
+                 tensor->buffer = nullptr;
+                 tensor->data = nullptr;
+             }
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1322,6 +1322,7 @@
+         }
+ 
+         const bool expert_weight = tn.tensor == LLM_TENSOR_FFN_GATE_EXPS ||
++                                   tn.tensor == LLM_TENSOR_FFN_GATE_UP_EXPS ||
+                                    tn.tensor == LLM_TENSOR_FFN_UP_EXPS ||
+                                    tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS;
+         const bool pinned_source = moe_cache_pinned_buft && expert_weight &&
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -2061,17 +2061,17 @@
+     cb(selected_experts, "ffn_moe_topk", il);
+ 
+     // MoE expert cache: split routed ids into hot-pack ids and cold ids.
+-    // scope: plain fused-SILU gated FFN (no clamp, no expert biases/scales,
+-    // no pre-FFN weighting) — the dual chains below reproduce exactly that
++    // Both residency chains use the same activation graph as the ordinary path.
+     ggml_tensor * ids_hot  = nullptr;
+     ggml_tensor * ids_cold = nullptr;
+     // the hot/cold split computes both chains for every token; for large (prefill) batches that doubles the expert work
+     // (measured: -24 % prefill at 26k on Occamy), so the cache path is used only for decode-size batches (and MTP drafts)
+-    const bool use_moe_packs = moe_cache && moe_cache->moe_map_hot && !gate_up_exps &&
+-        !up_exps_s && !gate_exps_s && !down_exps_s &&
+-        type_op == LLM_FFN_SILU && gate_exps && !up_exps_b && !gate_exps_b && !weight_before_ffn &&
+-        (il < 0 || hparams.swiglu_clamp_exp[il] <= 1e-6f) && n_tokens <= 8;
+-    const bool two_channel = use_moe_packs && moe_cache->moe_cache_two_channel && arch == LLM_ARCH_QWEN35MOE;
++    const bool use_moe_packs = moe_cache && moe_cache->moe_map_hot &&
++        !up_exps_s && !gate_exps_s &&
++        !up_exps_b && !gate_exps_b && !gate_up_exps_b && !weight_before_ffn &&
++        loras->empty() && (gate_up_exps || up_exps) && n_tokens <= 8;
++    const bool two_channel = use_moe_packs && moe_cache->moe_cache_two_channel &&
++        (arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_GEMMA4);
+     if (use_moe_packs) {
+         ggml_tensor * ids_flat = ggml_cont_1d(ctx0, selected_experts, n_expert_used*n_tokens); // topk ids are a strided view
+         if (moe_cache->moe_cache_hybrid && n_tokens <= 8) {
+@@ -2135,103 +2135,11 @@
+         cb(cur, "ffn_moe_weighted", il);
+     }
+ 
+-    ggml_tensor * up = nullptr;
+-    ggml_tensor * experts = nullptr;
+-
+-    if (use_moe_packs) {
+-        // MoE expert cache: one complete FFN chain per residency side. Each
+-        // chain is unbroken so the scheduler never splices CPU ops between GPU
+-        // ops (that migrates the hot pack weights to CPU every layer). Skipped
+-        // (-1) rows are zero and swiglu(0,0) = 0, so the two chain outputs are
+-        // disjoint and one add reconstructs the exact single-tensor result.
+-        auto build_pack_chain = [&](ggml_tensor * w_gate, ggml_tensor * w_up, ggml_tensor * w_down, ggml_tensor * ids, bool cold) {
+-            ggml_tensor * gate = ggml_mul_mat_id(ctx0, w_gate, cur, ids);
+-            gate->op_params[0] = 1; // ids may contain -1
+-            ggml_tensor * up_p = ggml_mul_mat_id(ctx0, w_up, cur, ids);
+-            up_p->op_params[0] = 1;
+-            ggml_tensor * act = ggml_swiglu_split(ctx0, gate, up_p);
+-            ggml_tensor * down = ggml_mul_mat_id(ctx0, w_down, act, ids);
+-            down->op_params[0] = 1;
+-            if (two_channel && cold) {
+-                for (ggml_tensor * node : {gate, up_p, act, down}) {
+-                    ggml_backend_sched_set_tensor_backend(sched, node, backend_cpu);
+-                }
+-            }
+-            return down;
++    const bool has_gate = gate_exps || gate_up_exps;
++    auto activate = [&](ggml_tensor * cur, ggml_tensor * up, bool emit_callbacks) {
++        auto activation_cb = [&](ggml_tensor * tensor, const char * name, int layer) {
++            if (emit_callbacks) cb(tensor, name, layer);
+         };
+-
+-        // cold chain is built first so its nodes precede the hot chain in the
+-        // graph: the scheduler then emits [cold split, hot split] and, with
+-        // async CPU splits, computes the cold chain on a worker while the
+-        // hot chain (which has no CPU inputs) runs concurrently on the GPU.
+-        // pinning the merge to CPU keeps it out of the hot split so the hot
+-        // split stays free of cross-backend inputs.
+-        ggml_tensor * cold = build_pack_chain(gate_exps, up_exps, down_exps, ids_cold, true);
+-        cb(cold, two_channel ? "ffn_moe_down_cold_tc" : "ffn_moe_down_cold", il);
+-
+-        ggml_tensor * hot = build_pack_chain(moe_cache->ffn_gate_exps_hot, moe_cache->ffn_up_exps_hot, moe_cache->ffn_down_exps_hot, ids_hot, false);
+-        cb(hot, two_channel ? "ffn_moe_down_hot_tc" : "ffn_moe_down_hot", il);
+-
+-        experts = ggml_add(ctx0, cold, hot);
+-        cb(experts, "ffn_moe_down", il);
+-        // decode-size batches only: for large (prefill) batches the CPU merge
+-        // and its per-layer activation copies cost more than the overlap hides
+-        if (cparams.sched_async_cpu && n_tokens <= 8) {
+-            ggml_backend_sched_set_tensor_backend(sched, experts, backend_cpu);
+-        }
+-    } else if (gate_up_exps) {
+-        // merged gate_up path: one mul_mat_id, then split into gate and up views
+-        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
+-        cb(gate_up, "ffn_moe_gate_up", il);
+-
+-        if (up_exps_s) {
+-            cb(gate_up, "ffn_moe_gate_up_scaled", il);
+-        }
+-
+-        if (gate_up_exps_b) {
+-            gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, selected_experts);
+-            cb(gate_up, "ffn_moe_gate_up_biased", il);
+-        }
+-
+-        const int64_t n_ff = gate_up->ne[0] / 2;
+-        cur = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
+-        cb(cur, "ffn_moe_gate", il);
+-        up  = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], n_ff * gate_up->nb[0]);
+-        cb(up, "ffn_moe_up", il);
+-    } else {
+-        // separate gate and up path
+-        up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s); // [n_ff, n_expert_used, n_tokens]
+-        cb(up, "ffn_moe_up", il);
+-
+-        if (up_exps_s) {
+-            cb(up, "ffn_moe_up_scaled", il);
+-        }
+-
+-        if (up_exps_b) {
+-            up = ggml_add_id(ctx0, up, up_exps_b, selected_experts);
+-            cb(up, "ffn_moe_up_biased", il);
+-        }
+-
+-        if (gate_exps) {
+-            cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
+-            cb(cur, "ffn_moe_gate", il);
+-        } else {
+-            cur = up;
+-        }
+-
+-        if (gate_exps_s) {
+-            cb(cur, "ffn_moe_gate_scaled", il);
+-        }
+-
+-        if (gate_exps_b) {
+-            cur = ggml_add_id(ctx0, cur, gate_exps_b, selected_experts);
+-            cb(cur, "ffn_moe_gate_biased", il);
+-        }
+-    }
+-
+-    const bool has_gate = gate_exps || gate_up_exps;
+-
+-    if (!use_moe_packs) {
+         switch (type_op) {
+             case LLM_FFN_SILU:
+                 if (gate_exps) {
+@@ -2243,14 +2151,14 @@
+                                 cur = ggml_swiglu_clamp(ctx0, cur, up, limit);
+                             } else {
+                                 up = ggml_clamp(ctx0, up, -limit, limit);
+-                                cb(up, "ffn_moe_up_clamped", il);
++                                activation_cb(up, "ffn_moe_up_clamped", il);
+                                 ggml_tensor * gate_act = ggml_silu(ctx0, cur);
+-                                cb(gate_act, "ffn_moe_silu", il);
++                                activation_cb(gate_act, "ffn_moe_silu", il);
+                                 gate_act = ggml_clamp(ctx0, gate_act, -INFINITY, limit);
+-                                cb(gate_act, "ffn_moe_silu_clamped", il);
++                                activation_cb(gate_act, "ffn_moe_silu_clamped", il);
+                                 cur = ggml_mul(ctx0, gate_act, up);
+                             }
+-                            cb(cur, "ffn_moe_swiglu_limited", il);
++                            activation_cb(cur, "ffn_moe_swiglu_limited", il);
+                             break;
+                         }
+                     }
+@@ -2258,10 +2166,10 @@
+ 
+                 if (has_gate) {
+                     cur = ggml_swiglu_split(ctx0, cur, up);
+-                    cb(cur, "ffn_moe_swiglu", il);
++                    activation_cb(cur, "ffn_moe_swiglu", il);
+                 } else {
+                     cur = ggml_silu(ctx0, cur);
+-                    cb(cur, "ffn_moe_silu", il);
++                    activation_cb(cur, "ffn_moe_silu", il);
+                 } break;
+             case LLM_FFN_SITU:
+                 {
+@@ -2276,15 +2184,15 @@
+                         up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
+                     }
+                     cur = ggml_mul(ctx0, act, up);
+-                    cb(cur, "ffn_moe_situ", il);
++                    activation_cb(cur, "ffn_moe_situ", il);
+                 } break;
+             case LLM_FFN_GELU:
+                 if (has_gate) {
+                     cur = ggml_geglu_split(ctx0, cur, up);
+-                    cb(cur, "ffn_moe_geglu", il);
++                    activation_cb(cur, "ffn_moe_geglu", il);
+                 } else {
+                     cur = ggml_gelu(ctx0, cur);
+-                    cb(cur, "ffn_moe_gelu", il);
++                    activation_cb(cur, "ffn_moe_gelu", il);
+                 } break;
+             case LLM_FFN_SWIGLU_OAI_MOE:
+                 {
+@@ -2292,15 +2200,15 @@
+                     constexpr float alpha = 1.702f;
+                     constexpr float limit = 7.0f;
+                     cur = ggml_swiglu_oai(ctx0, cur, up, alpha, limit);
+-                    cb(cur, "ffn_moe_swiglu_oai", il);
++                    activation_cb(cur, "ffn_moe_swiglu_oai", il);
+                 } break;
+             case LLM_FFN_RELU:
+                 if (has_gate) {
+                     cur = ggml_reglu_split(ctx0, cur, up);
+-                    cb(cur, "ffn_moe_reglu", il);
++                    activation_cb(cur, "ffn_moe_reglu", il);
+                 } else {
+                     cur = ggml_relu(ctx0, cur);
+-                    cb(cur, "ffn_moe_relu", il);
++                    activation_cb(cur, "ffn_moe_relu", il);
+                 } break;
+             case LLM_FFN_RELU_SQR:
+                 if (has_gate) {
+@@ -2309,11 +2217,132 @@
+                 } else {
+                     cur = ggml_relu(ctx0, cur);
+                     cur = ggml_sqr(ctx0, cur);
+-                    cb(cur, "ffn_moe_relu_sqr", il);
++                    activation_cb(cur, "ffn_moe_relu_sqr", il);
+                 } break;
+             default:
+                 GGML_ABORT("fatal error");
+         }
++
++        return cur;
++    };
++
++    ggml_tensor * up = nullptr;
++    ggml_tensor * experts = nullptr;
++
++    if (use_moe_packs) {
++        // MoE expert cache: one complete FFN chain per residency side. Each
++        // chain is unbroken so the scheduler never splices CPU ops between GPU
++        // ops (that migrates the hot pack weights to CPU every layer). Skipped
++        // (-1) rows are zero and swiglu(0,0) = 0, so the two chain outputs are
++        // disjoint and one add reconstructs the exact single-tensor result.
++        auto build_pack_chain = [&](ggml_tensor * w_gate, ggml_tensor * w_up, ggml_tensor * w_down, ggml_tensor * ids, bool cold_side) {
++            ggml_tensor * gate = nullptr;
++            ggml_tensor * up_p = nullptr;
++            ggml_tensor * merged = nullptr;
++            if (gate_up_exps) {
++                merged = ggml_mul_mat_id(ctx0, w_gate, cur, ids);
++                merged->op_params[0] = 1;
++                const int64_t n_ff = merged->ne[0] / 2;
++                gate = ggml_view_3d(ctx0, merged, n_ff, merged->ne[1], merged->ne[2], merged->nb[1], merged->nb[2], 0);
++                up_p = ggml_view_3d(ctx0, merged, n_ff, merged->ne[1], merged->ne[2], merged->nb[1], merged->nb[2], n_ff * merged->nb[0]);
++            } else {
++                if (w_gate) {
++                    gate = ggml_mul_mat_id(ctx0, w_gate, cur, ids);
++                    gate->op_params[0] = 1;
++                }
++                up_p = ggml_mul_mat_id(ctx0, w_up, cur, ids);
++                up_p->op_params[0] = 1;
++                if (!gate) gate = up_p;
++            }
++            ggml_tensor * act = activate(gate, up_p, false);
++            ggml_tensor * down = ggml_mul_mat_id(ctx0, w_down, act, ids);
++            down->op_params[0] = 1;
++            if (two_channel && cold_side) {
++                for (ggml_tensor * node : {merged, gate, up_p, act, down}) {
++                    if (node) ggml_backend_sched_set_tensor_backend(sched, node, backend_cpu);
++                }
++            }
++            return down;
++        };
++
++        // cold chain is built first so its nodes precede the hot chain in the
++        // graph: the scheduler then emits [cold split, hot split] and, with
++        // async CPU splits, computes the cold chain on a worker while the
++        // hot chain (which has no CPU inputs) runs concurrently on the GPU.
++        // pinning the merge to CPU keeps it out of the hot split so the hot
++        // split stays free of cross-backend inputs.
++        ggml_tensor * cold = build_pack_chain(gate_up_exps ? gate_up_exps : gate_exps, up_exps, down_exps, ids_cold, true);
++        cb(cold, two_channel ? "ffn_moe_down_cold_tc" : "ffn_moe_down_cold", il);
++
++        ggml_tensor * hot = build_pack_chain(moe_cache->ffn_gate_exps_hot, moe_cache->ffn_up_exps_hot, moe_cache->ffn_down_exps_hot, ids_hot, false);
++        cb(hot, two_channel ? "ffn_moe_down_hot_tc" : "ffn_moe_down_hot", il);
++
++        experts = ggml_add(ctx0, cold, hot);
++        cb(experts, "ffn_moe_down", il);
++        // decode-size batches only: for large (prefill) batches the CPU merge
++        // and its per-layer activation copies cost more than the overlap hides
++        if (cparams.sched_async_cpu && n_tokens <= 8) {
++            ggml_backend_sched_set_tensor_backend(sched, experts, backend_cpu);
++        }
++        if (down_exps_s) {
++            ggml_tensor * scale = ggml_reshape_3d(ctx0, down_exps_s, 1, n_expert, 1);
++            scale = ggml_repeat_4d(ctx0, scale, 1, n_expert, n_tokens, 1);
++            scale = ggml_get_rows(ctx0, scale, selected_experts);
++            experts = ggml_mul(ctx0, experts, scale);
++            cb(experts, "ffn_moe_down_scaled", il);
++        }
++    } else if (gate_up_exps) {
++        // merged gate_up path: one mul_mat_id, then split into gate and up views
++        ggml_tensor * gate_up = build_lora_mm_id(gate_up_exps, cur, selected_experts, up_exps_s); // [n_ff*2, n_expert_used, n_tokens]
++        cb(gate_up, "ffn_moe_gate_up", il);
++
++        if (up_exps_s) {
++            cb(gate_up, "ffn_moe_gate_up_scaled", il);
++        }
++
++        if (gate_up_exps_b) {
++            gate_up = ggml_add_id(ctx0, gate_up, gate_up_exps_b, selected_experts);
++            cb(gate_up, "ffn_moe_gate_up_biased", il);
++        }
++
++        const int64_t n_ff = gate_up->ne[0] / 2;
++        cur = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
++        cb(cur, "ffn_moe_gate", il);
++        up  = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], n_ff * gate_up->nb[0]);
++        cb(up, "ffn_moe_up", il);
++    } else {
++        // separate gate and up path
++        up = build_lora_mm_id(up_exps, cur, selected_experts, up_exps_s); // [n_ff, n_expert_used, n_tokens]
++        cb(up, "ffn_moe_up", il);
++
++        if (up_exps_s) {
++            cb(up, "ffn_moe_up_scaled", il);
++        }
++
++        if (up_exps_b) {
++            up = ggml_add_id(ctx0, up, up_exps_b, selected_experts);
++            cb(up, "ffn_moe_up_biased", il);
++        }
++
++        if (gate_exps) {
++            cur = build_lora_mm_id(gate_exps, cur, selected_experts, gate_exps_s); // [n_ff, n_expert_used, n_tokens]
++            cb(cur, "ffn_moe_gate", il);
++        } else {
++            cur = up;
++        }
++
++        if (gate_exps_s) {
++            cb(cur, "ffn_moe_gate_scaled", il);
++        }
++
++        if (gate_exps_b) {
++            cur = ggml_add_id(ctx0, cur, gate_exps_b, selected_experts);
++            cb(cur, "ffn_moe_gate_biased", il);
++        }
++    }
++
++    if (!use_moe_packs) {
++        cur = activate(cur, up, true);
+ 
+         experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
+         cb(experts, "ffn_moe_down", il);
+--- a/src/models/gemma4.cpp
++++ b/src/models/gemma4.cpp
+@@ -307,7 +307,8 @@
+                     model.layers[il].ffn_gate_up_exps,
+                     model.layers[il].ffn_up_exps_s,
+                     model.layers[il].ffn_gate_exps_s,
+-                    model.layers[il].ffn_down_exps_s);
++                    model.layers[il].ffn_down_exps_s,
++                    nullptr, &model.layers[il]);
+             cur_moe = build_norm(cur_moe,
+                     model.layers[il].ffn_post_norm_2, nullptr,
+                     LLM_NORM_RMS, il);
