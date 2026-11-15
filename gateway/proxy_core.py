@@ -232,12 +232,13 @@ def forward_request(handler, body, host, port, config=None, lease=None, observe=
             try:
                 guard = lang_guard.StreamGuard(lang_guard_lang,
                     lambda answer: _rewrite_language(host, port, handler, body, answer, lang_guard_lang, cfg))
+                pieces = []
                 while True:
                     data = reply.read1(65536)
                     if not data:
                         break
-                    guard.feed(data)
-                payload = guard.finish_bytes()
+                    pieces.append(guard.feed(data))
+                payload = b"".join(pieces) + guard.finish_bytes()
             except (OSError, http.client.HTTPException, TimeoutError):
                 return _reply_error(handler, result, 502,
                     error_body("llama-server answer was cut before language check completed", "api_error", "SHURA_UPSTREAM_INTERRUPTED"))
