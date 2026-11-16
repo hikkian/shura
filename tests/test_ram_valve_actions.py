@@ -3,6 +3,7 @@
 The readings come from a fake /proc tree (ramGuardProcRoot), so the levels move on demand. Nothing real is exhausted.
 """
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -90,19 +91,25 @@ class RamValveActions(unittest.TestCase):
         self.assertEqual(self.gw.status()["status"], "READY")
         self.assertNotIn("ram_valve_yield", self.gw.log())
 
-    def test_tight_defers_a_large_new_prompt_and_keeps_small_ones(self):
+    def test_tight_defers_a_large_new_prompt_only_while_the_desktop_floor_would_not_hold(self):
+        # RAMFIX1: tight (< 6 GiB) alone no longer answers 503: a large prompt goes on while MemAvailable stays >= ramDeskFloorGB (4);
+        # below that the gateway waits itself and goes on when it holds; only a wait that never ends in room gives the 503
         write_meminfo(self.proc, 8.0)
-        self.start({"ramGuard": True, "ramValveDeferChars": 200})
+        self.start({"ramGuard": True, "ramValveDeferChars": 200, "ramValveDeferWaitSeconds": 3})
         self.assertEqual(self.gw.chat(content=REQUEST_SHORT, timeout=120)[0], 200)
-        write_meminfo(self.proc, 5.5)                       # tight
+        write_meminfo(self.proc, 5.5)                       # tight, the floor holds
         self.wait_until(lambda: "ram_guard_level" in self.gw.log(), what="the tight level event")
-        status, payload = self.gw.chat(content="x" * 1000, timeout=30)   # a large new prompt
-        self.assertEqual(status, 503)
+        self.assertEqual(self.gw.chat(content="x" * 1000, timeout=30)[0], 200)
+        self.assertNotIn("ram_valve_defer", self.gw.log())
+        write_meminfo(self.proc, 4.02)                      # tight, and the prompt would take the desktop below 4 GiB
+        status, payload = self.gw.chat(content="y" * 2000, timeout=30)
+        self.assertEqual(status, 503)                        # 3 s of waiting never made the room: the honest answer
         self.assertIn("System memory is tight", str(payload))
-        status, _ = self.gw.chat(content=REQUEST_SHORT, timeout=60)      # a small one goes through
-        self.assertEqual(status, 200)
-        self.assertIn("ram_valve_defer_prefill", self.gw.log())
-
+        self.assertIn("ram_valve_defer_wait", self.gw.log())
+        self.assertEqual(self.gw.chat(content=REQUEST_SHORT, timeout=60)[0], 200)      # a small one goes through
+        threading.Timer(1.0, write_meminfo, (self.proc, 5.5)).start()                 # memory comes back while it waits
+        self.assertEqual(self.gw.chat(content="z" * 3000, timeout=30)[0], 200)
+        self.assertIn("ram_valve_defer_done", self.gw.log())
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,6 +34,8 @@ DEFAULTS = {
     "progress_step_ms": 100,    # ... this far apart (llama-server sends one per batch while it reads the prompt)
     "health_status": None,      # force /health to answer this status (e.g. 500)
     "exit_after_seconds": None, # the process exits by itself after this long (a crash while idle)
+    "idle_pause_tokens": None,  # RAMFIX1: set while running: the governor pauses the idle server (2026-11-16 14:43): writes
+                                # vram-pause.bin (processing false, this many tokens) and vram-exit.json, then exits 75
     "cors": False,              # answer like llama-server's default CORS: Access-Control-Allow-Origin = the caller, with credentials
     "stall_after_tokens": None, # go silent (connection stays open) after this many streamed tokens ...
     "stall_seconds": 3600,      # ... for this long
@@ -444,6 +446,30 @@ HELP = """usage: llama-server [options]
 """
 
 
+def watch_idle_pause():
+    """RAMFIX1: an idle pause nobody resumes: no stream carries a pause frame, the files stay behind, the exit code is 75."""
+    while True:
+        tokens = behaviour().get("idle_pause_tokens")
+        if tokens:
+            argv = ARGS.get("argv", [])
+            slot_dir = Path(argv[argv.index("--slot-save-path") + 1]) if "--slot-save-path" in argv else Path(".")
+            slot_dir.mkdir(parents=True, exist_ok=True)
+            (slot_dir / "vram-pause.bin").write_bytes(b"fake-idle-pause" * 64)
+            (slot_dir / "vram-pause.bin.tokens.json").write_text(json.dumps({
+                "slot": 0, "reason": "short_stall", "n_past": int(tokens), "tokens": [1] * 4, "multimodal": False,
+                "processing": False, "prompt_done": True, "generated_tokens": 0, "patch_set": "", "patch_hash": ""}))
+            (slot_dir / "vram-exit.json").write_text(json.dumps({"state": "PAUSING", "exit_code": 75}))
+            path = os.environ.get("FAKE_LLAMA_CONFIG")
+            if path and Path(path).is_file():
+                cur = json.loads(Path(path).read_text())
+                cur.pop("idle_pause_tokens", None)
+                Path(path).write_text(json.dumps(cur))
+            RUNTIME.pop("idle_pause_tokens", None)
+            time.sleep(1.5)                 # the real server is still alive while it writes (150-2345 ms on 2026-11-16)
+            os._exit(75)
+        time.sleep(0.1)
+
+
 def main(argv):
     if "--help" in argv or "-h" in argv:
         print(HELP)
@@ -459,6 +485,7 @@ def main(argv):
     parse_args(argv)
     srv = ThreadingHTTPServer((ARGS["host"], ARGS["port"]), Handler)
     srv.daemon_threads = True
+    threading.Thread(target=watch_idle_pause, daemon=True).start()
     exit_after = behaviour()["exit_after_seconds"]
     if exit_after:
         threading.Timer(float(exit_after), lambda: os._exit(1)).start()

@@ -35,7 +35,13 @@ class FakeNvml:
 gw._NVML_DEVICE = FakeNvml()
 # RAMLOGIC2: FAKE_PROC_ROOT points the RAM budget at a fake /proc (meminfo, pressure/memory) that a test rewrites while it runs
 if os.environ.get("FAKE_PROC_ROOT"):
-    import functools
-    gw.ram_budget.read_meminfo = functools.partial(gw.ram_budget.read_meminfo, os.environ["FAKE_PROC_ROOT"])
-    gw.ram_budget.read_pressure = functools.partial(gw.ram_budget.read_pressure, os.environ["FAKE_PROC_ROOT"])
+    # a caller that names its own root (the valve's ramGuardProcRoot) is pointed at the fake one as well
+    _meminfo, _pressure = gw.ram_budget.read_meminfo, gw.ram_budget.read_pressure
+    gw.ram_budget.read_meminfo = lambda *_root: _meminfo(os.environ["FAKE_PROC_ROOT"])  # noqa: E731
+    gw.ram_budget.read_pressure = lambda *_root: _pressure(os.environ["FAKE_PROC_ROOT"])  # noqa: E731
+# RAMFIX1: FAKE_CGROUP_ROOT points the page cache reclaim at a fake cgroup tree (memory.reclaim a test watches) and a fake /proc
+if os.environ.get("FAKE_CGROUP_ROOT"):
+    _reclaim = gw.cache_reclaim.reclaim_page_cache
+    gw.cache_reclaim.reclaim_page_cache = lambda want, _proc="/proc", **kw: _reclaim(  # noqa: E731
+        want, os.environ.get("FAKE_PROC_ROOT", "/proc"), cgroup_root=os.environ["FAKE_CGROUP_ROOT"], **kw)
 gw.main()

@@ -259,7 +259,7 @@ class DefaultsAreOff(unittest.TestCase):
         self.assertFalse(rv.DEFAULTS["ramGuard"])
         self.assertEqual(rv.DEFAULTS["llamaOomScoreAdj"], 0)
         self.assertEqual(rv.DEFAULTS["ramCacheBudgetPct"], 0)
-        self.assertEqual(rv.DEFAULTS["ssdWriteDailyLimitGB"], 0)
+        self.assertEqual(rv.DEFAULTS["ssdWriteDailyLimitGB"], 8)     # RAMFIX1 review: the SSD limit is on by default (as live)
 
 
 if __name__ == "__main__":

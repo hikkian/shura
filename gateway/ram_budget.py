@@ -37,7 +37,7 @@ SWAP_GROWTH_LIMIT_MIB = 1024         # a load may grow swap by this much while i
 def parse_meminfo_mib(text):
     """/proc/meminfo as {key: MiB} for the keys the budget uses; missing keys are absent."""
     out = {}
-    wanted = {"MemTotal", "MemFree", "Inactive(file)", "SwapTotal", "SwapFree", "Shmem"}
+    wanted = {"MemTotal", "MemFree", "MemAvailable", "Inactive(file)", "Active(file)", "Dirty", "SwapTotal", "SwapFree", "Shmem"}
     for line in text.splitlines():
         key, _, rest = line.partition(":")
         if key in wanted:
@@ -219,6 +219,42 @@ def plan_load(mem, psi, resident_mib, cache_ram_mib, shm_planned_mib=0.0, reserv
                reason=f"not enough memory for the model yet: {_gib(free)} free, the model needs {_gib(fixed)} "
                       f"and {_gib(hard_min_mib)} must stay with the desktop")
     return out
+
+
+# RAMFIX1: the gateway's own files in tmpfs (RAM) that a load may take back. A session snapshot written at an idle unload sat in
+# /dev/shm (2 GiB) and honest free counted it as used: the model was refused because of Shura's own file. Kinds, cheapest first:
+#   cache       a copy in the session catalogue: evicted (a cache entry; the prompt is re-read if it is ever needed);
+#   slot        the saved session of a model: moved to the disk spill folder and restored from there;
+#   checkpoint  the RAM checkpoint of a pressure unload: moved to the disk spill folder as that model's saved session.
+RELEASE_RANK = {"cache": 0, "slot": 1, "checkpoint": 2}
+
+
+def release_order(entries, deficit_mib):
+    """Which own tmpfs files to release for deficit_mib more honest free. entries: dicts with "kind", "mib", "inode", "mtime".
+    Hard links (same inode) are one group: freeing it needs every link gone, and the group is handled as its most valuable
+    member (a catalogue copy linked to the saved session is moved with it, not dropped). Cheapest kind first, oldest first;
+    stops once the deficit is covered. Returns a list of groups (lists of entries); all groups when the deficit is not covered."""
+    groups = {}
+    for entry in entries:
+        groups.setdefault(entry.get("inode") or id(entry), []).append(entry)
+    ordered = sorted(groups.values(), key=lambda g: (max(RELEASE_RANK.get(e["kind"], 9) for e in g),
+                                                     min(float(e.get("mtime", 0)) for e in g)))
+    out, freed = [], 0.0
+    for group in ordered:
+        if freed >= deficit_mib:
+            break
+        out.append(group)
+        freed += max(float(e.get("mib", 0)) for e in group)
+    return out
+
+
+def releasable_mib(entries):
+    """Total MiB the own tmpfs files hold, hard links counted once."""
+    seen = {}
+    for entry in entries:
+        key = entry.get("inode") or id(entry)
+        seen[key] = max(seen.get(key, 0.0), float(entry.get("mib", 0)))
+    return sum(seen.values())
 
 
 def admit_load(mem, psi, resident_fixed_mib, shm_planned_mib=0.0, desk_reserve_mib=DEFAULT_DESK_RESERVE_MIB):

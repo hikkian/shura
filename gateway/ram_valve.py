@@ -9,6 +9,7 @@ only when the reading recovers past the same threshold plus the hysteresis, so t
 import json
 import math
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -28,7 +29,7 @@ DEFAULTS = {
     "ramGuardZramPctCritical": 90.0,
     "llamaOomScoreAdj": 0,              # 0 = do not write; recommended 800 (the model is killed before the desktop)
     "ramCacheBudgetPct": 0,             # 0 = no budget; recommended 10 (about 3 GB on a 31 GB machine)
-    "ssdWriteDailyLimitGB": 0,          # 0 = no limit; recommended 8 per day for slot saves
+    "ssdWriteDailyLimitGB": 8,          # slot saves per day (RAMFIX1: 8 by default as on the live machine); 0 = no limit
     "ramGuardProcRoot": "/proc",        # where the readings come from (tests and the live check point these at fake trees)
     "ramGuardSysRoot": "/sys",
     "ramGuardIdleSeconds": 30,          # pressing acts only after the model has been idle this long
@@ -204,6 +205,9 @@ def cache_budget(total_ram_gb, budget_pct, ctx_tokens, ctx_checkpoints, cache_ra
     return cache, checkpoints
 
 
+_BUDGET_LOCK = threading.Lock()
+
+
 class SsdDailyBudget:
     """Counts bytes written for slot saves per calendar day, in a small state file. Over the limit a save is skipped (logged)."""
 
@@ -230,6 +234,15 @@ class SsdDailyBudget:
         state = self._state()
         used = state["bytes"] if state["day"] == self._today() else 0
         return used + size_bytes <= self.limit_bytes
+
+    def reserve(self, size_bytes):
+        """allowed() and record() as one step (RAMFIX1): two writers cannot both pass the check and overrun the day's limit. Called
+        before the write; a write that fails afterwards keeps its reservation (the budget errs towards fewer writes)."""
+        with _BUDGET_LOCK:
+            if not self.allowed(size_bytes):
+                return False
+            self.record(size_bytes)
+            return True
 
     def record(self, size_bytes):
         if self.limit_bytes is None:

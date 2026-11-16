@@ -24,6 +24,7 @@ import shutil
 import signal
 import secrets
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,7 @@ from crash_report import write_crash_report
 from game_mode import DEFAULTS as GAME_DEFAULTS, GamePolicy, GameSignals
 from polite_model import DEFAULTS as POLITE_DEFAULTS, Controller as PoliteController
 from slot_gears import DEFAULTS as GEAR_DEFAULTS, Budget, Ratchet, RollbackFailed, apply_slots as apply_slot_transaction
+import cache_reclaim
 from vram_valve import DEFAULTS as VALVE_DEFAULTS, SlotCostEstimator, Valve
 import user_modes
 import lang_guard
@@ -110,7 +112,15 @@ LITE_DEFAULTS = {"vramLiteReturnSeconds": 120, "vramLiteReturnMarginMiB": 600}
 # MEMPROF1: a planned restart of the server when its heap + /dev/zero grow over serverMemRestartGiB (0 = off). The session goes to RAM
 # first, the next request loads the server again and restores it. A temporary measure for the HIP runtime leak (REPORT-MEMPROF1).
 SERVER_MEM_DEFAULTS = {"serverMemRestartGiB": 0, "serverMemRestartIdleSeconds": 20, "serverMemCheckSeconds": 30}
-G = {"crashRecovery": False, "vramRetry": False, "vramPolicy": "legacy", "ramPolicy": "off", "ramDeskReserveMiB": None, "ramWaitSeconds": 20, "ramHardMinMiB": ram_budget.RAM_HARD_MIN_MIB, **LITE_DEFAULTS, **SERVER_MEM_DEFAULTS, **POLITE_DEFAULTS, **GEAR_DEFAULTS, **VALVE_DEFAULTS, **GAME_DEFAULTS, **desk_need.DEFAULTS, **gpu_reset.DEFAULTS, **WEB_DEFAULTS, **PROXY_DEFAULTS, **LIFECYCLE_DEFAULTS,
+# RAMFIX1: the gateway's own files in RAM (tmpfs) never block a load. shmSpill false = as before. slotSpillDir: the disk folder for
+# saved sessions moved out of RAM (null = <state dir>/slots-spill). shmSpillMinMiB: smaller saved sessions always stay in RAM.
+# SSD writes are kept to the minimum: a session goes to the disk only when re-reading its prompt would take longer than
+# spillMinReprefillSeconds at the measured prefill speed (spillPrefillTps until a long prompt was measured), otherwise it is dropped.
+# ramDeskFloorGB: MemAvailable the desktop keeps while the model is loaded (own RAM files go first to keep it); a large new prompt at
+# the valve's tight level waits inside the gateway (up to ramValveDeferWaitSeconds) only while the floor would not hold.
+SPILL_DEFAULTS = {"shmSpill": True, "slotSpillDir": None, "shmSpillMinMiB": 256, "spillMinReprefillSeconds": 60,
+                  "spillPrefillTps": 1200.0, "ramDeskFloorGB": 4.0, "ramValveDeferWaitSeconds": 60}
+G = {**SPILL_DEFAULTS,"crashRecovery": False, "vramRetry": False, "vramPolicy": "legacy", "ramPolicy": "off", "ramDeskReserveMiB": None, "ramWaitSeconds": 20, "ramHardMinMiB": ram_budget.RAM_HARD_MIN_MIB, "ramReclaimCache": True, **LITE_DEFAULTS, **SERVER_MEM_DEFAULTS, **POLITE_DEFAULTS, **GEAR_DEFAULTS, **VALVE_DEFAULTS, **GAME_DEFAULTS, **desk_need.DEFAULTS, **gpu_reset.DEFAULTS, **WEB_DEFAULTS, **PROXY_DEFAULTS, **LIFECYCLE_DEFAULTS,
      **ram_valve.DEFAULTS, **session_cache.DEFAULTS, **prefill_yield.DEFAULTS, **prefill_progress.DEFAULTS,
      "vramGuard": False, "vramIdleSeconds": 90,
      "vramEmergencyMiB": 60, "vramEmergencySeconds": 10,
@@ -660,6 +670,13 @@ def pause_resume_for(proc, model_id, vision, lease, body):
 
     def pause_resume(raw_error, tool_call_ids, heartbeat=None):
         """Check the tokens file, restart, restore the checkpoint by name, and return the same request with `resume` (API.md)."""
+        PAUSE_STATE["resuming"] += 1        # RAMFIX1: its checkpoint is not a leftover while this runs
+        try:
+            return resume_paused(raw_error, tool_call_ids, heartbeat)
+        finally:
+            PAUSE_STATE["resuming"] -= 1
+
+    def resume_paused(raw_error, tool_call_ids, heartbeat):
         try:
             frame = vram_budget.Budget().pause_frame({"error": raw_error})
             if frame is None or not frame["saved"]:
@@ -1331,7 +1348,8 @@ def build_args(mc, vision):
     return a
 
 
-SERVER_SLOT = {"dir": None}   # the --slot-save-path the running server was given: pause files are written there
+SERVER_SLOT = {"dir": None, "owner": None}   # the --slot-save-path the running server was given: pause files are written there;
+# owner: (model, vision, layout) of the server started last, to which a pause checkpoint it left behind belongs
 
 
 def remember_server_slot_dir():
@@ -1691,6 +1709,8 @@ def validate_ram_config(config):
     hard = config.get("ramHardMinMiB", ram_budget.RAM_HARD_MIN_MIB)
     if type(hard) is not int or not 512 <= hard <= 8192:
         raise ValueError("Invalid guardian config: ramHardMinMiB must be an integer 512..8192")
+    if type(config.get("ramReclaimCache", True)) is not bool:
+        raise ValueError("Invalid guardian config: ramReclaimCache must be true or false")
 
 
 def validate_vram_policy_config(config):
@@ -1746,6 +1766,35 @@ def ram_ladder_snapshot():
             ("state", "since", "until", "free_mib", "need_mib", "cache_cap", "reason")}}
 
 
+RAM_RECLAIM = {}                  # rate limit per caller ("admission"): one reclaim does not use up another's turn
+RAM_RECLAIM_MIN_INTERVAL = 10.0
+
+
+def ram_try_reclaim(shortfall_mib, mem, why, proc_root="/proc", key="admission"):
+    """Give clean page cache back (memory.reclaim, file pages only) when it could cover the shortfall. At most once per 10 s per
+    caller, behind ramReclaimCache. Honest free counts the inactive file cache by half, so reclaiming X raises it by about X/2: the
+    request is twice the shortfall plus a margin, never more than the reclaimable cache (the reclaim takes the whole user cgroup's
+    cache, Brave's and VS Code's too, so it asks only for what the shortfall needs). Returns True when a reclaim ran (the caller
+    re-reads memory and plans again)."""
+    if G.get("ramReclaimCache", True) is not True or shortfall_mib <= 0:
+        return False
+    reclaimable = cache_reclaim.reclaimable_mib(mem)
+    if reclaimable < shortfall_mib:
+        return False
+    now = time.monotonic()
+    if now - RAM_RECLAIM.get(key, -1e9) < RAM_RECLAIM_MIN_INTERVAL:
+        return False
+    RAM_RECLAIM[key] = now
+    want = min(2 * shortfall_mib + cache_reclaim.REPORT_MARGIN_MIB, reclaimable)
+    freed, error = cache_reclaim.reclaim_page_cache(want, proc_root)
+    took = time.monotonic() - now
+    if error:
+        event("ram_cache_reclaim", f"{why}: not done ({error})")
+        return False
+    event("ram_cache_reclaim", f"{why}: freed {freed} MiB of page cache in {took:.1f} s")
+    return True
+
+
 def ram_admission(mc, reclaim_gb=0.0):
     """RAMGUARD1 (R0) + RAMLOGIC2: a load must leave the desktop room to grow (the reserve follows desk_need) once the server's
     un-evictable part is counted. Honest free = MemFree + half of the inactive file cache, minus the swap penalty (not
@@ -1760,11 +1809,28 @@ def ram_admission(mc, reclaim_gb=0.0):
         RAM_LADDER.update(since=0.0, until=0.0)
     wait_seconds = int(G.get("ramWaitSeconds", 20))
     waited_out = wait_seconds <= 0 or (RAM_LADDER["until"] > 0 and now >= RAM_LADDER["until"])
+    settle_pause_leftovers("before a model load")      # RAMFIX1: a pause checkpoint nobody resumes never counts as used memory
     cache_mib = _ram_cache_budget(mc, ladder=False)[0]
     resident = ram_budget.resident_fixed_estimate_mib(mc.get("nCpuMoe", 0), cache_mib)
     reserve = ram_desk_reserve()
-    plan = ram_budget.plan_load(ram_budget.read_meminfo(), ram_budget.read_pressure(), resident, cache_mib, 0.0, reserve,
-                                waited_out, int(G.get("ramHardMinMiB", ram_budget.RAM_HARD_MIN_MIB)), reclaim_gb * 1024)
+    hard_min = int(G.get("ramHardMinMiB", ram_budget.RAM_HARD_MIN_MIB))
+    meminfo = ram_budget.read_meminfo()
+    pressure = ram_budget.read_pressure()
+    plan = ram_budget.plan_load(meminfo, pressure, resident, cache_mib, 0.0, reserve, waited_out, hard_min, reclaim_gb * 1024)
+    if plan["step"] != "load" and meminfo is not None and pressure is not None:
+        # clean page cache is not freed until somebody allocates: the shortfall to the configured start is covered from it here
+        shortfall = resident + reserve - plan["free_mib"]
+        if ram_try_reclaim(shortfall, meminfo, f"shortfall {int(shortfall)} MiB for the model"):
+            meminfo = ram_budget.read_meminfo()
+            plan = ram_budget.plan_load(meminfo, pressure, resident, cache_mib, 0.0, reserve, waited_out, hard_min, reclaim_gb * 1024)
+    # RAMFIX1: next the gateway's own files in RAM (a saved session moves to the disk or is dropped), before any wait or refusal;
+    # also when the load fits the budget but would leave the desktop less than ramDeskFloorGB of MemAvailable
+    deficit = resident + reserve - plan["free_mib"]
+    if plan["step"] == "load" and meminfo is not None and meminfo.get("MemAvailable") is not None:
+        deficit = float(G.get("ramDeskFloorGB", 4.0)) * 1024 - (meminfo["MemAvailable"] - resident - cache_mib)
+    if meminfo is not None and deficit > 0 and G.get("shmSpill") is not False and release_own_tmpfs(deficit) > 0:
+        plan = ram_budget.plan_load(ram_budget.read_meminfo(), ram_budget.read_pressure(), resident, cache_mib, 0.0, reserve,
+                                    waited_out, hard_min, reclaim_gb * 1024)
     step = plan["step"]
     RAM_LADDER.update(free_mib=plan["free_mib"], need_mib=plan["need_mib"], reserve_mib=reserve, reason=plan["reason"])
     if step in ("load", "light", "guarded"):
@@ -1895,6 +1961,8 @@ def prepare_ram_slot_dir():
             raise refused from None
         event("ram_path_moved", f"{parent} is not usable ({refused}); using {root.parent}", fallback=True)
     RAM_SLOT_DIR = root
+    for leftover in root.glob(".out-*"):       # RAMFIX1: a release interrupted by a kill leaves its staging file behind
+        leftover.unlink(missing_ok=True)
     try:
         recover_orphan(root)
     except (OSError, RuntimeError, ValueError) as e:
@@ -2070,6 +2138,395 @@ def ram_snapshot_mib():
         return 0.0
 
 
+# --- RAMFIX1: the gateway's own files in RAM ---------------------------------------------------------------------------------------
+# On 2026-11-16 the live gateway refused the model ("RAM not enough memory") because of its own idle-unload snapshot: 2 GiB in
+# /dev/shm (slotSaveDir) that honest free counts as used. Now a load first takes such files back (ram_budget.release_order): copies
+# in the session catalogue are evicted, saved sessions and the RAM checkpoint are moved to a disk folder and restored from there.
+# And a large ordinary save goes to the disk folder at once when a reload with it in RAM would not fit.
+
+def is_tmpfs(path):
+    """True when the path (or its nearest existing parent) lies on tmpfs (RAM)."""
+    p = Path(path)
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    try:
+        tmpfs_parent(p)
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def spill_dir():
+    configured = G.get("slotSpillDir")
+    return Path(os.path.expanduser(configured)) if configured else STATE_DIR / "slots-spill"
+
+
+def ready_spill_dir():
+    """The disk spill folder, created private; refused when it is in RAM (moving there would free nothing)."""
+    folder = spill_dir()
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if folder.is_symlink() or not folder.is_dir() or folder.stat().st_uid != os.getuid():
+        raise RuntimeError(f"spill folder {folder} is not a private directory")
+    if is_tmpfs(folder):
+        raise RuntimeError(f"spill folder {folder} is in RAM (tmpfs)")
+    return folder
+
+
+def usable_file(path):
+    path = Path(path)
+    return path.is_file() and not path.is_symlink()
+
+
+def saved_slot_path(model_id, vision):
+    """Where the saved session of a model lies: the slot folder, else the disk spill folder; the slot folder path when neither has it."""
+    name = slot_filename(model_id, vision)
+    primary = SLOT_DIR / name
+    if usable_file(primary):
+        return primary
+    spilled = spill_dir() / name
+    return spilled if usable_file(spilled) else primary
+
+
+def drop_other_slot_copies(name, keep):
+    """A saved session was just written at `keep`: an older copy under the same name in the other folder is stale."""
+    for folder in (SLOT_DIR, spill_dir()):
+        other = folder / name
+        if other != Path(keep) and (other.exists() or checkpoint_metadata_path(other).exists()):
+            discard_slot_file(other)
+
+
+def spill_copy(src, dst):
+    """Copy src (in RAM) to dst on the disk atomically; fsync, then drop the written pages from the page cache, so the copy does not
+    stay in RAM as file cache."""
+    dst = Path(dst)
+    tmp = dst.with_name(f".spill-{dst.name}.tmp")
+    try:
+        with open(src, "rb") as fin, open(tmp, "wb") as fout:
+            shutil.copyfileobj(fin, fout, 16 * 1048576)
+            fout.flush()
+            os.fsync(fout.fileno())
+            try:
+                os.posix_fadvise(fout.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            except (AttributeError, OSError):
+                pass
+        os.replace(tmp, dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def own_tmpfs_entries():
+    """The gateway's own files in RAM that a load may take back: saved sessions in a tmpfs slot folder, the session catalogue when
+    it is in tmpfs, and the RAM checkpoint of a pressure unload while no server runs."""
+    entries = []
+
+    def add(kind, path, **extra):
+        try:
+            info = Path(path).lstat()
+        except OSError:
+            return
+        if not stat.S_ISREG(info.st_mode):
+            return
+        entries.append({"kind": kind, "path": Path(path), "mib": info.st_blocks * 512 / 1048576.0, "bytes": info.st_size,
+                        "inode": (info.st_dev, info.st_ino), "mtime": info.st_mtime, **extra})
+
+    try:
+        if is_tmpfs(SLOT_DIR) and SLOT_DIR.is_dir():
+            for path in SLOT_DIR.glob("*.bin"):
+                if usable_file(path) and checkpoint_metadata_path(path).is_file():
+                    add("slot", path)
+        if session_cache_on():
+            catalog = session_catalog()
+            if is_tmpfs(catalog.root):
+                for meta in catalog._entries():
+                    add("cache", catalog.root / f"{meta['session_id']}.bin", session_id=meta["session_id"], catalog=catalog)
+        checkpoint = st.ram_checkpoint
+        if checkpoint and RAM_SLOT_DIR is not None and not (st.proc and st.proc.poll() is None):
+            add("checkpoint", checkpoint["path"], checkpoint=checkpoint)
+    except OSError as error:
+        event("ram_spill_failed", f"own RAM files not listed: {error}", fallback=True)
+    return entries
+
+
+def prefill_tps():
+    """The prefill speed to judge a re-read by: the latest measured long prompt (at least 4000 new tokens) in the monitor's
+    request history, else spillPrefillTps (PERF262: about 1200 tok/s at 100k on the 262k mode)."""
+    for request in MONITOR.requests():
+        rate, total, cached = request.get("prompt_per_second"), request.get("prompt_tokens"), request.get("cached_tokens") or 0
+        if (isinstance(rate, (int, float)) and math.isfinite(rate) and rate > 0 and isinstance(total, int)
+                and total - cached >= 4000):
+            return float(rate)
+    return float(G.get("spillPrefillTps", SPILL_DEFAULTS["spillPrefillTps"]))
+
+
+def worth_the_disk(tokens):
+    """(write it, seconds a re-read would take): a session is written to the SSD only when re-reading its prompt would take longer
+    than spillMinReprefillSeconds; a shorter one is cheaper to re-read than to wear the SSD for."""
+    try:
+        seconds = max(0, int(tokens)) / prefill_tps()
+    except (TypeError, ValueError, ZeroDivisionError):
+        return False, 0.0
+    return seconds > float(G.get("spillMinReprefillSeconds", 60)), seconds
+
+
+def take_out(group):
+    """Phase 1 of releasing one group of hard links (ram_budget.release_order), under st.lock and instant: the saved session or the RAM
+    checkpoint is renamed to a private staging name in its own folder (no listing, restore or save sees it any more), the other links
+    go. Returns the job for finish_release; the RAM is given back when finish_release removes the staging file."""
+    main = next((e for e in group if e["kind"] == "checkpoint"), None) or next((e for e in group if e["kind"] == "slot"), None)
+    job = {"what": "", "staging": None, "saved": None, "name": "", "mib": group[0]["mib"], "bytes": group[0]["bytes"]}
+    if main is not None:
+        if main["kind"] == "checkpoint":
+            saved = {k: v for k, v in main["checkpoint"].items() if k != "path"}
+            name = slot_filename(saved["model"], saved["vision"])
+        else:
+            saved = json.loads(checkpoint_metadata_path(main["path"]).read_text())
+            name = main["path"].name
+        staging = main["path"].with_name(f".out-{name}")
+        os.replace(main["path"], staging)
+        job.update(staging=staging, saved=saved, name=name, mib=main["mib"], bytes=main["bytes"], checkpoint=main["kind"] == "checkpoint")
+    for entry in group:
+        if entry["kind"] == "slot" and entry is not main:
+            discard_slot_file(entry["path"])
+        elif entry["kind"] == "slot":
+            checkpoint_metadata_path(entry["path"]).unlink(missing_ok=True)
+        elif entry["kind"] == "cache":
+            entry["catalog"].remove(entry["session_id"])
+        elif entry["kind"] == "checkpoint":
+            st.ram_checkpoint = None
+            clear_ram_checkpoint()           # the file itself is already at its staging name
+    if main is None:
+        job["what"] = f"session catalogue copy {group[0]['path'].name} ({group[0]['mib']:.0f} MiB) evicted"
+    return job
+
+
+def finish_release(job):
+    """Phase 2, without st.lock: a session worth the disk (worth_the_disk) is copied to the disk spill folder within the daily SSD
+    budget (reserved before the write), then, under st.lock again, put in place with its metadata unless a newer save of the same
+    session appeared meanwhile; the staging file in RAM goes in every case. Returns what happened."""
+    staging, saved, name = job["staging"], job["saved"], job["name"]
+    if staging is None:
+        return job["what"]
+    tmp = None
+    try:
+        worth, seconds = worth_the_disk(saved.get("tokens", 0))
+        if not worth:
+            return (f"saved session {name} ({job['mib']:.0f} MiB) dropped: its {saved.get('tokens', 0)} tokens re-read in about "
+                    f"{seconds:.0f} s, cheaper than an SSD write")
+        if not ssd_write_budget().reserve(job["bytes"]):
+            return f"saved session {name} dropped: the daily SSD write limit is reached; the prompt is re-read"
+        folder = ready_spill_dir()
+        tmp = folder / f".spill-{name}.part"
+        spill_copy(staging, tmp)
+        with st.lock:
+            if usable_file(SLOT_DIR / name) and checkpoint_metadata_path(SLOT_DIR / name).is_file():
+                return f"saved session {name} not kept on the disk: a newer save exists"
+            write_saved_slot_metadata(folder / name, saved)
+            os.replace(tmp, folder / name)
+            tmp = None
+            if job.get("checkpoint"):
+                st.skip_disk_restore = False
+        return f"saved session {name} ({job['mib']:.0f} MiB) moved to the disk"
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        staging.unlink(missing_ok=True)
+
+
+def release_own_tmpfs(deficit_mib):
+    """Free at least deficit_mib of the gateway's own RAM files if it has them, cheapest first. Returns the MiB freed. The renames
+    run under st.lock, the copies to the disk do not take it (a caller that holds it, the model load, keeps it: the load waits for
+    the memory anyway). Never raises."""
+    freed = 0.0
+    jobs = []
+    try:
+        with st.lock:
+            for group in ram_budget.release_order(own_tmpfs_entries(), deficit_mib):
+                try:
+                    jobs.append(take_out(group))
+                except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as error:
+                    event("ram_spill_failed", f"{group[0]['path'].name}: {error}", fallback=True)
+        for job in jobs:
+            try:
+                what = finish_release(job)
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as error:
+                what = f"saved session {job['name']} dropped: the move to the disk failed ({error})"
+                event("ram_spill_failed", what, fallback=True)
+            freed += job["mib"]
+            event("ram_spill", f"for the memory: {what}")
+    except Exception as error:  # noqa: BLE001 - releasing own files must never fail the load or the valve that asked for it
+        event("ram_spill_failed", f"own RAM files not released: {error}", fallback=True)
+    return freed
+
+
+OWN_WORK = {"thread": None}
+
+
+def release_in_background(deficit_mib):
+    """For callers that must not wait on a copy (the monitor, a waiting request): one release at a time in its own thread."""
+    worker = OWN_WORK["thread"]
+    if worker is not None and worker.is_alive():
+        return
+    OWN_WORK["thread"] = threading.Thread(target=release_own_tmpfs, args=(deficit_mib,), daemon=True, name="shura-own-ram")
+    OWN_WORK["thread"].start()
+
+
+def slot_folder_for(size_bytes, tokens):
+    """Where an ordinary save of size_bytes goes: the slot folder, unless it is in RAM, the file is large (shmSpillMinMiB), its
+    prompt is worth the disk (worth_the_disk) and a reload of this model with the file in RAM would not fit (the running server's
+    memory counted as free, it leaves first); then the disk spill folder, within the daily SSD budget. A session not worth the disk
+    stays in RAM: a load that needs the room drops it."""
+    mib = size_bytes / 1048576.0
+    if (G.get("shmSpill") is False or mib < float(G.get("shmSpillMinMiB", 256)) or not is_tmpfs(SLOT_DIR)
+            or not worth_the_disk(tokens)[0]):
+        return SLOT_DIR
+    try:
+        mc = model_config(st.model_id, st.vision, st.layout)
+        cache_mib = _ram_cache_budget(mc, ladder=False)[0]
+        resident = ram_budget.resident_fixed_estimate_mib(mc.get("nCpuMoe", 0), cache_mib)
+        plan = ram_budget.plan_load(ram_budget.read_meminfo(), ram_budget.read_pressure(), resident, cache_mib, mib,
+                                    ram_desk_reserve(), credit_mib=running_footprint()[0] * 1024)
+        if plan["step"] == "load":
+            return SLOT_DIR
+        folder = ready_spill_dir()
+        if not ssd_write_budget().reserve(size_bytes):        # reserved before the write; the caller writes, it does not record
+            return SLOT_DIR
+    except (OSError, RuntimeError, KeyError, TypeError, ValueError) as error:
+        event("ram_spill_failed", f"saved session stays in RAM: {error}", fallback=True)
+        return SLOT_DIR
+    event("ram_spill", f"saved session ({mib:.0f} MiB) written to the disk: a reload with it in RAM would not fit ({plan['step']})")
+    return folder
+
+
+# --- RAMFIX1: what a governor pause leaves behind ------------------------------------------------------------------------------
+# On 2026-11-16 at 14:43 the governor paused an idle server (exit 75, the 89k-token session saved to vram-pause.bin, 2.7 GiB in
+# /dev/shm). No answer was running, so nothing resumed it: the gateway counted a crash and the file stayed in RAM through the next
+# start. Now an exit 75 is a pause, and a checkpoint nobody resumes becomes the model's saved session when its owner is known (a
+# rename inside tmpfs: no copy, no SSD write; restored by the next load, dropped or moved by a load that needs the room); anything
+# else of a pause (a server runs again, the owner is unknown, other files) is deleted. Never written to the disk.
+
+PAUSE_STATE = {"resuming": 0, "owner": None, "recent": []}
+PAUSE_PREFIXES = ("vram-pause", "vram-exit")
+PAUSE_REPEAT = (3, 300.0)        # this many pauses within this many seconds: a server that keeps pausing is failing, count it
+
+
+def pause_marker_present():
+    root = SERVER_SLOT["dir"] if SERVER_SLOT["dir"] is not None else RAM_SLOT_DIR
+    return root is not None and any((Path(root) / name).is_file() for name in ("vram-exit.json", "vram-pause.bin"))
+
+
+def paused_exit(proc):
+    """An exit 75 with the governor on and its marker (vram-exit.json or vram-pause.bin) written is a pause, not a crash; it records
+    the owner of the checkpoint (the server that wrote it). A server that pauses again and again counts as failing after all."""
+    if proc is None or proc.poll() != 75 or not governor_on() or not pause_marker_present():
+        return False
+    now = time.monotonic()
+    count, window = PAUSE_REPEAT
+    PAUSE_STATE["recent"] = [t for t in PAUSE_STATE["recent"] if now - t < window] + [now]
+    if len(PAUSE_STATE["recent"]) >= count:
+        event("vram_pause_repeated", f"{len(PAUSE_STATE['recent'])} pauses within {int(window)} s: counted as a server failure", fallback=True)
+        return False
+    if proc is st.proc or PAUSE_STATE["owner"] is None:
+        PAUSE_STATE["owner"] = SERVER_SLOT.get("owner")
+    return True
+
+
+def pause_leftovers():
+    root = SERVER_SLOT["dir"] if SERVER_SLOT["dir"] is not None else RAM_SLOT_DIR
+    if root is None:
+        return []
+    try:
+        return [p for p in Path(root).iterdir() if p.name.startswith(PAUSE_PREFIXES) and p.is_file() and not p.is_symlink()]
+    except OSError:
+        return []
+
+
+def adopt_pause_checkpoint(path, owner, background=False):
+    """The pause checkpoint becomes the saved session of its model in the slot folder, by renames inside the same tmpfs (no copy, no
+    write). First to a private name nobody lists; the SHA-256 is computed (without st.lock when background); then the metadata is
+    written and only then the file takes its final name. Raises when it cannot; the private file never outlives a failure."""
+    model_id, vision, layout = owner
+    info = json.loads(path.with_name(path.name + ".tokens.json").read_text())
+    tokens = info.get("n_past")
+    if type(tokens) is not int or tokens < 1:
+        raise ValueError("the tokens file has no token count")
+    SLOT_DIR.mkdir(parents=True, exist_ok=True)
+    if path.stat().st_dev != SLOT_DIR.stat().st_dev:
+        raise RuntimeError("the slot folder is on another file system (a copy would be needed)")
+    name = slot_filename(model_id, vision)
+    private = SLOT_DIR / f".adopt-{name}"
+    os.replace(path, private)
+
+    def finish(reraise=True):
+        try:
+            digest = file_hash(private)
+            with st.lock:
+                saved = {"model": model_id, "vision": vision, "tokens": tokens, "bytes": private.stat().st_size, "sha256": digest,
+                         "reload_min_gb": st.vram_resume_min_gb, "signature": checkpoint_signature(model_id, vision, layout),
+                         "saved_at": private.stat().st_mtime}
+                dest = SLOT_DIR / name
+                write_saved_slot_metadata(dest, saved)
+                os.replace(private, dest)
+                drop_other_slot_copies(name, dest)
+                checkpoint = st.ram_checkpoint
+                if checkpoint and checkpoint.get("model") == model_id and checkpoint.get("vision") == vision:
+                    clear_ram_checkpoint()           # older than the pause: restore would prefer it
+                st.skip_disk_restore = False
+            event("pause_leftover", f"the pause checkpoint kept as the saved session {name} ({tokens} tokens, {saved['bytes'] / 1048576:.0f} MiB)")
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as error:
+            event("pause_leftover_failed", f"pause checkpoint not kept: {error}", fallback=True)
+            if reraise:
+                raise
+        finally:
+            private.unlink(missing_ok=True)
+    if background:
+        threading.Thread(target=finish, args=(False,), daemon=True, name="shura-pause-adopt").start()
+    else:
+        finish()
+    return f"kept as the saved session {name} ({tokens} tokens)"
+
+
+def settle_pause_leftovers(why, background=False):
+    """A pause checkpoint that no answer resumes must not stay in RAM: kept as the saved session (adopt_pause_checkpoint) while the
+    server that wrote it is gone and its owner was recorded at its exit 75, else deleted; the other pause files are deleted. Nothing
+    is written. background: the hash runs in its own thread (the monitor holds st.lock)."""
+    if PAUSE_STATE["resuming"]:
+        return
+    files = pause_leftovers()
+    if not files:
+        return
+    alive = st.proc is not None and st.proc.poll() is None
+    if alive:
+        # the live check (2026-11-16): a pausing server writes its files while it still runs. Only files older than its start are
+        # spent (an earlier pause it was resumed from); newer ones are its own pause in progress and wait for its exit.
+        started = st.proc_wall_start or time.time()
+        try:
+            files = [p for p in files if p.stat().st_mtime < started - 1]
+        except OSError:
+            return
+        if not files:
+            return
+    owner = PAUSE_STATE.get("owner")
+    PAUSE_STATE["owner"] = None
+    checkpoints = [p for p in files if not p.name.endswith(".json")]
+    kept = ""
+    if not alive and owner and len(checkpoints) == 1 and G.get("shmSpill") is not False:
+        try:
+            kept = adopt_pause_checkpoint(checkpoints[0], owner, background)
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as error:
+            event("pause_leftover_failed", f"pause checkpoint not kept: {error}", fallback=True)
+    dropped = 0.0
+    for path in files:
+        try:
+            if path.exists():
+                dropped += path.stat().st_blocks * 512 / 1048576.0
+                path.unlink()
+        except OSError as error:
+            event("pause_leftover_failed", f"{path.name}: {error}", fallback=True)
+    reason = "a server runs again" if alive else "its owner is unknown" if not owner else "no answer resumes it"
+    if dropped >= 1 or not kept:
+        event("pause_leftover", f"{why}: {dropped:.0f} MiB of pause files deleted" + ("" if kept else f" ({reason})"))
+
+
 def ram_valve_yield(level):
     """Keep the session in RAM and unload the model (caller holds st.lock). Restores on the next request."""
     if not save_slot_locked(ram_only=True):
@@ -2084,9 +2541,59 @@ def ram_valve_yield(level):
     return False
 
 
+def prompt_growth_gb(new_chars):
+    """RAM a prompt of new_chars adds to the server: its context checkpoints in host memory (ram_valve: 63 MiB + 2 KiB per token,
+    about 4 characters per token)."""
+    return (ram_valve.CHECKPOINT_BASE_MIB + new_chars / 4.0 * ram_valve.CHECKPOINT_PER_TOKEN_KIB / 1024.0) / 1024.0
+
+
+def room_for_prompt(new_chars, release=True):
+    """True when MemAvailable stays at or above ramDeskFloorGB after the prompt's growth and memory pressure (PSI full) and the
+    zram fill are below the valve's tight thresholds. MemAvailable already counts the page cache the kernel can drop, so a page cache
+    reclaim would not change it: when short, the gateway's own RAM files are released instead (in the background, without st.lock)."""
+    floor = float(G.get("ramDeskFloorGB", 4.0))
+    need = prompt_growth_gb(new_chars)
+    mem_gb, psi, zram = ram_valve.read_readings(G["ramGuardProcRoot"], G["ramGuardSysRoot"])
+    calm = ((psi is None or psi < float(G["ramGuardPsiFullTight"]))
+            and (zram is None or zram < float(G["ramGuardZramPctTight"])))
+    if mem_gb is None or (mem_gb - need >= floor and calm):
+        return calm
+    if release and G.get("shmSpill") is not False and mem_gb - need < floor:
+        release_in_background((floor + need - mem_gb) * 1024)
+    return False
+
+
+def wait_room_for_prompt(new_chars):
+    """RAMFIX1: at the valve's tight level a large new prompt no longer gets a 503 at once: it goes on when the desktop's floor holds,
+    otherwise the gateway itself waits (up to ramValveDeferWaitSeconds, 60: ShuraCode's own header and chunk timeouts are 300 s) and
+    goes on as soon as it holds. The waiting request counts as busy (no idle unload meanwhile). False only when it never held."""
+    if room_for_prompt(new_chars):
+        return True
+    deadline = time.monotonic() + float(G.get("ramValveDeferWaitSeconds", 60))
+    event("ram_valve_defer_wait", f"new_chars={new_chars}: MemAvailable below the desktop floor or memory pressure; the gateway waits")
+    with st.lock:
+        st.busy += 1
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            if room_for_prompt(new_chars):
+                event("ram_valve_defer_done", f"new_chars={new_chars}: the desktop keeps its floor now; the prompt goes on")
+                return True
+        return False
+    finally:
+        with st.lock:
+            st.busy -= 1
+
+
 def ram_valve_tick(now, idle):
     """RAM valve: read the inputs, move the level (an event on each change) and act. Caller holds st.lock. Only with ramGuard true."""
     mem_gb, psi_full, zram_pct = ram_valve.read_readings(G["ramGuardProcRoot"], G["ramGuardSysRoot"])
+    floor = float(G.get("ramDeskFloorGB", 4.0))
+    if (mem_gb is not None and mem_gb < floor and G.get("shmSpill") is not False and st.proc and st.proc.poll() is None
+            and now >= RAM_NEXT.get("own_at", 0.0)):
+        # RAMFIX1: below the desktop's floor while the model is loaded: the gateway's own RAM files go before anything else
+        RAM_NEXT["own_at"] = now + 30
+        release_in_background((floor - mem_gb) * 1024)      # the copies to the disk must not hold the monitor's st.lock
     level, changed = RAM_VALVE.update(mem_gb, psi_full, zram_pct)
     if changed:
         event("ram_guard_level", f"level={level} mem_available_gb={mem_gb} psi_full_avg10={psi_full} zram_used_percent={zram_pct}")
@@ -2156,7 +2663,7 @@ def session_persist_on_stop(reason):
     already saved. Returns True when a snapshot was written."""
     if not session_persist_on() or SESSION["id"] is None:
         return False
-    slot = SLOT_DIR / slot_filename(st.model_id, st.vision)
+    slot = saved_slot_path(st.model_id, st.vision)
     if not slot.is_file() or slot.is_symlink():
         return False
     try:
@@ -2252,16 +2759,18 @@ def session_write_behind(now, idle):
                                                budget_ok=ssd_write_budget().allowed(estimate), disk_ok=catalog.fits_after_eviction(estimate))
     if not write:
         return
-    slot = SLOT_DIR / slot_filename(st.model_id, st.vision)
-    meta_path = checkpoint_metadata_path(slot)
-    before = meta_path.stat().st_mtime_ns if meta_path.exists() else 0
+    name = slot_filename(st.model_id, st.vision)
+    before = {folder: (checkpoint_metadata_path(folder / name).stat().st_mtime_ns if checkpoint_metadata_path(folder / name).exists() else 0)
+              for folder in (SLOT_DIR, spill_dir())}
     if not save_slot_locked():
         SESSION["next_try"] = now + 60
         event("session_cache_save_refused", f"slot save did not complete: {st.last_error or 'see the checkpoint events'}", fallback=True)
         return
     # The ordinary save can return success without writing (below its own slotSaveMinTokens): only a new record counts.
     try:
-        if meta_path.stat().st_mtime_ns == before:
+        slot = saved_slot_path(st.model_id, st.vision)     # RAMFIX1: the save may have gone to the disk spill folder
+        meta_path = checkpoint_metadata_path(slot)
+        if meta_path.stat().st_mtime_ns == before.get(slot.parent, 0):
             SESSION["next_try"] = now + 60
             event("session_cache_save_refused", "slot save wrote no new record (below slotSaveMinTokens)")
             return
@@ -2320,8 +2829,15 @@ def session_prepare_restore(model_id, vision):
         return
     dst = SLOT_DIR / slot_filename(model_id, vision)
     try:
-        shutil.copyfile(entry["path"], dst)
+        # RAMFIX1: a hard link when the catalogue shares the file system (both in /dev/shm): no second copy of the session in RAM
+        if dst.exists() or dst.is_symlink():
+            dst.unlink()
+        try:
+            os.link(entry["path"], dst)
+        except OSError:
+            shutil.copyfile(entry["path"], dst)
         write_saved_slot_metadata(dst, entry["saved"])
+        drop_other_slot_copies(dst.name, dst)
     except OSError as error:
         event("session_cache_restore_failed", str(error), fallback=True)
         return
@@ -2367,7 +2883,7 @@ def save_slot_locked(ram_only=False, min_tokens=None):
                 if st.ram_checkpoint is not None:
                     st.skip_disk_restore = False
                 else:
-                    disk = SLOT_DIR / slot_filename(st.model_id, st.vision)
+                    disk = saved_slot_path(st.model_id, st.vision)
                     if disk.is_file() and not disk.is_symlink():
                         st.skip_disk_restore = False
                     else:
@@ -2377,7 +2893,7 @@ def save_slot_locked(ram_only=False, min_tokens=None):
         if not ram_only and n < G["slotSaveMinTokens"]:
             return True
         if not ram_only and not st.slot_dirty:
-            existing = SLOT_DIR / slot_filename(st.model_id, st.vision)
+            existing = saved_slot_path(st.model_id, st.vision)
             if existing.is_file() and not existing.is_symlink():
                 log("Slot unchanged since it was restored; not written to disk again")
                 return True
@@ -2404,6 +2920,7 @@ def save_slot_locked(ram_only=False, min_tokens=None):
                      "sha256": file_hash(SLOT_DIR / name), "reload_min_gb": st.vram_resume_min_gb,
                      "signature": checkpoint_signature(st.model_id, st.vision), "saved_at": time.time()}
             write_saved_slot_metadata(SLOT_DIR / name, saved)
+            drop_other_slot_copies(name, SLOT_DIR / name)
             log(f"Saved slot ({n} prompt tokens) atomically -> {name}")
             return True
         root = prepare_ram_slot_dir()
@@ -2433,16 +2950,21 @@ def save_slot_locked(ram_only=False, min_tokens=None):
             event("checkpoint_saved", f"Saved {n} tokens to RAM")
         else:
             name = slot_filename(st.model_id, st.vision)
-            fd, tmp = tempfile.mkstemp(prefix=".slot-", dir=SLOT_DIR)
+            folder = slot_folder_for(target.stat().st_size, n)     # RAMFIX1: the disk spill folder when a reload with it in RAM would not fit
+            fd, tmp = tempfile.mkstemp(prefix=".slot-", dir=folder)
             os.close(fd)
             try:
-                shutil.copyfile(target, tmp)
-                os.replace(tmp, SLOT_DIR / name)
+                if folder == SLOT_DIR:
+                    shutil.copyfile(target, tmp)
+                    os.replace(tmp, SLOT_DIR / name)
+                else:
+                    spill_copy(target, folder / name)           # the SSD budget was reserved by slot_folder_for
                 saved = {"model": st.model_id, "vision": st.vision, "tokens": n,
-                         "bytes": (SLOT_DIR / name).stat().st_size,
-                         "sha256": file_hash(SLOT_DIR / name), "reload_min_gb": st.vram_resume_min_gb,
+                         "bytes": (folder / name).stat().st_size,
+                         "sha256": file_hash(folder / name), "reload_min_gb": st.vram_resume_min_gb,
                          "signature": checkpoint_signature(st.model_id, st.vision), "saved_at": time.time()}
-                write_saved_slot_metadata(SLOT_DIR / name, saved)
+                write_saved_slot_metadata(folder / name, saved)
+                drop_other_slot_copies(name, folder / name)
                 st.skip_disk_restore = False
                 ram_checkpoint = st.ram_checkpoint
                 if (ram_checkpoint and ram_checkpoint.get("model") == st.model_id
@@ -2453,7 +2975,7 @@ def save_slot_locked(ram_only=False, min_tokens=None):
             finally:
                 Path(tmp).unlink(missing_ok=True)
             target.unlink(missing_ok=True)
-            log(f"Saved slot ({n} tokens) to disk")
+            log(f"Saved slot ({n} tokens) to {'the disk spill folder' if folder != SLOT_DIR else 'disk'}")
         return True
     except Exception as e:  # noqa: BLE001 - this is the checkpoint integrity/fallback boundary.
         st.last_error = f"Session checkpoint failed: {e}"
@@ -2476,6 +2998,45 @@ def discard_slot_file(path):
             pass
 
 
+def stage_for_restore(disk, target):
+    """RAMFIX1: put a saved session where the server reads it (its private RAM folder) without a second copy in RAM. A hard link when
+    both lie on the same file system (the slot folder and the server's folder are both in /dev/shm). From the disk spill folder a
+    symbolic link: the engine checks only the file name and opens the path, so it reads the disk file through the page cache (which
+    the kernel may drop) and nothing is staged. The disk file was fully validated (size, SHA-256) just before. A copy only when
+    neither link can be made, and only while the desktop keeps ramDeskFloorGB of MemAvailable; otherwise the prompt is re-read."""
+    target.unlink(missing_ok=True)
+    try:
+        os.link(disk, target)
+        return
+    except OSError:
+        pass
+    if G.get("restoreViaSymlink", True) and not is_tmpfs(disk):
+        try:
+            os.symlink(disk.resolve(), target)
+            return
+        except OSError:
+            pass
+    stage_copy(disk, target)
+
+
+def stage_copy(disk, target):
+    """A copy of a saved session into RAM for the server, only within the RAM slot space and while the desktop keeps
+    ramDeskFloorGB of MemAvailable (a target outside tmpfs costs no RAM and is not checked); otherwise RuntimeError: re-read."""
+    if is_tmpfs(target):
+        size = disk.stat().st_size
+        if not ram_slot_space_ok(size):
+            raise RuntimeError("not enough RAM for disk checkpoint staging")
+        mem_gb = ram_valve.read_readings(G["ramGuardProcRoot"], G["ramGuardSysRoot"])[0]
+        if mem_gb is not None and mem_gb - size / 1024 ** 3 < float(G.get("ramDeskFloorGB", 4.0)):
+            raise RuntimeError(f"staging {size / 1048576:.0f} MiB would take the desktop below its floor; the prompt is re-read")
+    target.unlink(missing_ok=True)
+    shutil.copyfile(disk, target)
+
+
+class StagingRefused(RuntimeError):
+    """RAMFIX1: the copy for a second restore try could not be made; the session on the SSD is not at fault and stays."""
+
+
 class LayoutWindowError(RuntimeError):
     """A saved session longer than the window of the layout being loaded. The session is kept (it fits the other layout),
     the server is not touched, and nothing is restarted for it."""
@@ -2490,9 +3051,11 @@ def restore_slot_locked(timeout=120):
     if st.skip_disk_restore and not from_ram:
         st.skip_disk_restore = False
         return ""
-    disk = SLOT_DIR / slot_filename(st.model_id, st.vision)
+    disk = saved_slot_path(st.model_id, st.vision)
     if not from_ram and not disk.exists():
         return ""
+    from_spill = not from_ram and disk.parent == spill_dir()
+    spilled = None                     # the SSD copy behind a session staged into the slot folder: deleted only after a restore
     root = RAM_SLOT_DIR if st.ram_backend else SLOT_DIR
     target = checkpoint["path"] if from_ram else root / "restore.bin" if st.ram_backend else disk
     try:
@@ -2503,11 +3066,16 @@ def restore_slot_locked(timeout=120):
                 validate_checkpoint(target, checkpoint)
             else:
                 saved = validate_saved_slot(disk, st.model_id, st.vision)
+                if not st.ram_backend and disk.parent != SLOT_DIR:
+                    # RAMFIX1: the server reads only its own slot folder: the session moved to the disk spill folder goes back first
+                    staged = SLOT_DIR / disk.name
+                    stage_copy(disk, staged)
+                    write_saved_slot_metadata(staged, saved)
+                    spilled, disk, target = disk, staged, staged
                 if st.ram_backend:
-                    if not ram_slot_space_ok(disk.stat().st_size):
-                        raise RuntimeError("not enough RAM for disk checkpoint staging")
-                    shutil.copyfile(disk, target)
-                    validate_checkpoint(target, saved)
+                    stage_for_restore(disk, target)
+                    if not target.is_symlink():      # a symbolic link points at the disk file validated above
+                        validate_checkpoint(target, saved)
             tokens = checkpoint["tokens"] if from_ram else saved["tokens"]
             window = model_config(st.model_id, st.vision, st.layout)["ctxSize"]
             if tokens > window:
@@ -2528,11 +3096,26 @@ def restore_slot_locked(timeout=120):
             if from_ram:
                 clear_ram_checkpoint()
             return ""
-        try:
+
+        def ask_restore():
             code, res = llama_call("POST", "/slots/0?action=restore", {"filename": target.name}, timeout=timeout)
             if (code != 200 or not res or res.get("n_restored", 0) <= 0
                     or (from_ram and res["n_restored"] != checkpoint["tokens"])):
                 raise RuntimeError(f"slot restore failed or token count differs: HTTP {code}")
+            return res
+        try:
+            try:
+                res = ask_restore()
+            except Exception as first:  # a link the engine could not follow gets one more try with a copy
+                if from_ram or not target.is_symlink():
+                    raise
+                event("checkpoint_restore_retry", f"restore through the link to the disk failed ({first}); one more try with a copy")
+                try:
+                    stage_copy(disk, target)
+                except (OSError, RuntimeError) as no_room:
+                    raise StagingRefused(str(no_room)) from first
+                validate_checkpoint(target, saved)
+                res = ask_restore()
             if from_ram:
                 cleaned = clear_ram_checkpoint()
                 event("checkpoint_restored", f"Restored {res['n_restored']} RAM tokens; " +
@@ -2540,12 +3123,20 @@ def restore_slot_locked(timeout=120):
             else:
                 st.slot_dirty = False       # the file on disk is exactly what the server holds now
                 log(f"Restored slot from disk ({res['n_restored']} tokens)")
+                if from_spill and disk.parent == spill_dir():
+                    # RAMFIX1: read back from the SSD: the server holds it now; the next unload decides again where it goes
+                    discard_slot_file(disk)
+                    st.slot_dirty = True
+                if spilled is not None:
+                    discard_slot_file(spilled)  # staged into the slot folder and restored: the SSD copy is not needed any more
             return ""
         except Exception as e:  # noqa: BLE001 - partially restored backends must be discarded safely.
             event("checkpoint_restore_failed", f"RAM/disk session unusable; prompt will be re-read: {e}", fallback=True)
             # The server was told to restore and may hold corrupt state. Force a fresh process before proxying.
             if from_ram:
                 clear_ram_checkpoint()
+            elif isinstance(e, StagingRefused):
+                pass                            # the retry copy did not fit (RAM space or the desktop's floor): the SSD session stays
             else:
                 discard_slot_file(disk)
             st.skip_disk_restore = True
@@ -2575,10 +3166,13 @@ def stop_llama_locked(reason, save=True, fast=False, ram_only=False, min_tokens=
     if st.proc and st.proc.poll() is not None and not st.expected_exit:
         # Dead before we got here and nobody had noticed: that is a crash, not a clean stop.
         failed = st.proc
-        record_server_crash(failed, f"server found dead while stopping ({reason})")
-        st.last_error = crash_text(failed)
-        event("server_crashed", st.last_error, fallback=True)
-        crashed = note_crash(proc=failed)
+        if paused_exit(failed):
+            event("vram_pause_exit", f"the server had paused for the desk's VRAM (exit 75) before the stop ({reason})")
+        else:
+            record_server_crash(failed, f"server found dead while stopping ({reason})")
+            st.last_error = crash_text(failed)
+            event("server_crashed", st.last_error, fallback=True)
+            crashed = note_crash(proc=failed)
     elif st.proc and st.proc.poll() is None:
         saved = False
         if save and st.status == "READY":
@@ -2754,10 +3348,14 @@ def start_llama(model_id, vision, fresh=False, health_timeout=None, restore_time
             return "Gateway is shutting down"
         if st.proc and st.proc.poll() is not None and not st.expected_exit:
             failed = st.proc
-            record_server_crash(failed, "request arrived after unexpected server exit")
-            st.last_error = crash_text(failed)
             st.proc = None
-            st.status = "ERROR" if note_crash(proc=failed) else "UNLOADED"
+            if paused_exit(failed):
+                st.status = "UNLOADED"
+                event("vram_pause_exit", "the server paused for the desk's VRAM (exit 75); this request loads it again")
+            else:
+                record_server_crash(failed, "request arrived after unexpected server exit")
+                st.last_error = crash_text(failed)
+                st.status = "ERROR" if note_crash(proc=failed) else "UNLOADED"
         if (st.proc and st.proc.poll() is None and st.status == "READY"
                 and st.model_id == model_id and st.vision == vision and st.layout == layout):
             return ""
@@ -2850,6 +3448,7 @@ def load_server_locked(model_id, vision, mc, fresh, load_deadline, restore_timeo
         st.last_error = st.backend_blocked or st.last_error or "Backend port is occupied; refusing a second server"
         event("backend_blocked", st.last_error, fallback=True)
         return st.last_error
+    settle_pause_leftovers("before a server start")    # RAMFIX1: also when ramPolicy is not honest (no ram_admission)
     log("Starting llama-server: " + redacted_command(args))
     if extra_env:
         log("llama-server extra environment (names only): " + ", ".join(sorted(extra_env)))
@@ -2857,6 +3456,7 @@ def load_server_locked(model_id, vision, mc, fresh, load_deadline, restore_timeo
     try:
         # no extraEnv: the child inherits the gateway's environment exactly as before
         st.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, env={**os.environ, **extra_env} if extra_env else None)
+        SERVER_SLOT["owner"] = (model_id, vision, layout)
         st.proc_wall_start = time.time()
         POLITE.attach(st.proc.pid)
         # RAM valve: the model is the first thing the kernel may kill. Off unless llamaOomScoreAdj is set; a failed write is only logged.
@@ -3027,12 +3627,18 @@ def monitor_tick(now, free_mib, ram, wall_now=None, process_mib=None, proc=None)
             event("error_cooldown_over", "Restart limit cooldown is over; the next request starts the model again")
         if st.proc and st.proc.poll() is not None and not st.expected_exit:
             failed = st.proc
-            record_server_crash(failed, "monitor observed unexpected server exit")
-            st.last_error = crash_text(failed)
-            event("server_crashed", st.last_error, fallback=True)
             st.proc = None
             st.model_id, st.vision, st.layout = "", False, "short"
-            st.status = "ERROR" if note_crash(proc=failed) else "UNLOADED"
+            if paused_exit(failed):
+                st.status = "UNLOADED"
+                event("vram_pause_exit", "the server paused for the desk's VRAM (exit 75); the next request loads it again")
+            else:
+                record_server_crash(failed, "monitor observed unexpected server exit")
+                st.last_error = crash_text(failed)
+                event("server_crashed", st.last_error, fallback=True)
+                st.status = "ERROR" if note_crash(proc=failed) else "UNLOADED"
+        if st.busy == 0 and not (st.proc and st.proc.poll() is None and st.status != "READY"):
+            settle_pause_leftovers("no answer resumes it", background=True)
 
         valid = math.isfinite(free_mib) and 0 <= free_mib <= 2097152
         if valid and st.monitor_error:
@@ -4939,7 +5545,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if G.get("ramGuard") is True and body:
             grown = len(body) - RAM_LAST["len"]
-            if RAM_VALVE.level != "ok" and grown > G["ramValveDeferChars"]:
+            if RAM_VALVE.level != "ok" and grown > G["ramValveDeferChars"] and not wait_room_for_prompt(grown):
                 event("ram_valve_defer_prefill", f"level={RAM_VALVE.level} new_chars={grown}: large new prompt waits", fallback=False)
                 return self.send_api_error(503, "System memory is tight: a large new prompt waits until it eases; retry.",
                                            "service_unavailable", "SHURA_RAM_TIGHT", G.get("memoryAdmissionRetryAfterSeconds", 30))
@@ -5166,10 +5772,11 @@ class Handler(BaseHTTPRequestHandler):
 def sweep_slot_leftovers():
     """A save interrupted by a kill leaves a half-written file behind; nothing else would ever remove it."""
     try:
-        for pattern in ("*.pending", ".slot-*", "*.json.tmp"):
-            for leftover in SLOT_DIR.glob(pattern):
-                if leftover.is_file() and not leftover.is_symlink():
-                    leftover.unlink(missing_ok=True)
+        for folder in (SLOT_DIR, spill_dir()):
+            for pattern in ("*.pending", ".slot-*", ".spill-*.tmp", ".spill-*.part", ".out-*", ".adopt-*", "*.json.tmp"):
+                for leftover in folder.glob(pattern):
+                    if leftover.is_file() and not leftover.is_symlink():
+                        leftover.unlink(missing_ok=True)
     except OSError:
         pass
 

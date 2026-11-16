@@ -403,7 +403,7 @@ class GuardReliability(fixtures.GatewayGuard):
         # before that stop: a refused switch must leave the running model loaded.
         src = Path(self.gw.__file__).read_text()
         i = src.index('def start_llama(')
-        body = src[i:i + 3000]
+        body = src[i:src.index('\ndef ', i + 1)]                  # the whole function (a fixed window broke when code above grew)
         self.assertIn('preload_check(mc, reclaim=running_footprint()', body)   # the governor adds admit=(model, layout)
         self.assertLess(body.index('preload_check('), body.index('stop_llama_locked('))
 
