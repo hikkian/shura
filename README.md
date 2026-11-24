@@ -5,7 +5,7 @@
   <img alt="Shura · شورى" src="assets/logo-wordmark-light.png" width="520">
 </picture>
 
-### A 35B coding model on one gaming GPU, on a PC you keep using
+### A fully local AI coding agent for a regular gaming PC, on a PC you keep using
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Measured on](https://img.shields.io/badge/measured%20on-RX%207800%20XT%2016%20GB%20%C2%B7%20ROCm%207.2.4%20%C2%B7%20Linux-ED1C24)
@@ -20,16 +20,29 @@ English · [Русский](README.ru.md)
 ---
 
 > *Shura* (شورى) is Arabic for "consultation, council". In a Mixture-of-Experts model every token is
-> decided by a council: a router consults 8 of 256 experts. This project is about seating that council
-> on modest hardware.
+> decided by a council: a router consults a few of its many experts. This project is about seating that
+> council on modest hardware.
 
 ## What is Shura
 
-A 35B Mixture-of-Experts coding model runs on an ordinary home PC with one gaming graphics card. No
-server, no cloud. And while the model works, the computer stays yours: the browser, video, a call and
-the IDE keep running on the same GPU without stutter.
+A Mixture-of-Experts coding model runs on a regular consumer gaming PC. No server, no cloud, no
+subscription, and your code never leaves the machine. And while the model works, the computer stays
+yours: the browser, video, a call and the IDE keep running on the same GPU, and the desktop comes first.
 
-How that is done, in one breath (the working build; the [Status](#status-preparing-10) section says what is in
+The PC is split into two spaces. **Yours** has a guaranteed share of VRAM and RAM that the model never
+touches. **The AI server** lives in its own space with hard walls and works on the rest. The walls are in
+place on the working build today; next, the server learns to yield step by step when you need more
+(slower, then a minimal share, then sleep like a browser tab) and to wake up by itself, and a small native
+app shows both spaces live.
+
+> [!NOTE]
+> **Moving to a new main model.** Since 2026-11-24 the working build runs **Inkling 2 Mini** (26B MoE with
+> looped middle layers) on our own engine work: new attention and MoE kernels, kernel fusion, and an MoE
+> expert cache that is being rebuilt for it. Its numbers are still moving every day, so this page keeps the
+> last complete set, measured on **Tiel-Coder** (below). New numbers replace them once they are measured end
+> to end on the same method.
+
+How the Tiel-Coder build does it, in one breath (the working build; the [Status](#status-preparing-10) section says what is in
 `main` today): the model's **hot experts live in VRAM** and the rest are computed from
 system RAM; a **governor inside the inference server** watches free VRAM every 200 ms and gives memory
 back to the desktop the moment the desktop needs it; when it has to stop, it **checkpoints and continues
@@ -38,7 +51,7 @@ model's own **MTP head** drafts tokens; a small **gateway** loads the model on d
 RAM and protects your SSD; **ShuraCode**, an offline coding agent, sits on top. The engine is our fork of
 llama.cpp, [hikkian/llama.cpp-shura](https://github.com/hikkian/llama.cpp-shura).
 
-| At a glance (working build, measured 2026-10-24/25) | |
+| At a glance (Tiel-Coder working build, measured 2026-10-24/25) | |
 |---|---|
 | Models | [Tiel-Coder-35B-A3B](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) (APEX-I-MiniPlus quant, ~14 GB, with its MTP head); Sage-A1.5 (same architecture) as the second model for harder tasks |
 | Hardware | AMD RX 7800 XT 16 GB · Ryzen 5 5600 · 32 GB DDR4-3200 · Fedora 44, KDE on Wayland · ROCm 7.2.4 |
