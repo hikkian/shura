@@ -225,7 +225,7 @@ value with data.
 
 ## Status of each platform
 
-Same table as the [README](../README.md#what-is-verified-and-what-is-not). Only the first row has ever run for real.
+This table covers the installers in `main`; only its first row has ever run for real. The machines that have run Shura, including the working build, are listed in the [README](../README.md#will-it-run-on-my-computer).
 
 | Platform | Installed by | State |
 |---|---|---|

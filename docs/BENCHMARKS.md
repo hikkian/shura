@@ -1,10 +1,11 @@
 # Benchmarks
 
 > [!NOTE]
-> **Previous configuration.** Everything on this page was measured in September 2026 on the author's earlier
-> machine: an NVIDIA RTX 4070 SUPER 12 GB with the CUDA build of the `perf` fork. Since October the project is
-> developed and measured on an AMD RX 7800 XT 16 GB with ROCm 7.2.4 and our own fork; those numbers are in the
-> [README](../README.md#results) until the 1.0 benchmark set (raw data, method and charts) is published.
+> **Previous build.** This page is the record of the **Tiel-Coder** build. Everything down to
+> [Later measurements](#later-measurements-of-the-tiel-coder-build-october-and-november-2026) was measured in
+> September 2026 on the author's earlier machine: an NVIDIA RTX 4070 SUPER 12 GB with the CUDA build of the `perf`
+> fork. The last section holds the October and November numbers from the AMD RX 7800 XT 16 GB. The main model
+> is now Inkling 2 Mini; its numbers are in the [README](../README.md#the-model-and-the-engine).
 
 All numbers were measured on one machine, in one continuous session, with the scripts in
 [`bench/`](../bench). Nothing here is copied from other people's reports.
@@ -346,3 +347,88 @@ A runner race and one continuation missing a middle exchange were classified as 
 At a restored 187k context, reduced8, temperature0/seed1 and identical 200-token requests, the cooperative turbo3 tile-load patch passed 10 interleaved OFF/ON kernel pairs: median ON/OFF CUDA-kernel time0.830281, ON faster10/10. Five unprofiled generation pairs had median ON/OFF throughput1.052709 (+5.27%); background CPU was <=2.5 and changed <=0.8 within each pair. Outputs and MTP92/106 matched; final correctness9/9 in both builds. Previously accepted40/40 blocks gave deltaPPL+0.000375%, meanKL rounded0.0, below the static16/24 floor.
 
 The patch is disabled by default. Use `scripts/build-llama.sh --attention-decode [destination]` to apply it and enable `GGML_CUDA_TURBO3_DECODE_GROUP8`; a later default build explicitly disables the option. No live binary/config was changed. Full paired results and excluded/preflight records are in the local ignored bundle `bench/results/d1-gates-20261001/`. These numbers do not establish a speedup for a different slot count or desktop load.
+
+## Later measurements of the Tiel-Coder build (October and November 2026)
+
+These numbers were in the README until 2026-11-24. They come from one machine (RX 7800 XT 16 GB, Ryzen 5 5600,
+32 GB DDR4) and from the working build of that time, not from the published `main` branch.
+
+### October 2026 (earlier fork, ROCm 7.2.4)
+
+A live KDE desktop held 1.3–1.6 GiB of VRAM during the runs. Speeds are server-side, wall-clock tokens per second
+of real requests through the gateway (not `llama-bench`), averaged over three alternating pairs against the
+previous build; MTP speculative decoding is on in the short layout.
+
+**Speed** (2026-10-24)
+
+| | short prompt | 28k filled | 100k filled |
+|---|---:|---:|---:|
+| Tiel-Coder-35B-A3B, decode tok/s | **75.4** | **70.7** | **48.6** |
+
+The 100k number comes from the long-context layout of that time (200k window, more experts on the CPU, no MTP).
+Switching between the short and the long layout kept the session and took 20–28 s.
+
+**The desktop comes first** (2026-10-25)
+
+| Event during an answer | What happened |
+|---|---|
+| Desktop takes +400 MiB of VRAM while the model decodes | free VRAM is back above 1.5 GiB after **0.24 s**; the longest gap between tokens was 51 ms |
+| The same during a 100k-token prefill | back above 1.5 GiB after **0.29 s**, prefill continues |
+| Desktop takes more than the model can give back | the model checkpoints its slot (0.6 s), exits, is restarted by the gateway in a lighter layout, restores the slot (22 ms) and **continues the same answer** |
+| 44-minute soak: 171 requests from 0.2k to 28k tokens plus 25 desktop jumps of 100–450 MiB | 15 cache shrinks, 12 regrowths, no pause needed, the server's buffer pool never grew after warm-up |
+
+**Sessions survive** (2026-10-17, 2026-10-25)
+
+| | Time |
+|---|---:|
+| Back to a 98.5k-token session from a RAM snapshot | **0.54 s** (0.63 s from NVMe) |
+| The same without a snapshot: re-reading the context | 156 s |
+| Pause mid-answer, restart, restore, continue | checkpoint 0.6 s, restore 22 ms, no duplicated or missing text at the seam |
+
+**It runs for days** (2026-10-24)
+
+| | Result |
+|---|---|
+| Host memory of `llama-server` under a steady replay (ROCm 7.2.4) | heap growth 0.01 GiB/h; on ROCm 7.1.1 the same run grew 4.5 GiB/h |
+| 40-minute long-session hammer: 170 requests, prompts up to 180,300 tokens, cache resizes on every request | 0 GPU page faults, 0 watchdog stops, 0 errors. An out-of-bounds read in the MoE matmul path that caused page faults on long sessions was found and fixed on the way |
+
+**The agent** (2026-10-24)
+
+ShuraCode on Tiel-Coder, run the way the product runs (serve mode through the gateway, short layout), on the dev
+split of our agentic task set: **73 of 111 runs solved (66 %)**: bug fixes 86 %, tests-only tasks 100 %,
+implement 41 %, refactor 36 %. The harness is in [`bench/agentic-eval`](../bench/agentic-eval).
+
+**Quality gate.** Every change to kernels or layouts was accepted only if the KL divergence of the output
+distribution to the reference layout stayed within the gate (0.0385 on a fixed corpus) and the top-1 token
+agreement did not drop.
+
+### November 2026 (shura.cpp 1.0)
+
+One mode with a 262,144-token window, where the conversation cache grows with the conversation:
+
+| | |
+|---|---|
+| Decode with 100k tokens of context | 58.9 tok/s |
+| Decode with 200k tokens of context | 44.6 tok/s |
+| Free VRAM | at least 1.72 GiB |
+| Pause and resume | a paused and resumed answer is bit-identical to an unpaused one |
+
+The engine of this build is public: [shura.cpp 1.0](https://github.com/hikkian/shura.cpp).
+
+### What that build taught us
+
+- **A fixed VRAM split cannot be both fast and safe.** The desktop's GPU memory swings by hundreds of MiB (calls,
+  video, the lock screen, a new tab). The answer is a cache that shrinks in a quarter of a second and grows back
+  when the desktop is quiet.
+- **The expert cache is the biggest lever, and too many slots fail silently.** Oversubscribed VRAM does not raise
+  an error, it slows down run over run.
+- **Prompt experts are not generation experts.** A routing profile must be traced from generated tokens.
+- **TurboQuant is not a speedup by itself.** Its value is turning saved KV VRAM into more expert slots. It also
+  needs [a fix](TURBOQUANT-FIX.md) on head_dim-256 models.
+- **Hybrid models need context checkpoints, and slot save/restore does not keep them.** Without them any change
+  in the prompt prefix forces a full re-read.
+- **`MemAvailable` lies about your browser.** Loading 14 GB of weights through the page cache pushes the browser
+  into swap while the kernel still reports plenty of "available" memory. The model has to load without touching
+  the page cache and count only honest free memory.
+- **A GPU page fault is usually a bug, not the driver.** Ours was an out-of-bounds read in the MoE matmul path,
+  visible only on long, growing sessions.
